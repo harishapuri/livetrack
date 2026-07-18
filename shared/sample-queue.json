@@ -1,0 +1,53 @@
+[
+  {
+    "id": "card-001",
+    "title": "New vendor — Acme Supplies",
+    "sopId": "vendor-onboarding",
+    "status": "queued",
+    "data": {
+      "companyName": "Acme Supplies",
+      "contactName": "Jordan Lee",
+      "email": "jordan@acmesupplies.example",
+      "phone": "555-0142",
+      "taxId": "12-3456789",
+      "address": "100 Market Street",
+      "city": "Austin",
+      "state": "TX",
+      "zip": "78701"
+    }
+  },
+  {
+    "id": "card-002",
+    "title": "New vendor — Blue River Parts",
+    "sopId": "vendor-onboarding",
+    "status": "queued",
+    "data": {
+      "companyName": "Blue River Parts",
+      "contactName": "Sam Rivera",
+      "email": "sam@blueriver.example",
+      "phone": "555-0199",
+      "taxId": "98-7654321",
+      "address": "42 Harbor Ave",
+      "city": "Seattle",
+      "state": "WA",
+      "zip": "98101"
+    }
+  },
+  {
+    "id": "card-003",
+    "title": "New vendor — Northwind Labs",
+    "sopId": "vendor-onboarding",
+    "status": "queued",
+    "data": {
+      "companyName": "Northwind Labs",
+      "contactName": "Alex Chen",
+      "email": "alex@northwind.example",
+      "phone": "555-0177",
+      "taxId": "45-6789012",
+      "address": "9 Innovation Way",
+      "city": "Boston",
+      "state": "MA",
+      "zip": "02110"
+    }
+  }
+]
