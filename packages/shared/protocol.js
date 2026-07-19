@@ -70,6 +70,7 @@ const MessageType = {
   CAPTURE_SNIPPET: "capture_snippet",
   SNIPPET: "snippet",
   OPEN_URL: "open_url",
+  JIRA_SNAPSHOT: "jira_snapshot",
 };
 
 module.exports = {

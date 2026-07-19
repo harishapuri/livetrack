@@ -2,18 +2,68 @@ const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme } = require("ele
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const crypto = require("crypto");
 const { createBridge } = require("./bridge");
+
+// One Electron instance — multiple copies fight for always-on-top / focus (flicker)
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.exit(0);
+} else {
+  app.on("second-instance", () => {
+    if (tailMode) {
+      try {
+        exitTailMode();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (!mainWindow.isVisible()) mainWindow.show();
+      applyAlwaysOnTop(true);
+      mainWindow.focus();
+    }
+  });
+}
 const {
   defaultDocumentsRoot,
+  defaultExtensionDir,
+  defaultUserSopsDir,
+  migrateLegacyDocumentsCoact,
   loadQueueFromDocuments,
   seedSampleCases,
+  updateQueueCardStatus,
 } = require("./documents");
-const { getOpenAiConfig, saveSettings, getAppSettings } = require("./settings");
+const {
+  getOpenAiConfig,
+  saveSettings,
+  getAppSettings,
+  getJiraConfig,
+} = require("./settings");
+const {
+  searchIssues,
+  isConfigured: isJiraConfigured,
+  addComment,
+  appendJiraAction,
+  recentJiraActions,
+  isJiraDoneStatus,
+  findLinkedCardId,
+  ensureLinkedIssues,
+} = require("./jira");
+const {
+  buildAgentDashboard,
+  loadMandatorySummaryForTicket,
+  mandatorySummaryForCard,
+  extractJiraKey,
+  isGeneratedJiraKey,
+} = require("./dashboard-stats");
 const {
   streamChat,
   coachStuckStep,
+  proposeAgentFill,
   repairFailedStep,
   judgeValueMatch,
+  polishJiraCommentDraft,
 } = require("./openai-chat");
 const { captureRegionSnip } = require("./snipper");
 const {
@@ -50,9 +100,9 @@ function bundledExtensionDir() {
   return null;
 }
 
-/** Stable user-writable copy so Load unpacked keeps working across app updates */
+/** Stable project copy so Load unpacked keeps working across app updates */
 function userExtensionDir() {
-  return path.join(os.homedir(), "Documents", "Coact", "extension");
+  return defaultExtensionDir();
 }
 
 function copyDirRecursive(src, dest) {
@@ -68,7 +118,7 @@ function copyDirRecursive(src, dest) {
 }
 
 /**
- * Copy bundled extension → Documents/Coact/extension and optionally open
+ * Copy bundled extension → <project>/extension and optionally open
  * Chrome / Edge extension pages + reveal the folder for Load unpacked.
  */
 function installBrowserExtension(browser = "chrome") {
@@ -112,13 +162,13 @@ function installBrowserExtension(browser = "chrome") {
     source: src,
     browser,
     hint:
-      "Developer mode → Load unpacked → select Documents/Coact/extension (folder already opened).",
+      "Developer mode → Load unpacked → select Projects/coact/extension (folder already opened).",
   };
 }
 
-/** User-writable SOPs (SOP builder + installed app) */
+/** User-writable SOPs (SOP builder overrides under <project>/sops) */
 function userSopsDir() {
-  return path.join(os.homedir(), "Documents", "Coact", "sops");
+  return defaultUserSopsDir();
 }
 
 function sopsSearchDirs() {
@@ -179,6 +229,8 @@ let tailWindow = null;
 let bridge = null;
 let pdfViewServer = null;
 let activeRun = null;
+/** Agent-approved values for the current run — edits here are intentional, not mistakes. */
+let activeRunAgentApproved = null;
 let activeWatch = null;
 /** @type {Map<string, Map<string, object>>} cardId → stepId → action record */
 const cardActions = new Map();
@@ -186,10 +238,22 @@ const cardActions = new Map();
 const cardMistakes = new Map();
 /** Prevent double-save for the same card in a short window */
 const finalizedAt = new Map();
+/** @type {Map<string, { pageUrl?: string, formReference?: string }>} */
+const cardPageContext = new Map();
+let lastExtensionTabUrl = null;
 let documentsRoot = defaultDocumentsRoot();
 let queue = [];
 let normalBounds = null;
 let tailMode = false;
+/** @type {{ ok: boolean, issues: any[], staleCount: number, error?: string, fetchedAt?: string } | null} */
+let jiraSnapshot = null;
+let jiraPollTimer = null;
+let jiraPollInFlight = false;
+/** @type {Promise<object|null>|null} */
+let jiraRefreshPromise = null;
+/** Faster poll while the Jira sidebar pane is visible */
+let jiraPaneActive = false;
+const JIRA_ACTIVE_POLL_MS = 15_000;
 
 function recordCardAction(cardId, update) {
   if (!cardId || !update?.stepId) return;
@@ -219,16 +283,39 @@ function recordCardAction(cardId, update) {
 /**
  * Capture wrong fills on mandatory (key-symbol) steps only.
  * Keeps attempts even when the user later Approves the correct value.
+ * Agent-approved (possibly user-edited) fills are intentional — never scored as mistakes.
  */
 function recordCardMistake(cardId, update) {
   if (!cardId || !update?.stepId) return;
   if (update.status !== "mismatch") return;
+  if (update.agentApproved || update.source === "agent" || update.skipMistake) return;
 
   const card = queue.find((c) => c.id === cardId);
   const sop = card ? sops[card.sopId] : null;
   const step = sop?.steps?.find((s) => s.id === update.stepId);
   // Only steps marked mandatory (key icon in liveAct)
   if (!step?.mandatory) return;
+
+  // Values intentionally approved in the Agent popup for this run
+  if (activeRunAgentApproved?.cardId === cardId) {
+    const approved = activeRunAgentApproved.values || {};
+    const overrides = activeRunAgentApproved.dataOverrides || {};
+    const actual = String(update.actual ?? "").trim();
+    const byStep = approved[update.stepId];
+    const byKey =
+      update.key != null && overrides[update.key] != null
+        ? overrides[update.key]
+        : null;
+    for (const intentional of [byStep, byKey]) {
+      if (
+        intentional != null &&
+        actual &&
+        normalizeMistakeCompare(actual) === normalizeMistakeCompare(intentional)
+      ) {
+        return;
+      }
+    }
+  }
 
   const expected = String(
     update.expected ?? update.suggestedValue ?? "",
@@ -479,6 +566,11 @@ async function finalizeExecutionArtifacts(
   }
 
   try {
+    const jiraCfg = getJiraConfig();
+    const field = jiraCfg.jiraCardKeyField || "jiraKey";
+    const realKey = extractJiraKey(card.data?.[field], card.title, card.id);
+    const pageCtx = cardPageContext.get(cardId) || {};
+    const pageUrl = pageCtx.pageUrl || lastExtensionTabUrl || "";
     const result = await saveExecutionArtifacts({
       lob: card.lob || "TCOO",
       queueCard: card.id,
@@ -487,23 +579,156 @@ async function finalizeExecutionArtifacts(
       mistakes,
       fillMode,
       filledPdfSource: filledSource,
+      jiraKey: realKey || "",
+      formReference: pageCtx.formReference || "",
+      pageUrl,
     });
     console.log(
       "[coact] saved execution",
       result.fillMode,
       `mistakes=${mistakes.length}`,
+      `ref=${result.formReference || "—"}`,
       result.excelPath,
       result.sqlResult
         ? `(sql rows=${result.sqlResult.runCount})`
         : "",
     );
+
+    // Mandatory: append a NEW Jira comment for every execution (never overwrite)
+    const answers = {};
+    for (const a of actions) {
+      const k = a.key || a.stepId;
+      if (k && a.value != null && String(a.value).trim() !== "") {
+        answers[k] = String(a.value);
+      }
+    }
+    Object.assign(answers, card.data || {});
+    postExecutionJiraComment({
+      card,
+      fillMode: result.fillMode || fillMode || "automated",
+      mistakes,
+      answers,
+      runId: result.runId,
+      storyKey: result.jiraKey || realKey || "",
+      formReference: result.formReference || "",
+    }).catch((err) => console.error("[coact] execution jira comment", err?.message || err));
+
     clearCardActions(cardId);
     clearCardMistakes(cardId);
+    cardPageContext.delete(cardId);
     return result;
   } catch (err) {
     console.error("[coact] save execution artifacts failed", err.message);
     return null;
   }
+}
+
+/** Prefer a real Jira issue key for this card (not LACT-*). */
+function resolveJiraIssueKeyForCard(card) {
+  if (!card) return "";
+  const field = getJiraConfig().jiraCardKeyField || "jiraKey";
+  const fromCard = extractJiraKey(card.data?.[field], card.title, card.id);
+  if (fromCard && !isGeneratedJiraKey(fromCard)) return fromCard;
+
+  const issues = jiraSnapshot?.issues || [];
+  const byLink = issues.find((i) => i.linkedCardId === card.id);
+  if (byLink?.key) return byLink.key;
+
+  const title = String(card.title || "").toLowerCase();
+  const idBits = String(card.id || "")
+    .toLowerCase()
+    .split(/[-_]+/)
+    .filter((t) => t.length > 3);
+  const titleBits = title.split(/[^a-z0-9]+/).filter((t) => t.length > 4);
+  const tokens = [...new Set([...idBits, ...titleBits])];
+  if (!tokens.length) return "";
+
+  const hit = issues.find((i) => {
+    const s = String(i.summary || "").toLowerCase();
+    const matches = tokens.filter((t) => s.includes(t));
+    return matches.length >= Math.min(2, tokens.length);
+  });
+  return hit?.key || "";
+}
+
+/**
+ * After every execution, POST a new Jira comment (append-only).
+ * Never updates or replaces prior comments.
+ */
+async function postExecutionJiraComment({
+  card,
+  fillMode,
+  mistakes,
+  answers,
+  runId,
+  storyKey,
+  formReference,
+}) {
+  const config = getJiraConfig();
+  if (!isJiraConfigured(config)) {
+    return { ok: false, error: "jira_not_configured" };
+  }
+
+  const issueKey =
+    (storyKey && !isGeneratedJiraKey(storyKey) ? storyKey : "") ||
+    resolveJiraIssueKeyForCard(card);
+  if (!issueKey) {
+    console.warn(
+      "[coact] execution jira comment skipped — no linked Jira issue for",
+      card?.id
+    );
+    appendJiraAction({
+      issueKey: card?.id || "?",
+      action: "execution_comment_skipped",
+      bodyPreview: "No linked Jira issue key",
+      ok: false,
+      conflict: false,
+      error: "no_linked_issue",
+    });
+    return { ok: false, error: "no_linked_issue" };
+  }
+
+  const queueCard = `${card.title || card.id}${card.id ? ` (${card.id})` : ""}`;
+  const summary = mandatorySummaryForCard(card.id, answers || {}, queue);
+  const mistakeCount = Array.isArray(mistakes) ? mistakes.length : 0;
+  const draft = [
+    `Execution complete (${fillMode || "automated"}).`,
+    formReference ? `Form reference: ${formReference}.` : null,
+    mistakeCount ? `${mistakeCount} mistake(s) recorded.` : "No mistakes recorded.",
+    runId ? `Run id: ${runId}.` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const polish = await polishJiraCommentDraft({
+    draft,
+    issueKey,
+    summary: card.title || "",
+    ticketKey: formReference || issueKey,
+    queueCard,
+    mandatorySummary: summary?.text || "",
+  });
+  const body = String(polish.polished || draft).trim();
+
+  // Always POST a new comment — never overwrite
+  const result = await addComment(config, issueKey, body);
+  appendJiraAction({
+    issueKey,
+    action: "execution_comment",
+    bodyPreview: body.slice(0, 120),
+    ok: Boolean(result.ok),
+    httpStatus: result.httpStatus || null,
+    conflict: false,
+    error: result.error || null,
+    appendOnly: true,
+    runId: runId || null,
+  });
+  if (result.ok) {
+    await refreshJira({ force: true }).catch(() => {});
+  } else {
+    console.warn("[coact] execution jira comment failed", result.error);
+  }
+  return result;
 }
 
 // User-facing Dock / menu name (packaged builds use productName from package.json)
@@ -514,7 +739,7 @@ if (typeof app?.setName === "function") {
 function defaultMainBounds() {
   const { screen } = require("electron");
   const display = screen.getPrimaryDisplay().workArea;
-  const width = 420;
+  const width = 520;
   const height = Math.min(640, display.height - 40);
   return {
     width,
@@ -525,6 +750,7 @@ function defaultMainBounds() {
 }
 
 function refreshQueue() {
+  migrateLegacyDocumentsCoact();
   seedSampleCases(documentsRoot);
   let userId = "";
   try {
@@ -583,14 +809,16 @@ function applyAlwaysOnTop(enabled) {
 let alwaysOnTopTimer = null;
 function startAlwaysOnTopKeepAlive() {
   if (alwaysOnTopTimer) return;
-  // Re-assert level only — avoid re-calling setVisibleOnAllWorkspaces (dock flicker)
+  // Soft keep-alive: re-assert level only when lost. Never moveTop/show/focus here —
+  // those every few hundred ms cause visible flicker and steal focus from Chrome.
   alwaysOnTopTimer = setInterval(() => {
     if (app.isQuitting) return;
     if (tailMode) {
       if (tailWindow && !tailWindow.isDestroyed() && tailWindow.isVisible()) {
         try {
-          tailWindow.setAlwaysOnTop(true, "screen-saver", 1);
-          tailWindow.moveTop();
+          if (!tailWindow.isAlwaysOnTop()) {
+            tailWindow.setAlwaysOnTop(true, "screen-saver", 1);
+          }
         } catch {
           /* ignore */
         }
@@ -600,12 +828,13 @@ function startAlwaysOnTopKeepAlive() {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (!mainWindow.isVisible() || mainWindow.isMinimized()) return;
     try {
-      mainWindow.setAlwaysOnTop(true, "screen-saver", 1);
-      mainWindow.moveTop();
+      if (!mainWindow.isAlwaysOnTop()) {
+        mainWindow.setAlwaysOnTop(true, "screen-saver", 1);
+      }
     } catch {
       /* ignore */
     }
-  }, 400);
+  }, 5000);
 }
 
 function stopAlwaysOnTopKeepAlive() {
@@ -618,6 +847,7 @@ function quitLiveActApp() {
   if (app.isQuitting) return;
   app.isQuitting = true;
   stopAlwaysOnTopKeepAlive();
+  stopJiraPolling();
   try {
     if (bridge) bridge.close();
   } catch {
@@ -914,6 +1144,188 @@ function sendToRenderer(channel, payload) {
   }
 }
 
+/** Stable fingerprint so unchanged polls skip renderer / bridge thrash */
+let lastJiraPublishFp = "";
+function jiraSnapshotFingerprint(snap, recentActions) {
+  const issues = (snap?.issues || []).map((i) => ({
+    key: i.key,
+    status: i.status,
+    done: i.done,
+    sopStage: i.sopStage,
+    urgencyScore: i.urgencyScore,
+    linkedCardId: i.linkedCardId,
+    updated: i.updated || i.updatedAt || null,
+  }));
+  const recent = (recentActions || []).map((a) => ({
+    t: a.at || a.ts || a.time,
+    k: a.issueKey,
+    a: a.action,
+  }));
+  return crypto
+    .createHash("sha1")
+    .update(
+      JSON.stringify({
+        ok: Boolean(snap?.ok),
+        configured: snap?.configured,
+        error: snap?.error || "",
+        staleCount: snap?.staleCount || 0,
+        issues,
+        recent,
+      })
+    )
+    .digest("hex");
+}
+
+function publishJiraSnapshot({ force = false } = {}) {
+  const snap = jiraSnapshot || { ok: false, issues: [], staleCount: 0 };
+  const recent = recentJiraActions(5);
+  const fp = jiraSnapshotFingerprint(snap, recent);
+  if (!force && fp === lastJiraPublishFp) return false;
+  lastJiraPublishFp = fp;
+  sendToRenderer("jira-updated", {
+    ...snap,
+    recentActions: recent,
+  });
+  try {
+    if (bridge?.sendJiraSnapshot) {
+      bridge.sendJiraSnapshot(snap);
+    }
+  } catch (err) {
+    console.error("[coact] jira snapshot bridge", err);
+  }
+  return true;
+}
+
+async function refreshJira({ force = false } = {}) {
+  // Coalesce concurrent polls; force waits for in-flight then runs a fresh pull
+  if (jiraRefreshPromise) {
+    if (!force) return jiraRefreshPromise;
+    try {
+      await jiraRefreshPromise;
+    } catch {
+      /* ignore prior failure */
+    }
+  }
+
+  const run = async () => {
+    const config = getJiraConfig();
+    if (!isJiraConfigured(config)) {
+      jiraSnapshot = {
+        ok: false,
+        configured: false,
+        issues: [],
+        staleCount: 0,
+        sopStages: config.jiraStatusMap || null,
+        error: "Configure Jira in Settings (base URL, email, API token).",
+      };
+      publishJiraSnapshot();
+      return jiraSnapshot;
+    }
+    jiraPollInFlight = true;
+    try {
+      let result = await searchIssues(config, { queueCards: queue });
+      // Always pull queue-linked keys so Done sync works even if JQL hid them
+      result = await ensureLinkedIssues(config, result, queue);
+      jiraSnapshot = { ...result, configured: true };
+      const synced = syncQueueCardsFromJira(jiraSnapshot.issues || []);
+      if (synced > 0) {
+        refreshQueue();
+        sendToRenderer("queue-updated", {
+          queue: queue.map(enrichCard),
+          publishedAt: Date.now(),
+          rootDir: documentsRoot,
+          jiraSync: true,
+        });
+      }
+      publishJiraSnapshot();
+      return jiraSnapshot;
+    } finally {
+      jiraPollInFlight = false;
+    }
+  };
+
+  jiraRefreshPromise = run().finally(() => {
+    jiraRefreshPromise = null;
+  });
+  return jiraRefreshPromise;
+}
+
+/**
+ * When Jira marks a story Done/Closed/…, mark the linked queue card done (and reverse on reopen).
+ */
+function syncQueueCardsFromJira(issues) {
+  const field = getJiraConfig().jiraCardKeyField || "jiraKey";
+  let changed = 0;
+  for (const issue of issues || []) {
+    let cardId = issue.linkedCardId || "";
+    if (!cardId && issue.key) {
+      cardId = findLinkedCardId(issue.key, queue, field) || "";
+    }
+    if (!cardId) continue;
+    const done =
+      issue.done === true || isJiraDoneStatus(issue.status, issue.sopStage);
+    const desired = done ? "done" : "queued";
+    try {
+      const res = updateQueueCardStatus(cardId, desired, queue);
+      if (res?.changed) {
+        changed += 1;
+        console.log(
+          `[coact] jira sync ${issue.key} → card ${cardId} status=${desired}`
+        );
+        appendJiraAction({
+          issueKey: issue.key,
+          action: "status_sync",
+          bodyPreview: `Queue card ${cardId} → ${desired}`,
+          ok: true,
+          conflict: false,
+          cardId,
+          status: desired,
+        });
+      }
+    } catch (err) {
+      console.warn("[coact] jira status sync", err?.message || err);
+    }
+  }
+  return changed;
+}
+
+function stopJiraPolling() {
+  if (jiraPollTimer) {
+    clearTimeout(jiraPollTimer);
+    jiraPollTimer = null;
+  }
+}
+
+function jiraPollDelayMs() {
+  if (jiraPaneActive) return JIRA_ACTIVE_POLL_MS;
+  const minutes = Math.max(1, Number(getJiraConfig().jiraPollMinutes) || 5);
+  return minutes * 60 * 1000;
+}
+
+function scheduleNextJiraPoll() {
+  stopJiraPolling();
+  jiraPollTimer = setTimeout(() => {
+    refreshJira()
+      .catch((err) => console.error("[coact] jira poll", err))
+      .finally(() => scheduleNextJiraPoll());
+  }, jiraPollDelayMs());
+}
+
+function startJiraPolling() {
+  stopJiraPolling();
+  refreshJira().catch((err) => console.error("[coact] jira initial", err));
+  scheduleNextJiraPoll();
+}
+
+function setJiraPaneActive(active) {
+  const next = Boolean(active);
+  const was = jiraPaneActive;
+  jiraPaneActive = next;
+  if (next !== was) {
+    scheduleNextJiraPoll();
+  }
+}
+
 /** UI/coach steps must keep valueFrom / allowedValues / mandatory so Approve can resolve. */
 function stepForUi(step, status = "pending") {
   if (!step) return null;
@@ -1072,6 +1484,7 @@ async function handleValueCheck(update) {
 }
 
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock) return;
   nativeTheme.themeSource = "light";
   refreshQueue();
   watchSopsDir();
@@ -1122,6 +1535,7 @@ app.whenReady().then(() => {
           payload.tabUrl = status.tabUrl || null;
           payload.tabTitle = status.tabTitle || null;
           if (status.activated) payload.activated = true;
+          if (status.tabUrl) lastExtensionTabUrl = status.tabUrl;
         }
 
         // Drop stale bindings after long idle / extension SW restart
@@ -1143,6 +1557,13 @@ app.whenReady().then(() => {
         }
 
         sendToRenderer("extension-status", payload);
+        if (connectedNow && jiraSnapshot && bridge?.sendJiraSnapshot) {
+          try {
+            bridge.sendJiraSnapshot(jiraSnapshot);
+          } catch {
+            /* ignore */
+          }
+        }
       },
       onStepUpdate(update) {
         const watched =
@@ -1164,6 +1585,14 @@ app.whenReady().then(() => {
 
         recordCardMistake(update.cardId, update);
         recordCardAction(update.cardId, update);
+
+        if (update.cardId && (update.pageUrl || update.formReference)) {
+          const prev = cardPageContext.get(update.cardId) || {};
+          cardPageContext.set(update.cardId, {
+            pageUrl: update.pageUrl || prev.pageUrl || "",
+            formReference: update.formReference || prev.formReference || "",
+          });
+        }
 
         if (
           update.status === "done" &&
@@ -1269,6 +1698,7 @@ app.whenReady().then(() => {
   }
 
   createWindow();
+  startJiraPolling();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -1278,6 +1708,7 @@ app.whenReady().then(() => {
 app.on("before-quit", () => {
   app.isQuitting = true;
   stopAlwaysOnTopKeepAlive();
+  stopJiraPolling();
 });
 
 app.on("window-all-closed", () => {
@@ -1294,10 +1725,11 @@ ipcMain.handle("get-bootstrap", () => {
     queue: queue.map(enrichCard),
     extensionConnected: bridge ? bridge.isExtensionConnected() : false,
     openai: { hasKey: ai.hasKey, model: ai.model },
+    jira: jiraSnapshot,
   };
 });
 
-function publishQueueToRenderer() {
+function publishQueueToRenderer({ raise = false } = {}) {
   reloadSops();
   const loaded = refreshQueue();
   const payload = {
@@ -1307,20 +1739,21 @@ function publishQueueToRenderer() {
     allCardCount: loaded?.allCardCount ?? queue.length,
   };
   sendToRenderer("queue-updated", payload);
-  // Make sure the chatbot actually shows the refresh (even if tucked behind other apps)
-  try {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      if (tailMode) {
-        // Prefer expanding so the agent sees updated cards/steps
-        exitTailMode();
-      } else if (!mainWindow.isVisible()) {
-        mainWindow.show();
+  // Only raise on explicit user refresh — background syncs must not steal focus
+  if (raise) {
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (tailMode) {
+          exitTailMode();
+        } else if (!mainWindow.isVisible()) {
+          mainWindow.show();
+        }
+        applyAlwaysOnTop(true);
+        mainWindow.moveTop();
       }
-      applyAlwaysOnTop(true);
-      mainWindow.moveTop();
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
   }
   return {
     cardCount: queue.length,
@@ -1331,7 +1764,7 @@ function publishQueueToRenderer() {
 }
 
 ipcMain.handle("refresh-queue", () => {
-  const result = publishQueueToRenderer();
+  const result = publishQueueToRenderer({ raise: true });
   return {
     queue: queue.map(enrichCard),
     ...result,
@@ -1377,6 +1810,8 @@ async function showPdfInBrowser(card, filePath) {
 async function runPdfCard(card, sop, options = {}) {
   const pdfPath = resolvePdfPath(card, sop);
   if (!pdfPath) return { ok: false, error: "pdf_missing" };
+
+  const runData = mergeRunData(card.data, options?.dataOverrides);
 
   const startIndex = Math.max(
     0,
@@ -1426,7 +1861,7 @@ async function runPdfCard(card, sop, options = {}) {
             (s, i) => i >= startIndex && !completedStepIds.has(s.id),
           ),
         },
-        data: card.data || {},
+        data: runData,
         onStep: async ({ stepId, status, error }) => {
           const step = sop.steps.find((s) => s.id === stepId);
           if (status === "done" && step) {
@@ -1437,7 +1872,7 @@ async function runPdfCard(card, sop, options = {}) {
               key: step.valueFrom || step.id,
               value:
                 step.action === "fill"
-                  ? String(card.data?.[step.valueFrom] ?? card.data?.[step.id] ?? "")
+                  ? String(runData?.[step.valueFrom] ?? runData?.[step.id] ?? "")
                   : step.label || "done",
               label: step.label || step.id,
               source: "pdf",
@@ -1554,15 +1989,61 @@ ipcMain.handle("run-card", async (_event, cardId, options = {}) => {
     return { ok: false, error: "data_missing" };
   }
 
+  const runData = mergeRunData(card.data, options?.dataOverrides);
+  const agentApprovedValues =
+    options?.agentApprovedValues && typeof options.agentApprovedValues === "object"
+      ? Object.fromEntries(
+          Object.entries(options.agentApprovedValues)
+            .map(([k, v]) => [k, String(v ?? "").trim()])
+            .filter(([, v]) => v),
+        )
+      : {};
+  const agentApproved = Boolean(
+    options?.agentApproved || Object.keys(agentApprovedValues).length,
+  );
+  // When Agent approved, ensure every fill step has a stepId → value for the extension fill loop
+  if (agentApproved) {
+    for (const step of sop.steps || []) {
+      if (String(step?.action || "").toLowerCase() !== "fill" || !step?.id) continue;
+      if (agentApprovedValues[step.id]) continue;
+      const key = step.valueFrom != null ? step.valueFrom : step.id;
+      const fromRun =
+        key != null && runData && Object.prototype.hasOwnProperty.call(runData, key)
+          ? runData[key]
+          : null;
+      const raw = Array.isArray(fromRun)
+        ? fromRun.map((x) => String(x ?? "").trim()).find(Boolean)
+        : fromRun != null
+          ? String(fromRun).trim()
+          : "";
+      if (raw) agentApprovedValues[step.id] = raw;
+    }
+  }
   const { prefer, pdfPath } = cardPrefersPdf(card, sop);
 
   // Fillable PDFs: fill on disk and open the result in Chrome
   if (pdfPath && prefer) {
+    activeRunAgentApproved = agentApproved
+      ? {
+          cardId: card.id,
+          values: agentApprovedValues,
+          dataOverrides: options?.dataOverrides || {},
+        }
+      : null;
     return runPdfCard(card, sop, options);
   }
 
   if (!bridge || !bridge.isExtensionConnected()) {
-    if (pdfPath) return runPdfCard(card, sop, options);
+    if (pdfPath) {
+      activeRunAgentApproved = agentApproved
+        ? {
+            cardId: card.id,
+            values: agentApprovedValues,
+            dataOverrides: options?.dataOverrides || {},
+          }
+        : null;
+      return runPdfCard(card, sop, options);
+    }
     return { ok: false, error: "extension_offline" };
   }
 
@@ -1577,11 +2058,13 @@ ipcMain.handle("run-card", async (_event, cardId, options = {}) => {
   const delivery = bridge.sendRunCard({
     cardId: card.id,
     title: card.title,
-    data: card.data,
+    data: runData,
     sop,
     target: browserTargetFor(card, sop),
     startIndex,
     completedStepIds,
+    agentApproved,
+    agentApprovedValues,
   });
   if (!delivery.ok) return delivery;
 
@@ -1590,6 +2073,13 @@ ipcMain.handle("run-card", async (_event, cardId, options = {}) => {
   finalizedAt.delete(card.id);
   activeRun = { cardId: card.id, clientId: delivery.clientId };
   activeWatch = { cardId: card.id, clientId: delivery.clientId };
+  activeRunAgentApproved = agentApproved
+    ? {
+        cardId: card.id,
+        values: agentApprovedValues,
+        dataOverrides: options?.dataOverrides || {},
+      }
+    : null;
 
   // Start must not collapse Coact — keep the panel visible above Chrome
   setTimeout(() => {
@@ -1881,8 +2371,169 @@ ipcMain.handle("save-openai-settings", (_event, payload) => {
     openaiModel: payload?.model != null ? String(payload.model) : undefined,
     executionsRoot:
       payload?.executionsRoot != null ? String(payload.executionsRoot) : undefined,
+    jiraBaseUrl: payload?.jiraBaseUrl != null ? String(payload.jiraBaseUrl) : undefined,
+    jiraEmail: payload?.jiraEmail != null ? String(payload.jiraEmail) : undefined,
+    jiraApiToken: payload?.jiraApiToken != null ? String(payload.jiraApiToken) : undefined,
+    jiraJql: payload?.jiraJql != null ? String(payload.jiraJql) : undefined,
+    jiraStaleDays: payload?.jiraStaleDays != null ? payload.jiraStaleDays : undefined,
+    jiraPollMinutes: payload?.jiraPollMinutes != null ? payload.jiraPollMinutes : undefined,
+    jiraStatusMap: payload?.jiraStatusMap != null ? payload.jiraStatusMap : undefined,
+    jiraCardKeyField:
+      payload?.jiraCardKeyField != null ? String(payload.jiraCardKeyField) : undefined,
   });
+  startJiraPolling();
   return { ok: true, ...result };
+});
+
+ipcMain.handle("jira-refresh", async () => {
+  const snap = await refreshJira({ force: true });
+  return {
+    ...(snap || { ok: false, issues: [], staleCount: 0 }),
+    recentActions: recentJiraActions(5),
+  };
+});
+
+ipcMain.handle("jira-set-pane-active", (_event, active) => {
+  setJiraPaneActive(Boolean(active));
+  return { ok: true, active: jiraPaneActive, pollMs: jiraPollDelayMs() };
+});
+
+ipcMain.handle("jira-get-snapshot", () => {
+  return {
+    ...(jiraSnapshot || { ok: false, issues: [], staleCount: 0 }),
+    recentActions: recentJiraActions(5),
+  };
+});
+
+ipcMain.handle("jira-open-issue", async (_event, url) => {
+  const href = String(url || "").trim();
+  if (!/^https?:\/\//i.test(href)) return { ok: false, error: "invalid_url" };
+  await shell.openExternal(href);
+  return { ok: true };
+});
+
+ipcMain.handle("jira-add-comment", async (_event, payload) => {
+  const config = getJiraConfig();
+  const issueKey = String(payload?.issueKey || "").trim();
+  const body = String(payload?.body || "").trim();
+  const result = await addComment(config, issueKey, body);
+  appendJiraAction({
+    issueKey,
+    action: "comment",
+    bodyPreview: body.slice(0, 120),
+    ok: Boolean(result.ok),
+    httpStatus: result.httpStatus || null,
+    conflict: false,
+    error: result.error || null,
+  });
+  if (result.ok) {
+    await refreshJira({ force: true });
+  }
+  return {
+    ...result,
+    recentActions: recentJiraActions(5),
+  };
+});
+
+/** Polish a draft with AI (if OpenAI key set), then APPEND as a new Jira comment (never replaces). */
+ipcMain.handle("jira-ai-comment", async (_event, payload) => {
+  const config = getJiraConfig();
+  const issueKey = String(payload?.issueKey || "").trim();
+  const draft = String(payload?.draft || payload?.body || "").trim();
+  if (!issueKey) return { ok: false, error: "missing_issue" };
+  if (!draft) return { ok: false, error: "empty_draft" };
+  // Refuse any update/replace request — comments are append-only
+  if (payload?.commentId || payload?.replace || payload?.update) {
+    return {
+      ok: false,
+      error: "Comments are append-only; updates are not allowed.",
+      recentActions: recentJiraActions(5),
+    };
+  }
+
+  const polish = await polishJiraCommentDraft({
+    draft,
+    issueKey,
+    summary: payload?.summary || "",
+    status: payload?.status || "",
+    sopStage: payload?.sopStage || "",
+    ticketKey: payload?.ticketKey || issueKey,
+    queueCard: payload?.queueCard || "",
+    mandatorySummary: payload?.mandatorySummary || "",
+  });
+  if (!polish.ok) {
+    return { ok: false, error: polish.error || "polish_failed", recentActions: recentJiraActions(5) };
+  }
+
+  const body = String(polish.polished || draft).trim();
+  // Always POST a new comment — never update/delete existing comments
+  const result = await addComment(config, issueKey, body);
+  appendJiraAction({
+    issueKey,
+    action: "ai_comment",
+    bodyPreview: body.slice(0, 120),
+    ok: Boolean(result.ok),
+    httpStatus: result.httpStatus || null,
+    conflict: false,
+    error: result.error || null,
+    usedAi: Boolean(polish.usedAi),
+  });
+  if (result.ok) {
+    await refreshJira({ force: true });
+  }
+  return {
+    ...result,
+    polished: body,
+    usedAi: Boolean(polish.usedAi),
+    polishNote: polish.note || null,
+    appended: true,
+    recentActions: recentJiraActions(5),
+  };
+});
+
+ipcMain.handle("jira-recent-actions", () => {
+  return { ok: true, actions: recentJiraActions(5) };
+});
+
+ipcMain.handle("get-execution-dashboard", async () => {
+  const config = getJiraConfig();
+  try {
+    return await buildAgentDashboard({
+      queueCards: queue,
+      days: 14,
+      jiraBaseUrl: config.jiraBaseUrl || "",
+      jiraCardKeyField: config.jiraCardKeyField || "jiraKey",
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      error: err?.message || String(err),
+      rows: [],
+      total: 0,
+    };
+  }
+});
+
+ipcMain.handle("jira-mandatory-summary", async (_event, payload) => {
+  let cardId = String(payload?.cardId || activeWatch?.cardId || activeRun?.cardId || "").trim();
+  const issueKey = String(payload?.issueKey || "").trim();
+  if (!cardId && issueKey) {
+    try {
+      const { findLinkedCardId } = require("./jira");
+      const field = getJiraConfig().jiraCardKeyField || "jiraKey";
+      cardId = findLinkedCardId(issueKey, queue, field) || "";
+    } catch {
+      /* ignore */
+    }
+  }
+  const answers = payload?.answers && typeof payload.answers === "object" ? payload.answers : {};
+  const summary = await loadMandatorySummaryForTicket({
+    cardId,
+    issueKey,
+    answers,
+    queueCards: queue,
+  });
+  return { ok: true, ...summary };
 });
 
 ipcMain.handle("pick-executions-folder", async () => {
@@ -2191,3 +2842,83 @@ ipcMain.handle("coach-stuck-step", async (_event, payload) => {
     };
   }
 });
+
+ipcMain.handle("propose-agent-fill", async (_event, payload) => {
+  try {
+    refreshQueue();
+    reloadSops();
+    const cardId = payload?.cardId || activeWatch?.cardId || activeRun?.cardId;
+    const card = queue.find((c) => c.id === cardId);
+    if (!card) return { ok: false, error: "not_found", proposals: [] };
+    const sop = sops[card.sopId];
+    if (!sop) return { ok: false, error: "sop_missing", proposals: [] };
+
+    let snippet = payload?.snippet || "";
+    if (!snippet && bridge && bridge.isExtensionConnected()) {
+      try {
+        const requestId = `propose-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        const snip = await bridge.requestSnippet(
+          requestId,
+          activeWatch?.clientId || activeRun?.clientId,
+        );
+        if (snip?.ok && snip.text) snippet = snip.text;
+      } catch {
+        /* optional */
+      }
+    }
+
+    const completed = new Set(
+      Array.isArray(payload?.completedStepIds) ? payload.completedStepIds : [],
+    );
+    const fromPayload = Array.isArray(payload?.steps) ? payload.steps : null;
+    const steps = (fromPayload?.length ? fromPayload : sop.steps || [])
+      .map((s) => {
+        const full = sop.steps?.find((x) => x.id === s.id) || s;
+        return { ...full, ...s };
+      })
+      .filter((s) => s?.id && !completed.has(s.id));
+
+    const result = await proposeAgentFill({
+      steps,
+      questData: card.data || {},
+      cardTitle: card.title || card.id,
+      snippet,
+    });
+
+    const dataOverrides = {};
+    for (const p of result.proposals || []) {
+      const key = p.valueKey || p.stepId;
+      if (key && p.value != null && String(p.value).trim()) {
+        dataOverrides[key] = String(p.value).trim();
+      }
+    }
+
+    return {
+      ...result,
+      ok: result.ok !== false,
+      dataOverrides,
+      cardId: card.id,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err?.message || String(err),
+      proposals: [],
+      dataOverrides: {},
+    };
+  }
+});
+
+/** Merge approved Agent overrides onto case data for a single run (non-persistent). */
+function mergeRunData(base, overrides) {
+  const data = base && typeof base === "object" ? { ...base } : {};
+  if (!overrides || typeof overrides !== "object") return data;
+  for (const [key, value] of Object.entries(overrides)) {
+    if (key == null || key === "") continue;
+    if (value == null) continue;
+    const s = String(value).trim();
+    if (!s) continue;
+    data[key] = s;
+  }
+  return data;
+}

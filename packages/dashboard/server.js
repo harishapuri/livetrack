@@ -19,6 +19,7 @@ const { generateDashboardData } = require("../liveact/dashboard-stats");
 const {
   DEFAULT_LOB,
   defaultDocumentsRoot,
+  defaultUserSopsDir,
   loadQueueFromDocuments,
   writeCardFiles,
   lobCardDir,
@@ -38,7 +39,7 @@ const REPO_ROOT = path.join(__dirname, "..", "..");
 const dashRoot = path.join(__dirname);
 const converterRoot = path.join(__dirname, "converter");
 const SOPS_DIR = path.join(__dirname, "..", "shared", "sops");
-const USER_SOPS_DIR = path.join(require("os").homedir(), "Documents", "Coact", "sops");
+const USER_SOPS_DIR = defaultUserSopsDir();
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -257,7 +258,7 @@ function writeSopFile(sop) {
     ok: true,
     id,
     path: path.join("shared", "sops", fileName),
-    userPath: path.join("Documents", "Coact", "sops", fileName),
+    userPath: path.join("Projects", "coact", "sops", fileName),
     absolutePath: filePath,
   };
 }

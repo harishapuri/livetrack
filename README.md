@@ -72,8 +72,8 @@ You still load it once as **unpacked**:
 
 1. Install / run liveAct
 2. **⚙ Settings → Add to Chrome…** or **Add to Edge…**  
-   (copies extension to `Documents\Coact\extension` and opens the extensions page)
-3. Turn on **Developer mode** → **Load unpacked** → select `Documents\Coact\extension`
+   (copies extension to `Projects/coact/extension` and opens the extensions page)
+3. Turn on **Developer mode** → **Load unpacked** → select `Projects/coact/extension`
 4. Start liveAct, confirm the toolbar badge can show Online
 
 Same extension folder works for **both Chrome and Edge**.
@@ -96,7 +96,7 @@ Or manually:
 1. Open `chrome://extensions` or `edge://extensions`
 2. Enable **Developer mode**
 3. **Load unpacked** → choose:
-   - **After Settings install:** `Documents/Coact/extension`
+   - **After Settings install:** `Projects/coact/extension`
    - **Mac app:** `/Applications/liveAct.app/Contents/Resources/extension`
    - **Windows app:** `<install>\resources\extension`
    - **From source:** `packages/extension`

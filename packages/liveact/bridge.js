@@ -351,9 +351,9 @@ function createBridge({
     onListening?.(endpoints);
   });
 
-  // Keep the Online/Offline badge truthful even if a focus emit was skipped
+  // Keep Online/Offline truthful without forcing duplicate emits (avoids renderer thrash)
   const statusPulse = setInterval(() => {
-    emitFocusStatus({ force: true });
+    emitFocusStatus();
   }, 4000);
 
   return {
@@ -444,6 +444,26 @@ function createBridge({
       })
         ? { ok: true, clientId: target.client.clientId }
         : { ok: false, error: "browser_unavailable" };
+    },
+    /** Push Jira ranked snapshot to all connected extensions (no credentials). */
+    sendJiraSnapshot(payload = {}) {
+      const sockets = connected();
+      if (!sockets.length) return { ok: false, error: "extension_offline", sent: 0 };
+      let sent = 0;
+      const message = {
+        type: MessageType.JIRA_SNAPSHOT,
+        ok: Boolean(payload.ok),
+        configured: Boolean(payload.configured),
+        staleCount: Number(payload.staleCount) || 0,
+        issues: Array.isArray(payload.issues) ? payload.issues : [],
+        fetchedAt: payload.fetchedAt || null,
+        sopStages: payload.sopStages || null,
+        error: payload.error || null,
+      };
+      sockets.forEach(([socket]) => {
+        if (send({ socket }, message)) sent += 1;
+      });
+      return { ok: sent > 0, sent };
     },
     close() {
       try {

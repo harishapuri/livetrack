@@ -273,7 +273,431 @@ async function generateDashboardData(opts = {}) {
   return { ok: true, outPath, jsPath, ...payload };
 }
 
+const JIRA_KEY_RE = /\b([A-Z][A-Z0-9]+-\d+)\b/;
+
+function extractJiraKey(...parts) {
+  for (const p of parts) {
+    const m = String(p || "").match(JIRA_KEY_RE);
+    if (m) return m[1];
+  }
+  return "";
+}
+
+/**
+ * Pull a submission / confirmation reference from a form page URL
+ * (query params or trailing path segment). Returns "" if none found.
+ */
+function extractFormReferenceFromUrl(rawUrl) {
+  const href = String(rawUrl || "").trim();
+  if (!href || !/^https?:\/\//i.test(href)) return "";
+  let u;
+  try {
+    u = new URL(href);
+  } catch {
+    return "";
+  }
+
+  const paramNames = [
+    "ref",
+    "reference",
+    "referenceNumber",
+    "reference_number",
+    "confirmation",
+    "confirmationNumber",
+    "confirmation_number",
+    "confirm",
+    "receipt",
+    "receiptId",
+    "receipt_id",
+    "submissionId",
+    "submission_id",
+    "submission",
+    "entry",
+    "requestId",
+    "request_id",
+    "tracking",
+    "trackingId",
+    "tracking_id",
+    "txn",
+    "transactionId",
+    "id",
+  ];
+  for (const name of paramNames) {
+    const val = u.searchParams.get(name);
+    if (val && String(val).trim()) {
+      const cleaned = String(val).trim();
+      // Ignore bare booleans / tiny noise
+      if (/^(true|false|0|1)$/i.test(cleaned)) continue;
+      if (cleaned.length >= 4) return cleaned.slice(0, 64);
+    }
+  }
+
+  const parts = u.pathname.split("/").filter(Boolean);
+  const skip = new Set([
+    "sites",
+    "forms",
+    "form",
+    "pages",
+    "page",
+    "app",
+    "index",
+    "html",
+    "confirm",
+    "confirmation",
+    "thank-you",
+    "thanks",
+    "success",
+    "done",
+    "complete",
+    "submitted",
+  ]);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    let seg = decodeURIComponent(parts[i] || "").replace(/\.html?$/i, "");
+    if (!seg || skip.has(seg.toLowerCase())) continue;
+    // Reference-like path tokens must include a digit (or an explicit REF-/RD- prefix)
+    if (/^(REF|RD|CONF|TXN|SUB|RECEIPT)[-_]/i.test(seg) && seg.length >= 6) return seg;
+    if (/\d/.test(seg) && /[A-Za-z]/.test(seg) && seg.length >= 6 && seg.length <= 64) return seg;
+    if (/^\d{6,}$/.test(seg)) return seg;
+  }
+  return "";
+}
+
+/**
+ * Stable unique fallback when the form URL has no reference.
+ * Format: REF-###### (not a Jira story key).
+ */
+function generateFormReferenceKey(seed) {
+  const s = String(seed || "").trim() || `ref-${Date.now()}`;
+  let hash = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    hash ^= s.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const num = (Math.abs(hash) % 900000) + 100000;
+  return `REF-${num}`;
+}
+
+/**
+ * Stable fallback ticket ref when no real Jira key is on the card/run.
+ * Seed should be run_id (unique per execution) so Dash and Jira Post agree.
+ * @deprecated prefer generateFormReferenceKey for form refs; kept for LACT helpers
+ */
+function generateFallbackJiraKey(seed) {
+  const s = String(seed || "").trim() || "liveact";
+  let hash = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    hash ^= s.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const num = (Math.abs(hash) % 900000) + 100000;
+  return `LACT-${num}`;
+}
+
+function isGeneratedJiraKey(key) {
+  return /^(LACT|REF)-\d+$/i.test(String(key || "").trim());
+}
+
+/**
+ * Prefer a real Jira key from candidates; otherwise hash fallbackSeed (run_id).
+ */
+function resolveJiraKey(candidates = [], fallbackSeed = "") {
+  const list = Array.isArray(candidates) ? candidates : [candidates];
+  const found = extractJiraKey(...list);
+  if (found) {
+    return { jiraKey: found, jiraKeyGenerated: isGeneratedJiraKey(found) };
+  }
+  const seed = String(fallbackSeed || list.find((p) => String(p || "").trim()) || "liveact");
+  return { jiraKey: generateFallbackJiraKey(seed), jiraKeyGenerated: true };
+}
+
+function resolveFormReference({ pageUrl = "", answers = {}, runId = "" } = {}) {
+  const fromAnswers = String(
+    answers.formReference || answers.formRef || answers.referenceNumber || ""
+  ).trim();
+  if (fromAnswers && !isGeneratedJiraKey(fromAnswers)) return { formReference: fromAnswers, generated: false };
+  if (fromAnswers) return { formReference: fromAnswers, generated: true };
+
+  const fromUrl = extractFormReferenceFromUrl(pageUrl);
+  if (fromUrl) return { formReference: fromUrl, generated: false };
+
+  return {
+    formReference: generateFormReferenceKey(runId || pageUrl || Date.now()),
+    generated: true,
+  };
+}
+
+function loadMandatoryStepIndex() {
+  const dir = defaultSopsDir();
+  const index = new Map();
+  if (!fs.existsSync(dir)) return index;
+
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.endsWith(".json")) continue;
+    let sop;
+    try {
+      sop = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
+    } catch {
+      continue;
+    }
+    const keys = new Set();
+    const labels = new Map();
+    for (const step of sop.steps || []) {
+      if (!step?.mandatory) continue;
+      const key = String(step.valueFrom || step.id || "");
+      if (!key) continue;
+      keys.add(key);
+      if (step.id) keys.add(String(step.id));
+      labels.set(key, String(step.label || key));
+      if (step.id) labels.set(String(step.id), String(step.label || step.id));
+    }
+    if (!keys.size) continue;
+    const sopId = String(sop.id || name.replace(/\.json$/, ""));
+    const entry = { keys, labels };
+    index.set(sopId, entry);
+    if (sopId.startsWith("demo-")) index.set(sopId.slice("demo-".length), entry);
+  }
+  return index;
+}
+
+function mandatoryMetaForCard(stepIndex, queueCardId) {
+  if (!queueCardId) return null;
+  const id = String(queueCardId);
+  if (stepIndex.has(id)) return stepIndex.get(id);
+  if (stepIndex.has(`demo-${id}`)) return stepIndex.get(`demo-${id}`);
+  for (const [k, v] of stepIndex) {
+    if (k.endsWith(id) || id.endsWith(k.replace(/^demo-/, ""))) return v;
+  }
+  return null;
+}
+
+async function buildAgentDashboard({
+  queueCards = [],
+  days = 14,
+  jiraBaseUrl = "",
+  jiraCardKeyField = "jiraKey",
+  executionsRoot,
+} = {}) {
+  const range = defaultDateRangeDays(days);
+  const { runs } = await loadAllExecutions({
+    includeAnswers: true,
+    dateFrom: range.dateFrom,
+    dateTo: range.dateTo,
+    executionsRoot,
+  });
+  const stepIndex = loadMandatoryStepIndex();
+  const field = String(jiraCardKeyField || "jiraKey").trim() || "jiraKey";
+  const cardById = new Map();
+  for (const c of queueCards || []) {
+    if (c?.id) cardById.set(String(c.id), c);
+  }
+  const base = String(jiraBaseUrl || "").replace(/\/+$/, "");
+
+  const rows = [...runs]
+    .sort((a, b) =>
+      String(b.completed_at || b.run_date).localeCompare(String(a.completed_at || a.run_date))
+    )
+    .slice(0, 80)
+    .map((run) => {
+      const card = cardById.get(String(run.queue_card_id || ""));
+      const meta = mandatoryMetaForCard(stepIndex, run.queue_card_id);
+      const answers = run.answers || {};
+      // Form submission reference (from URL) — unique per execution when captured/generated
+      const resolvedRef = resolveFormReference({
+        pageUrl: answers.pageUrl || answers.formPageUrl || "",
+        answers,
+        runId: run.run_id,
+      });
+      const formReference = resolvedRef.formReference;
+      // Linked Jira story (e.g. LIVEACT-101) — separate from form reference
+      const jiraStoryKey =
+        extractJiraKey(
+          answers.jiraStoryKey,
+          !isGeneratedJiraKey(answers.jiraKey) ? answers.jiraKey : "",
+          card?.data?.[field],
+          card?.title,
+          card?.id
+        ) || "";
+
+      const mandatory = [];
+      if (meta?.keys?.size) {
+        const seen = new Set();
+        for (const key of meta.keys) {
+          const label = meta.labels.get(key) || key;
+          if (seen.has(label)) continue;
+          seen.add(label);
+          const val = answers[key];
+          const filled = val != null && String(val).trim() !== "";
+          mandatory.push({
+            key,
+            label,
+            value: filled ? String(val) : "",
+            filled,
+          });
+        }
+      }
+
+      const mistakes = filterMandatoryMistakes(run.mistakes || [], meta?.keys || null);
+
+      return {
+        run_id: run.run_id,
+        lob: run.lob || "TCOO",
+        queue_card_id: run.queue_card_id || "",
+        queue_card: run.queue_card || run.queue_card_id || "",
+        user_id: run.user_id || "",
+        fill_mode: run.fill_mode || "automated",
+        run_date: run.run_date || "",
+        completed_at: run.completed_at || "",
+        /** Form submission / URL reference (dashboard ticket number) */
+        formReference,
+        formReferenceGenerated: resolvedRef.generated,
+        /** @deprecated alias for dash UI — form reference, not Jira story */
+        jiraKey: formReference,
+        jiraKeyGenerated: resolvedRef.generated,
+        jiraStoryKey,
+        jiraUrl: jiraStoryKey && base ? `${base}/browse/${jiraStoryKey}` : null,
+        mistake_count: mistakes.length,
+        mandatory,
+        mandatoryFilled: mandatory.filter((m) => m.filled).length,
+        mandatoryTotal: mandatory.length,
+      };
+    });
+
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    dateFrom: range.dateFrom,
+    dateTo: range.dateTo,
+    total: rows.length,
+    rows,
+  };
+}
+
+function mandatorySummaryForCard(queueCardId, answers = {}, queueCards = []) {
+  const stepIndex = loadMandatoryStepIndex();
+  const meta = mandatoryMetaForCard(stepIndex, queueCardId);
+  if (!meta?.keys?.size) {
+    return { text: "No mandatory SOP fields indexed for this card.", items: [] };
+  }
+  const card = (queueCards || []).find((c) => c.id === queueCardId);
+  const merged = { ...(card?.data || {}), ...(answers || {}) };
+  const items = [];
+  const seen = new Set();
+  for (const key of meta.keys) {
+    const label = meta.labels.get(key) || key;
+    if (seen.has(label)) continue;
+    seen.add(label);
+    const val = merged[key];
+    const filled = val != null && String(val).trim() !== "";
+    items.push({ label, key, value: filled ? String(val) : "", filled });
+  }
+  const filled = items.filter((i) => i.filled);
+  const missing = items.filter((i) => !i.filled);
+  const lines = [
+    `Mandatory fields: ${filled.length}/${items.length} filled.`,
+    filled.length ? `Filled: ${filled.map((i) => `${i.label}=${i.value}`).join("; ")}` : null,
+    missing.length
+      ? `Missing: ${missing.map((i) => i.label).join(", ")}`
+      : "All mandatory fields present.",
+  ].filter(Boolean);
+  return { text: lines.join(" "), items };
+}
+
+/**
+ * Find the latest execution matching a queue card and/or ticket key (real or LACT-*).
+ */
+function findLatestExecutionForTicket(runs, { cardId = "", issueKey = "", queueCards = [] } = {}) {
+  const key = String(issueKey || "").trim().toUpperCase();
+  const wantCard = String(cardId || "").trim();
+  const cardById = new Map();
+  for (const c of queueCards || []) {
+    if (c?.id) cardById.set(String(c.id), c);
+  }
+
+  let best = null;
+  let bestScore = 0;
+  const sorted = [...(runs || [])].sort((a, b) =>
+    String(b.completed_at || b.run_date).localeCompare(String(a.completed_at || a.run_date))
+  );
+
+  for (const run of sorted) {
+    const runCard = String(run.queue_card_id || "").trim();
+    const card = cardById.get(runCard);
+    const answers = run.answers || {};
+    const resolved = resolveJiraKey(
+      [
+        answers.jiraKey,
+        answers.JiraKey,
+        card?.data?.jiraKey,
+        run.queue_card,
+        card?.title,
+        card?.id,
+      ],
+      run.run_id
+    );
+    let score = 0;
+    if (key && String(resolved.jiraKey || "").toUpperCase() === key) score += 5;
+    if (key && generateFallbackJiraKey(run.run_id).toUpperCase() === key) score += 5;
+    if (wantCard && runCard === wantCard) score += 3;
+    if (!score) continue;
+    if (score > bestScore) {
+      bestScore = score;
+      best = run;
+      if (score >= 5) break;
+    }
+  }
+  return best;
+}
+
+async function loadMandatorySummaryForTicket({
+  cardId = "",
+  issueKey = "",
+  answers = {},
+  queueCards = [],
+  executionsRoot,
+} = {}) {
+  let resolvedCardId = String(cardId || "").trim();
+  let mergedAnswers =
+    answers && typeof answers === "object" ? { ...answers } : {};
+
+  try {
+    const range = defaultDateRangeDays(14);
+    const { runs } = await loadAllExecutions({
+      includeAnswers: true,
+      dateFrom: range.dateFrom,
+      dateTo: range.dateTo,
+      executionsRoot,
+    });
+    const latest = findLatestExecutionForTicket(runs, {
+      cardId: resolvedCardId,
+      issueKey,
+      queueCards,
+    });
+    if (latest) {
+      resolvedCardId = resolvedCardId || String(latest.queue_card_id || "").trim();
+      mergedAnswers = { ...(latest.answers || {}), ...mergedAnswers };
+    }
+  } catch (err) {
+    console.warn("[jira] load execution for mandatory summary", err?.message || err);
+  }
+
+  const summary = mandatorySummaryForCard(resolvedCardId, mergedAnswers, queueCards);
+  return { cardId: resolvedCardId, issueKey, ...summary };
+}
+
 module.exports = {
   generateDashboardData,
   defaultDashboardDir,
+  buildAgentDashboard,
+  mandatorySummaryForCard,
+  loadMandatorySummaryForTicket,
+  findLatestExecutionForTicket,
+  extractJiraKey,
+  extractFormReferenceFromUrl,
+  generateFormReferenceKey,
+  generateFallbackJiraKey,
+  isGeneratedJiraKey,
+  resolveJiraKey,
+  resolveFormReference,
+  loadMandatoryFieldIndex,
+  mandatoryKeysForCard,
 };

@@ -22,12 +22,13 @@ const DOC_EXTENSIONS = new Set([
 
 const DEFAULT_LOB = "TCOO";
 
-function defaultDocumentsRoot() {
-  return path.join(os.homedir(), "Documents", "Coact", "queue");
+/** Legacy runtime home (pre–Projects/coact consolidation). */
+function legacyDocumentsCoactRoot() {
+  return path.join(os.homedir(), "Documents", "Coact");
 }
 
 /**
- * Writable project root for executions / sql (keeps artifacts with the coact repo).
+ * Sole project home: code + queue + settings + executions.
  * Dev: monorepo root (packages/liveact → ../..). Packaged: ~/Projects/coact when present.
  */
 function defaultProjectRoot() {
@@ -40,8 +41,13 @@ function defaultProjectRoot() {
     return fromPackage;
   }
   const preferred = path.join(os.homedir(), "Projects", "coact");
-  if (fs.existsSync(preferred)) return preferred;
-  return path.join(os.homedir(), "Documents", "Coact");
+  ensureDir(preferred);
+  return preferred;
+}
+
+/** Queue cards: <project>/queue/<LOB>/<case-id>/ */
+function defaultDocumentsRoot() {
+  return path.join(defaultProjectRoot(), "queue");
 }
 
 function defaultExecutionsRoot() {
@@ -50,6 +56,91 @@ function defaultExecutionsRoot() {
 
 function defaultSqlRoot() {
   return path.join(defaultProjectRoot(), "sql");
+}
+
+function defaultSettingsPath() {
+  return path.join(defaultProjectRoot(), "settings.json");
+}
+
+function defaultJiraActionsPath() {
+  return path.join(defaultProjectRoot(), "jira-actions.jsonl");
+}
+
+function defaultExtensionDir() {
+  return path.join(defaultProjectRoot(), "extension");
+}
+
+/** User/override SOPs beside the repo (optional); bundled SOPs stay in packages/shared/sops. */
+function defaultUserSopsDir() {
+  return path.join(defaultProjectRoot(), "sops");
+}
+
+function copyFileIfMissing(src, dest) {
+  if (!fs.existsSync(src) || fs.existsSync(dest)) return false;
+  ensureDir(path.dirname(dest));
+  fs.copyFileSync(src, dest);
+  return true;
+}
+
+function copyDirMissingLeaves(src, dest) {
+  if (!fs.existsSync(src)) return 0;
+  ensureDir(dest);
+  let n = 0;
+  for (const name of fs.readdirSync(src)) {
+    if (name.startsWith(".")) continue;
+    const from = path.join(src, name);
+    const to = path.join(dest, name);
+    const st = fs.statSync(from);
+    if (st.isDirectory()) {
+      if (!fs.existsSync(to)) {
+        fs.cpSync(from, to, { recursive: true });
+        n += 1;
+      } else {
+        n += copyDirMissingLeaves(from, to);
+      }
+    } else if (!fs.existsSync(to)) {
+      fs.copyFileSync(from, to);
+      n += 1;
+    }
+  }
+  return n;
+}
+
+/**
+ * One-time: copy queue / settings / jira log / extension / sops from ~/Documents/Coact
+ * into Projects/coact when the project-side path is missing.
+ */
+function migrateLegacyDocumentsCoact() {
+  const legacy = legacyDocumentsCoactRoot();
+  if (!fs.existsSync(legacy)) return { migrated: false, reason: "no_legacy" };
+  const root = defaultProjectRoot();
+  const report = { migrated: true, root, copied: {} };
+
+  report.copied.queue = copyDirMissingLeaves(
+    path.join(legacy, "queue"),
+    path.join(root, "queue")
+  );
+  report.copied.settings = copyFileIfMissing(
+    path.join(legacy, "settings.json"),
+    defaultSettingsPath()
+  );
+  report.copied.jiraActions = copyFileIfMissing(
+    path.join(legacy, "jira-actions.jsonl"),
+    defaultJiraActionsPath()
+  );
+  report.copied.extension = copyDirMissingLeaves(
+    path.join(legacy, "extension"),
+    defaultExtensionDir()
+  );
+  report.copied.sops = copyDirMissingLeaves(
+    path.join(legacy, "sops"),
+    defaultUserSopsDir()
+  );
+
+  if (report.copied.queue || report.copied.settings || report.copied.jiraActions) {
+    console.log("[coact] migrated Documents/Coact →", root, report.copied);
+  }
+  return report;
 }
 
 function ensureDir(dir) {
@@ -130,6 +221,48 @@ function loadCardFromDir(caseDir, folderName, lob) {
     data,
     documents,
   };
+}
+
+/**
+ * Update queue card meta.status (queued | done) on disk.
+ * Returns { ok, changed, cardId, status } or { ok: false, error }.
+ */
+function updateQueueCardStatus(cardId, status, queueCards = []) {
+  const next = String(status || "").trim().toLowerCase() === "done" ? "done" : "queued";
+  const id = String(cardId || "").trim();
+  if (!id) return { ok: false, error: "missing_card" };
+
+  const card =
+    (queueCards || []).find((c) => c.id === id) ||
+    null;
+  let caseDir = card?.sourceDir || null;
+  if (!caseDir) {
+    // Fallback: search under <project>/queue/<LOB>/<id>
+    const queueRoot = defaultDocumentsRoot();
+    if (fs.existsSync(queueRoot)) {
+      for (const lob of fs.readdirSync(queueRoot)) {
+        const candidate = path.join(queueRoot, lob, id);
+        if (fs.existsSync(path.join(candidate, "meta.json"))) {
+          caseDir = candidate;
+          break;
+        }
+      }
+    }
+  }
+  if (!caseDir || !fs.existsSync(caseDir)) {
+    return { ok: false, error: "card_dir_not_found", cardId: id };
+  }
+
+  const metaPath = path.join(caseDir, "meta.json");
+  const meta = readJsonSafe(metaPath) || {};
+  const prev = String(meta.status || "queued").toLowerCase() === "done" ? "done" : "queued";
+  if (prev === next) {
+    return { ok: true, changed: false, cardId: id, status: next, sourceDir: caseDir };
+  }
+  meta.status = next;
+  if (!meta.id) meta.id = id;
+  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n", "utf8");
+  return { ok: true, changed: true, cardId: id, status: next, sourceDir: caseDir, previous: prev };
 }
 
 function normalizeAssignees(value) {
@@ -239,7 +372,7 @@ function migrateFlatCardsToLob(rootDir, lob = DEFAULT_LOB) {
 
 /**
  * Nested layout:
- *   ~/Documents/Coact/queue/<LOB>/<case-id>/
+ *   <project>/queue/<LOB>/<case-id>/
  *     data.json
  *     meta.json
  *     *.pdf, *.docx
@@ -252,6 +385,7 @@ function migrateFlatCardsToLob(rootDir, lob = DEFAULT_LOB) {
  *   - LOB .lob.json assignees still gate the whole LOB when set
  */
 function loadQueueFromDocuments(rootDir = defaultDocumentsRoot(), opts = {}) {
+  migrateLegacyDocumentsCoact();
   ensureDir(rootDir);
   migrateFlatCardsToLob(rootDir, DEFAULT_LOB);
 
@@ -316,6 +450,7 @@ function lobCardDir(rootDir, cardId, lob = DEFAULT_LOB) {
 }
 
 function seedSampleCases(rootDir = defaultDocumentsRoot()) {
+  migrateLegacyDocumentsCoact();
   ensureDir(rootDir);
   migrateFlatCardsToLob(rootDir, DEFAULT_LOB);
   const lobRoot = path.join(rootDir, DEFAULT_LOB);
@@ -495,12 +630,19 @@ module.exports = {
   defaultProjectRoot,
   defaultExecutionsRoot,
   defaultSqlRoot,
+  defaultSettingsPath,
+  defaultJiraActionsPath,
+  defaultExtensionDir,
+  defaultUserSopsDir,
+  legacyDocumentsCoactRoot,
+  migrateLegacyDocumentsCoact,
   loadQueueFromDocuments,
   seedSampleCases,
   migrateFlatCardsToLob,
   writeCardFiles,
   lobCardDir,
   loadCardFromDir,
+  updateQueueCardStatus,
   isCardDir,
   loadLobConfig,
   saveLobConfig,

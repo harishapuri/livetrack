@@ -18,6 +18,21 @@ contextBridge.exposeInMainWorld("coact", {
   requestTabStatus: () => ipcRenderer.invoke("request-tab-status"),
   getOpenAiSettings: () => ipcRenderer.invoke("get-openai-settings"),
   saveOpenAiSettings: (payload) => ipcRenderer.invoke("save-openai-settings", payload),
+  jiraRefresh: () => ipcRenderer.invoke("jira-refresh"),
+  jiraSetPaneActive: (active) => ipcRenderer.invoke("jira-set-pane-active", Boolean(active)),
+  jiraGetSnapshot: () => ipcRenderer.invoke("jira-get-snapshot"),
+  jiraOpenIssue: (url) => ipcRenderer.invoke("jira-open-issue", url),
+  jiraAddComment: (payload) => ipcRenderer.invoke("jira-add-comment", payload || {}),
+  jiraAiComment: (payload) => ipcRenderer.invoke("jira-ai-comment", payload || {}),
+  jiraRecentActions: () => ipcRenderer.invoke("jira-recent-actions"),
+  getExecutionDashboard: () => ipcRenderer.invoke("get-execution-dashboard"),
+  jiraMandatorySummary: (payload) =>
+    ipcRenderer.invoke("jira-mandatory-summary", payload || {}),
+  onJiraUpdated: (cb) => {
+    const handler = (_event, data) => cb(data);
+    ipcRenderer.on("jira-updated", handler);
+    return () => ipcRenderer.removeListener("jira-updated", handler);
+  },
   pickExecutionsFolder: () => ipcRenderer.invoke("pick-executions-folder"),
   getExtensionInstallInfo: () => ipcRenderer.invoke("get-extension-install-info"),
   installBrowserExtension: (browser) =>
@@ -28,6 +43,7 @@ contextBridge.exposeInMainWorld("coact", {
   chatPrompt: (payload) => ipcRenderer.invoke("chat-prompt", payload),
   chatStop: (chatId) => ipcRenderer.invoke("chat-stop", chatId),
   coachStuckStep: (payload) => ipcRenderer.invoke("coach-stuck-step", payload),
+  proposeAgentFill: (payload) => ipcRenderer.invoke("propose-agent-fill", payload || {}),
   applyStep: (payload) => ipcRenderer.invoke("apply-step", payload),
   repairFailedStep: (payload) => ipcRenderer.invoke("repair-failed-step", payload),
   onChatDelta: (cb) => {

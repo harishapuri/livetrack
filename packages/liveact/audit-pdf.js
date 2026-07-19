@@ -249,6 +249,9 @@ async function saveExecutionArtifacts({
   mistakes = [],
   fillMode: fillModeHint = null,
   filledPdfSource = null,
+  jiraKey = "",
+  formReference = "",
+  pageUrl = "",
   executionsRoot = resolveExecutionsRoot(),
   completedAt = new Date(),
 }) {
@@ -282,6 +285,22 @@ async function saveExecutionArtifacts({
   }));
 
   const fields = fieldsFromActions(normalized);
+  const {
+    extractJiraKey,
+    isGeneratedJiraKey,
+    resolveFormReference,
+  } = require("./dashboard-stats");
+  const storyKey = extractJiraKey(jiraKey);
+  if (storyKey && !isGeneratedJiraKey(storyKey)) {
+    fields.jiraStoryKey = storyKey;
+  }
+  const resolvedRef = resolveFormReference({
+    pageUrl,
+    answers: { formReference, ...fields },
+    runId,
+  });
+  fields.formReference = resolvedRef.formReference;
+  if (pageUrl) fields.pageUrl = String(pageUrl).slice(0, 500);
   const xlsxPath = excelPathForCard(lob || "TCOO", queueCard, executionsRoot);
 
   await withExcelLock(xlsxPath, async () => {
@@ -340,6 +359,8 @@ async function saveExecutionArtifacts({
   return {
     ok: true,
     runId,
+    jiraKey: fields.jiraStoryKey || "",
+    formReference: fields.formReference || "",
     outDir: executionsRoot,
     excelPath: xlsxPath,
     fillMode,

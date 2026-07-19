@@ -28,3 +28,7 @@ packages/dashboard/data.json
 packages/dashboard/data.js
 !executions/.gitkeep
 !sql/.gitkeep
+jira-actions.jsonl
+/queue/
+/extension/
+/sops/

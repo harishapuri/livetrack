@@ -12,6 +12,7 @@
     "dashboard": "npm run start -w @coact/dashboard",
     "sop-builder": "npm run dashboard",
     "demo-form": "npm run serve -w @coact/demo",
+    "jira-mock": "npm run start -w @coact/jira-mock",
     "seed-demo-sites": "npm run seed -w @coact/demo",
     "generate-day-sql": "npm run generate-day-sql -w @coact/liveact",
     "pack": "npm run pack -w @coact/liveact",

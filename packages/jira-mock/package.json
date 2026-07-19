@@ -1,0 +1,13 @@
+{
+  "name": "@coact/jira-mock",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local mock Jira Cloud API + dashboard for liveAct testing",
+  "scripts": {
+    "start": "node server.js",
+    "serve": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

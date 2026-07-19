@@ -71,6 +71,9 @@
     lastStatus: new Map(),
     pollTimer: null,
     muteReports: false,
+    /** Intentional Agent-approved values for this run (stepId -> value). Not mistakes. */
+    agentApproved: false,
+    agentApprovedValues: {},
   };
 
   // Persist progress per card so switching tabs doesn't lose greens
@@ -230,8 +233,79 @@
     return false;
   }
 
+  function extractFormReferenceFromHref(href) {
+    try {
+      const u = new URL(String(href || ""));
+      const names = [
+        "ref",
+        "reference",
+        "referenceNumber",
+        "reference_number",
+        "confirmation",
+        "confirmationNumber",
+        "confirmation_number",
+        "confirm",
+        "receipt",
+        "receiptId",
+        "receipt_id",
+        "submissionId",
+        "submission_id",
+        "submission",
+        "entry",
+        "requestId",
+        "request_id",
+        "tracking",
+        "trackingId",
+        "tracking_id",
+        "txn",
+        "transactionId",
+        "id",
+      ];
+      for (const name of names) {
+        const val = u.searchParams.get(name);
+        if (val && String(val).trim().length >= 4 && !/^(true|false|0|1)$/i.test(val)) {
+          return String(val).trim().slice(0, 64);
+        }
+      }
+      const parts = u.pathname.split("/").filter(Boolean);
+      const skip = new Set([
+        "sites",
+        "forms",
+        "form",
+        "pages",
+        "page",
+        "app",
+        "index",
+        "confirm",
+        "confirmation",
+        "thank-you",
+        "thanks",
+        "success",
+        "done",
+        "complete",
+        "submitted",
+      ]);
+      for (let i = parts.length - 1; i >= 0; i--) {
+        let seg = decodeURIComponent(parts[i] || "").replace(/\.html?$/i, "");
+        if (!seg || skip.has(seg.toLowerCase())) continue;
+        if (/^(REF|RD|CONF|TXN|SUB|RECEIPT)[-_]/i.test(seg) && seg.length >= 6) return seg;
+        if (/\d/.test(seg) && /[A-Za-z]/.test(seg) && seg.length >= 6 && seg.length <= 64) return seg;
+        if (/^\d{6,}$/.test(seg)) return seg;
+      }
+    } catch {
+      /* ignore */
+    }
+    return "";
+  }
+
   function report(payload) {
-    safeRuntimeSend({ type: "step_update", payload });
+    const pageUrl = location.href;
+    const enriched = { ...payload, pageUrl };
+    if (payload?.status === "run_complete" || payload?.status === "done") {
+      const ref = extractFormReferenceFromHref(pageUrl);
+      if (ref) enriched.formReference = ref;
+    }
+    safeRuntimeSend({ type: "step_update", payload: enriched });
   }
 
   /** Build key/value capture fields for audit logging */
@@ -950,6 +1024,8 @@
     startIndex = 0,
     completedStepIds = [],
     bypassVisibilityGate = false,
+    agentApproved = false,
+    agentApprovedValues = {},
   }) {
     runner = {
       cancelled: false,
@@ -962,6 +1038,11 @@
     clearSequentialLocks();
     hideSeqTip();
     ensureHighlightStyle();
+    watch.agentApproved = Boolean(agentApproved);
+    watch.agentApprovedValues =
+      agentApprovedValues && typeof agentApprovedValues === "object"
+        ? { ...agentApprovedValues }
+        : {};
 
     try {
       await runSopBody({
@@ -1083,6 +1164,8 @@
             nextIndex: i + 1,
             urlIncludes: step.waitAfter?.urlIncludes || step.waitAfter?.urlPath || null,
             urlEquals: step.waitAfter?.urlEquals || null,
+            agentApproved: Boolean(watch.agentApproved),
+            agentApprovedValues: watch.agentApprovedValues || {},
           });
         }
 
@@ -1124,7 +1207,20 @@
         // Fill: any non-empty value is enough — exact SOP match is not required.
         // Mandatory steps still complete on fill; Approve values are offered from liveAct UI.
         if (step.action === "fill") {
-          const actual = readStepActualValue(step);
+          let actual = readStepActualValue(step);
+          // Agent-approved run: retry once from approved/case data if the first fill missed
+          if (!actual && watch.agentApproved) {
+            const retryVal = fillValueForStep(step, data || {});
+            if (retryVal) {
+              try {
+                const el = resolveElement(step);
+                if (el) await fillGoogleStyle(el, retryVal);
+              } catch {
+                /* soft */
+              }
+              actual = readStepActualValue(step);
+            }
+          }
           if (!actual) {
             markWatchStatus(step.id, "pending");
             report({
@@ -1522,6 +1618,7 @@
   }
 
   function showWrongTip(step, expected, actual) {
+    if (watch.agentApproved) return;
     const key = `${step?.id || ""}|${actual}|${expected}`;
     const isRepeat = key === lastMismatchKey;
     lastMismatchKey = key;
@@ -1811,8 +1908,10 @@
     }
     if (step.action === "fill") {
       // Mandatory wrong values: notify mismatch+Approve BEFORE done so the coach is not cleared
+      // Skip when this run was already approved in the Agent modal
       const expectedList = expectedListForStep(step);
       if (
+        !watch.agentApproved &&
         step.mandatory &&
         expectedList.length &&
         value &&
@@ -1875,6 +1974,12 @@
     if (!step) return [];
     const bag = data != null ? data : watch.data;
 
+    // Agent-approved (possibly user-edited) values win for this run — never treat as mistakes
+    if (watch.agentApprovedValues && step.id != null && watch.agentApprovedValues[step.id] != null) {
+      const approved = coerceValueList(watch.agentApprovedValues[step.id]);
+      if (approved.length) return approved;
+    }
+
     if (Array.isArray(step.allowedValues) && step.allowedValues.length) {
       return coerceValueList(step.allowedValues);
     }
@@ -1898,6 +2003,11 @@
   }
 
   function fillValueForStep(step, data) {
+    // Prefer agent-approved step values, then merged run data / SOP
+    if (watch.agentApprovedValues && step?.id != null && watch.agentApprovedValues[step.id] != null) {
+      const approved = String(watch.agentApprovedValues[step.id] ?? "").trim();
+      if (approved) return approved;
+    }
     return expectedValueForStep(step, data) ?? "";
   }
 
@@ -2035,6 +2145,7 @@
       clearWrongHighlight(step);
       return { ok: false, empty: true };
     }
+    if (watch.agentApproved) return { ok: true };
     if (!step.mandatory) return { ok: true };
     const list = expectedListForStep(step);
     if (list.length && !valuesMatchAny(actual, list)) {
@@ -2049,14 +2160,23 @@
    */
   function reportMistakeIfWrong(step, actual, expectedHint) {
     if (!watch.cardId || !step || !step.mandatory) return false;
+    // Agent modal already approved this run — never emit mismatch / Approve prompts
+    if (watch.agentApproved) return false;
+    const actualStr = String(actual ?? "").trim();
+    if (!actualStr) return false;
+
+    // Agent-approved (user-edited) values are intentional — never emit mismatch
+    if (step.id != null && watch.agentApprovedValues?.[step.id] != null) {
+      const approved = String(watch.agentApprovedValues[step.id] ?? "").trim();
+      if (approved && valuesMatch(actualStr, approved)) return false;
+    }
+
     const list = expectedListForStep(step);
     const expected =
       expectedHint != null && String(expectedHint) !== ""
         ? String(expectedHint)
         : list[0];
     if (!expected) return false;
-    const actualStr = String(actual ?? "").trim();
-    if (!actualStr) return false;
     if (list.length ? valuesMatchAny(actualStr, list) : valuesMatch(actualStr, expected)) {
       return false;
     }
@@ -2414,6 +2534,10 @@
     watch.cardId = cardId;
     watch.steps = sop.steps;
     watch.data = data && typeof data === "object" ? { ...data } : {};
+    // Keep agentApprovedValues when re-watching same card mid-run; clear on fresh watch without them
+    if (!watch.agentApproved) {
+      watch.agentApprovedValues = {};
+    }
     lastMismatchKey = "";
 
     if (resetProgress || clearFields) {
@@ -2557,6 +2681,11 @@
     if (!extensionAlive()) return false;
 
     if (message?.type === "run_sop") {
+      watch.agentApproved = Boolean(message.agentApproved);
+      watch.agentApprovedValues =
+        message.agentApprovedValues && typeof message.agentApprovedValues === "object"
+          ? { ...message.agentApprovedValues }
+          : {};
       startWatching(message);
       runSop(message);
       sendResponse({ ok: true });
@@ -2564,6 +2693,17 @@
     }
 
     if (message?.type === "watch_sop") {
+      // Fresh watch (not an Agent run) clears the agent-approved gate skip
+      if (!message.agentApproved) {
+        watch.agentApproved = false;
+        watch.agentApprovedValues = {};
+      } else {
+        watch.agentApproved = true;
+        watch.agentApprovedValues =
+          message.agentApprovedValues && typeof message.agentApprovedValues === "object"
+            ? { ...message.agentApprovedValues }
+            : {};
+      }
       startWatching(message);
       sendResponse({ ok: true });
       return true;

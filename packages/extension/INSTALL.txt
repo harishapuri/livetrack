@@ -6,7 +6,7 @@ You load this folder once as an “unpacked” extension (same for Chrome and Ed
 
 1. Open liveAct → Settings → “Install browser extension”
    OR copy this whole `extension` folder somewhere stable, e.g.
-   Documents\\Coact\\extension
+   Projects/coact/extension
 
 2. Chrome
    - Open chrome://extensions

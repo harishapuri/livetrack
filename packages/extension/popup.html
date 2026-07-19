@@ -8,13 +8,20 @@
         font-family: "Segoe UI", sans-serif;
         margin: 0;
         padding: 12px 14px;
-        min-width: 240px;
+        min-width: 300px;
+        max-width: 360px;
         background: #14090a;
         color: #f7ecee;
       }
       h1 {
         margin: 0 0 8px;
         font-size: 14px;
+      }
+      h2 {
+        margin: 12px 0 6px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #f7ecee;
       }
       p {
         margin: 0 0 10px;
@@ -42,12 +49,79 @@
         font-size: 12px;
         cursor: pointer;
       }
+      #jiraMeta {
+        margin: 0 0 6px;
+        font-size: 11px;
+        color: #b39aa0;
+      }
+      #jiraList {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-height: 320px;
+        overflow: auto;
+        margin-bottom: 10px;
+      }
+      .jira-issue {
+        display: block;
+        width: 100%;
+        text-align: left;
+        border: 1px solid #3a2a2d;
+        border-radius: 8px;
+        background: #1e1214;
+        color: #f7ecee;
+        padding: 8px 9px;
+        cursor: pointer;
+        font: inherit;
+      }
+      .jira-issue:hover {
+        border-color: #2684ff;
+      }
+      .jira-issue.urgency-high {
+        border-color: #dc2626;
+        background: #2a1214;
+      }
+      .jira-issue.urgency-med {
+        border-color: #b45309;
+        background: #241810;
+      }
+      .jira-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 11px;
+        margin-bottom: 3px;
+      }
+      .jira-key {
+        color: #2684ff;
+        font-weight: 700;
+      }
+      .jira-score {
+        color: #b39aa0;
+      }
+      .jira-summary {
+        font-size: 12px;
+        line-height: 1.3;
+        margin-bottom: 4px;
+      }
+      .jira-meta-row {
+        font-size: 10px;
+        color: #b39aa0;
+      }
+      .empty {
+        font-size: 12px;
+        color: #b39aa0;
+        padding: 8px 0;
+      }
     </style>
   </head>
   <body>
     <h1>liveAct Form Agent</h1>
     <p id="status">Checking bridge…</p>
     <button id="reconnect" type="button">Reconnect to liveAct</button>
+    <h2>Jira</h2>
+    <p id="jiraMeta">Waiting for liveAct…</p>
+    <div id="jiraList"></div>
     <script src="popup.js"></script>
   </body>
 </html>

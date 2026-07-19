@@ -353,6 +353,174 @@ function primaryQuestValue(step, questData) {
 }
 
 /**
+ * Build fill proposals from case/SOP data (no network).
+ * Used when OpenAI is unavailable and as the ground-truth value source for AI reasons.
+ */
+function buildLocalAgentProposals(steps, questData) {
+  const proposals = [];
+  for (const step of steps || []) {
+    const action = String(step?.action || "").toLowerCase();
+    if (action !== "fill") continue;
+    const value = primaryQuestValue(step, questData);
+    const mandatory = Boolean(step?.mandatory);
+    if (!value && !mandatory) continue;
+    const data = questData && typeof questData === "object" ? questData : null;
+    const valueKey =
+      step?.valueFrom != null
+        ? step.valueFrom
+        : data && step?.id != null && Object.prototype.hasOwnProperty.call(data, step.id)
+          ? step.id
+          : step?.valueFrom || step?.id || null;
+    proposals.push({
+      stepId: String(step.id || ""),
+      label: String(step.label || step.id || "Field").trim(),
+      value: value || "",
+      valueKey: valueKey != null ? String(valueKey) : null,
+      mandatory,
+      reason: !value && mandatory
+        ? "Mandatory — enter a value before approving."
+        : mandatory
+          ? "From case data for this mandatory field."
+          : "Mapped from this case’s data for autofill.",
+    });
+  }
+  return proposals.filter((p) => p.stepId && (p.value || p.mandatory));
+}
+
+/**
+ * Propose fill values + short “why” reasons before an Agent run starts.
+ * Values stay grounded in quest/case data; AI only writes reasons (when keyed).
+ */
+async function proposeAgentFill({
+  steps,
+  questData,
+  cardTitle,
+  snippet,
+  signal,
+} = {}) {
+  const local = buildLocalAgentProposals(steps, questData);
+  const { apiKey, model, hasKey } = getOpenAiConfig();
+
+  if (!local.length) {
+    return {
+      ok: true,
+      proposals: [],
+      usedAi: false,
+      needsKey: !hasKey,
+      note: "No fill values found in case data for remaining steps.",
+    };
+  }
+
+  if (!hasKey) {
+    return {
+      ok: true,
+      proposals: local,
+      usedAi: false,
+      needsKey: true,
+      note: "Using case data (add OpenAI key in Settings for AI reasons).",
+    };
+  }
+
+  const system = [
+    "You are liveAct. Before autofill, explain why each proposed field value fits.",
+    "Reply JSON only:",
+    '{"proposals":[{"stepId":"string","value":"string","reason":"max 18 words"}]}',
+    "Rules:",
+    "- Include every fill step listed that has a known value.",
+    "- value MUST match the known case value for that step (do not invent or rewrite).",
+    "- reason: short plain-English why this value belongs in that field.",
+    "- No markdown, no extra keys.",
+  ].join("\n");
+
+  const stepLines = local
+    .map(
+      (p) =>
+        `- stepId=${p.stepId} label="${p.label}" knownValue="${p.value}"${
+          p.valueKey ? ` valueKey=${p.valueKey}` : ""
+        }`,
+    )
+    .join("\n");
+
+  const body = {
+    model,
+    stream: false,
+    temperature: 0.2,
+    max_tokens: 700,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: system },
+      {
+        role: "user",
+        content: [
+          cardTitle ? `Queue card: ${cardTitle}` : "",
+          "Fill steps to explain:",
+          stepLines,
+          snippet
+            ? `Live form snippet (optional context):\n\`\`\`\n${String(snippet).slice(0, 5000)}\n\`\`\``
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      },
+    ],
+  };
+
+  try {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      throw new Error(`OpenAI ${res.status}: ${errText.slice(0, 240) || res.statusText}`);
+    }
+
+    const json = await res.json();
+    const raw = String(json.choices?.[0]?.message?.content || "").trim();
+    let parsed = {};
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = {};
+    }
+
+    const byId = new Map();
+    for (const row of Array.isArray(parsed.proposals) ? parsed.proposals : []) {
+      const id = String(row?.stepId || "").trim();
+      if (!id) continue;
+      byId.set(id, {
+        reason: String(row?.reason || "").trim().slice(0, 160),
+        value: String(row?.value || "").trim(),
+      });
+    }
+
+    const proposals = local.map((p) => {
+      const ai = byId.get(p.stepId);
+      const reason = ai?.reason || p.reason;
+      // Keep known case value; ignore AI value rewrites
+      return { ...p, reason: reason || p.reason };
+    });
+
+    return { ok: true, proposals, usedAi: true, needsKey: false, model };
+  } catch (err) {
+    if (err?.name === "AbortError") throw err;
+    return {
+      ok: true,
+      proposals: local,
+      usedAi: false,
+      needsKey: false,
+      note: err?.message || "AI propose failed; using case data.",
+    };
+  }
+}
+
+/**
  * Stuck coach — tip plus optional apply/retry hints.
  */
 async function coachStuckStep({ step, stepContext, snippet, questData, signal }) {
@@ -700,12 +868,111 @@ async function judgeValueMatch({ expected, actual }) {
   };
 }
 
+/**
+ * Turn a rough draft into a concise NEW Jira comment body.
+ * Never replaces prior comments — caller always POSTs an additional comment.
+ * Falls back to cleaned draft text if OpenAI is unavailable.
+ */
+async function polishJiraCommentDraft({
+  draft,
+  issueKey,
+  summary,
+  status,
+  sopStage,
+  ticketKey,
+  queueCard,
+  mandatorySummary,
+  signal,
+} = {}) {
+  const text = String(draft || "").trim();
+  if (!text) {
+    return { ok: false, error: "empty_draft" };
+  }
+
+  const { model, hasKey } = getOpenAiConfig();
+  if (!hasKey) {
+    const fallback = [
+      ticketKey || issueKey ? `Ticket ${ticketKey || issueKey}:` : null,
+      queueCard ? `Queue card: ${queueCard}` : null,
+      text,
+      mandatorySummary || null,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    return {
+      ok: true,
+      polished: fallback,
+      usedAi: false,
+      note: "Posted draft as-is (add OpenAI key in Settings to polish with AI).",
+    };
+  }
+
+  try {
+    const json = await openaiJson({
+      body: {
+        model,
+        temperature: 0.3,
+        messages: [
+          {
+            role: "system",
+            content: [
+              "You write an ADDITIONAL Jira issue comment from the user's draft.",
+              "Output only the new comment body — do not edit or replace prior comments.",
+              "Always include: (1) form reference / ticket number when provided, (2) queue card name, (3) mandatory field fill status when provided.",
+              "If a Jira story key is also provided, mention it separately from the form reference.",
+              "Keep the author's meaning. Be concise (2–8 sentences).",
+              "Use plain text only — no markdown fences, no preamble.",
+            ].join(" "),
+          },
+          {
+            role: "user",
+            content: [
+              `Form reference / ticket number: ${ticketKey || issueKey || "unknown"}`,
+              issueKey && ticketKey && issueKey !== ticketKey
+                ? `Jira story: ${issueKey}`
+                : "",
+              queueCard ? `Queue card: ${queueCard}` : "",
+              summary ? `Issue summary: ${summary}` : "",
+              status ? `Status: ${status}` : "",
+              sopStage ? `SOP stage: ${sopStage}` : "",
+              mandatorySummary ? `Mandatory fields:\n${mandatorySummary}` : "",
+              "",
+              "Draft for a new additional comment:",
+              text,
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          },
+        ],
+      },
+      signal,
+    });
+    const polished = String(json.choices?.[0]?.message?.content || "")
+      .trim()
+      .replace(/^["']|["']$/g, "");
+    if (!polished) {
+      return { ok: true, polished: text, usedAi: false, note: "AI returned empty; using draft." };
+    }
+    return { ok: true, polished, usedAi: true, model };
+  } catch (err) {
+    return {
+      ok: true,
+      polished: text,
+      usedAi: false,
+      note: err?.message || "AI polish failed; using draft.",
+    };
+  }
+}
 
 module.exports = {
   streamChat,
   buildUserContent,
+  proposeAgentFill,
+  buildLocalAgentProposals,
+  primaryQuestValue,
   coachStuckStep,
   repairFailedStep,
   judgeValueMatch,
+  polishJiraCommentDraft,
   AGENT_TOOLS,
 };

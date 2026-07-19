@@ -1,6 +1,6 @@
 /**
  * Catalog of ~10 dummy “sites” for Coact demo queue cards.
- * Used to generate forms, SOPs, and ~/Documents/Coact/queue cases.
+ * Used to generate forms, SOPs, and Projects/coact/queue cases.
  */
 
 const DEMO_SITES = [

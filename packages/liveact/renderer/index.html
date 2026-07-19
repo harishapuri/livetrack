@@ -10,162 +10,246 @@
     <div class="app chat-app" id="appRoot">
       <button id="tailBar" class="tail-bar hidden" type="button" hidden aria-hidden="true"></button>
 
-      <div id="fullUi">
-        <header class="topbar compact">
-          <div class="brand">
-            <span class="brand-mark">L</span>
-            <div>
-              <h1>liveAct</h1>
-              <p class="tagline" id="tagline">Live steps</p>
-            </div>
-          </div>
-          <div class="header-actions">
-            <button id="btnSettings" class="btn ghost tiny" type="button" title="OpenAI settings">⚙</button>
-            <button id="btnMinimize" class="win-btn win-min" type="button" title="Minimize to tail">−</button>
-            <button id="btnQuit" class="win-btn win-close" type="button" title="Quit liveAct">×</button>
-            <div class="status-pill" id="extStatus">
-              <span class="dot"></span>
-              <span id="extStatusText">Offline</span>
-            </div>
-          </div>
-        </header>
+      <div id="fullUi" class="full-ui-layout">
+        <nav class="side-nav" id="sideNav" aria-label="Main">
+          <button type="button" class="side-nav-btn active" data-nav="live" id="navLive" title="Live tracking">
+            <span class="side-nav-ico" aria-hidden="true">▶</span>
+            <span class="side-nav-label">Live</span>
+          </button>
+          <button type="button" class="side-nav-btn" data-nav="jira" id="navJira" title="Jira" aria-expanded="false">
+            <span class="side-nav-ico" aria-hidden="true">J</span>
+            <span class="side-nav-label">Jira</span>
+            <span class="jira-badge side-badge hidden" id="jiraBadge">0</span>
+          </button>
+          <button type="button" class="side-nav-btn" data-nav="ai" id="navAi" title="Ask liveAct" aria-expanded="false">
+            <span class="side-nav-ico" aria-hidden="true">AI</span>
+            <span class="side-nav-label">AI</span>
+          </button>
+          <button type="button" class="side-nav-btn" data-nav="dashboard" id="navDashboard" title="Executions dashboard">
+            <span class="side-nav-ico" aria-hidden="true">☰</span>
+            <span class="side-nav-label">Dash</span>
+          </button>
+          <div class="side-nav-spacer"></div>
+          <button type="button" class="side-nav-btn side-nav-util" id="btnSettings" title="Settings">
+            <span class="side-nav-ico" aria-hidden="true">⚙</span>
+          </button>
+        </nav>
 
-        <main class="screen" id="screenQueue">
-          <section class="panel full queue-panel">
-            <div class="panel-head">
-              <h2 id="queueHeading">LOB</h2>
-              <div class="controls queue-head-controls">
-                <button id="btnBackLob" class="btn ghost tiny hidden" type="button">← LOBs</button>
-                <button id="btnRefreshQueue" class="btn ghost tiny" type="button">Refresh</button>
-                <button id="btnFilterQueue" class="btn ghost tiny" type="button" aria-expanded="false" title="Filter tasks">
-                  Filter
-                </button>
-                <span class="muted" id="queueCount">0</span>
-                <button
-                  id="btnQueueGenAi"
-                  class="genai-circle"
-                  type="button"
-                  title="Open GenAI chat"
-                  aria-expanded="false"
-                >
-                  AI
-                </button>
+        <div class="main-column" id="mainColumn">
+          <header class="topbar compact">
+            <div class="brand">
+              <span class="brand-mark">L</span>
+              <div>
+                <h1>liveAct</h1>
+                <p class="tagline" id="tagline">Live steps</p>
               </div>
             </div>
-            <label class="queue-search-wrap hidden" id="queueSearchWrap">
-              <span class="sr-only">Search</span>
-              <input
-                id="queueSearch"
-                class="queue-search"
-                type="search"
-                placeholder="Search…"
-                autocomplete="off"
-              />
-            </label>
-            <div id="queueList" class="queue-list"></div>
-          </section>
-        </main>
-
-        <main class="screen hidden" id="screenQuest">
-          <section class="panel full quest-panel">
-            <div class="quest-top">
-              <div class="chat-toolbar">
-                <button id="btnBack" class="btn ghost tiny" type="button">← Queue</button>
-                <div class="chat-title-wrap">
-                  <strong id="questTitle">—</strong>
-                  <span class="quest-meta" id="questMeta"></span>
-                </div>
+            <div class="header-actions">
+              <button id="btnMinimize" class="win-btn win-min" type="button" title="Minimize to tail">−</button>
+              <button id="btnQuit" class="win-btn win-close" type="button" title="Quit liveAct">×</button>
+              <div class="status-pill" id="extStatus">
+                <span class="dot"></span>
+                <span id="extStatusText">Offline</span>
               </div>
-
-              <ol id="stepList" class="step-list compact-fit" aria-live="polite"></ol>
             </div>
+          </header>
 
-            <div class="quest-dock">
-              <div class="chat-composer">
-                <p class="run-note" id="runNote"></p>
-                <div class="controls chat-actions">
-                  <button id="btnStart" class="btn primary" type="button">Start</button>
-                  <button id="btnCancel" class="btn danger" type="button" disabled>Take over</button>
-                  <button id="btnRefresh" class="btn ghost" type="button" title="Re-scan form steps">
-                    Refresh
-                  </button>
-                  <div class="more-menu" id="moreMenu">
-                    <button
-                      id="btnMore"
-                      class="btn ghost"
-                      type="button"
-                      aria-haspopup="true"
-                      aria-expanded="false"
-                    >
-                      More ▾
-                    </button>
-                    <div class="more-dropdown hidden" id="moreDropdown" role="menu">
-                      <button id="btnPause" class="more-item" type="button" role="menuitem" disabled>
-                        Pause
+          <div class="main-pane" id="mainPane">
+            <div class="nav-pane" id="paneLive" data-pane="live">
+              <main class="screen" id="screenQueue">
+                <section class="panel full queue-panel">
+                  <div class="panel-head">
+                    <h2 id="queueHeading">LOB</h2>
+                    <div class="controls queue-head-controls">
+                      <button id="btnBackLob" class="btn ghost tiny hidden" type="button">← LOBs</button>
+                      <button id="btnRefreshQueue" class="btn ghost tiny" type="button">Refresh</button>
+                      <button
+                        id="btnFilterQueue"
+                        class="btn ghost tiny"
+                        type="button"
+                        aria-expanded="false"
+                        title="Filter tasks"
+                      >
+                        Filter
                       </button>
-                      <button id="btnResume" class="more-item" type="button" role="menuitem" disabled>
-                        Resume
-                      </button>
-                      <button id="btnClearFields" class="more-item" type="button" role="menuitem">
-                        Clear fields
-                      </button>
-                      <button id="btnStop" class="more-item danger" type="button" role="menuitem" disabled>
-                        Cancel
-                      </button>
+                      <span class="muted" id="queueCount">0</span>
                     </div>
                   </div>
-                  <button
-                    id="btnGenAi"
-                    class="genai-circle"
-                    type="button"
-                    title="Open GenAI chat"
-                    aria-expanded="false"
+                  <label class="queue-search-wrap hidden" id="queueSearchWrap">
+                    <span class="sr-only">Search</span>
+                    <input
+                      id="queueSearch"
+                      class="queue-search"
+                      type="search"
+                      placeholder="Search…"
+                      autocomplete="off"
+                    />
+                  </label>
+                  <div id="queueList" class="queue-list"></div>
+                </section>
+              </main>
+
+              <main class="screen hidden" id="screenQuest">
+                <section class="panel full quest-panel">
+                  <div class="quest-top">
+                    <div class="chat-toolbar">
+                      <button id="btnBack" class="btn ghost tiny" type="button">← Queue</button>
+                      <div class="chat-title-wrap">
+                        <strong id="questTitle">—</strong>
+                        <span class="quest-meta" id="questMeta"></span>
+                      </div>
+                    </div>
+                    <ol id="stepList" class="step-list compact-fit" aria-live="polite"></ol>
+                  </div>
+                  <div class="quest-dock">
+                    <div class="chat-composer">
+                      <p class="run-note" id="runNote"></p>
+                      <div class="controls chat-actions">
+                        <button id="btnStart" class="btn primary" type="button">Agent</button>
+                        <div id="agentApproveBar" class="agent-approve-bar hidden" role="group" aria-label="Approve agent fill">
+                          <button id="btnApproveAgent" class="btn success" type="button">Approve</button>
+                          <button id="btnCancelAgent" class="btn danger" type="button">Reject</button>
+                        </div>
+                        <button id="btnCancel" class="btn danger" type="button" disabled>Take over</button>
+                        <button id="btnRefresh" class="btn ghost" type="button" title="Re-scan form steps">
+                          Refresh
+                        </button>
+                        <div class="more-menu" id="moreMenu">
+                          <button
+                            id="btnMore"
+                            class="btn ghost"
+                            type="button"
+                            aria-haspopup="true"
+                            aria-expanded="false"
+                          >
+                            More ▾
+                          </button>
+                          <div class="more-dropdown hidden" id="moreDropdown" role="menu">
+                            <button id="btnPause" class="more-item" type="button" role="menuitem" disabled>
+                              Pause
+                            </button>
+                            <button id="btnResume" class="more-item" type="button" role="menuitem" disabled>
+                              Resume
+                            </button>
+                            <button id="btnClearFields" class="more-item" type="button" role="menuitem">
+                              Clear fields
+                            </button>
+                            <button id="btnStop" class="more-item danger" type="button" role="menuitem" disabled>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                        <button
+                          id="btnGenAi"
+                          class="genai-circle"
+                          type="button"
+                          title="Ask liveAct about this card"
+                          aria-label="Ask AI about this card"
+                          aria-expanded="false"
+                        >
+                          AI
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div
+                    id="agentApproveModal"
+                    class="agent-approve-modal hidden"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="agentApproveTitle"
                   >
-                    AI
-                  </button>
+                    <div class="agent-approve-card">
+                      <div class="agent-approve-head">
+                        <h3 id="agentApproveTitle">Approve agent fill</h3>
+                        <button
+                          id="btnCloseAgentModal"
+                          class="agent-approve-close"
+                          type="button"
+                          aria-label="Close"
+                          title="Close"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <p class="muted tiny-copy" id="agentApproveHint">
+                        Edit values with the pen (required fields must be filled). Filling starts only after you approve.
+                      </p>
+                      <ul id="agentProposeList" class="agent-propose-list"></ul>
+                      <div class="controls agent-approve-actions">
+                        <button id="btnCancelAgentModal" class="btn danger" type="button">Reject</button>
+                        <button id="btnApproveAgentModal" class="btn success" type="button">Approve</button>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </main>
+            </div>
+
+            <div class="nav-pane hidden" id="paneJira" data-pane="jira" aria-hidden="true">
+              <div class="jira-panel pane-fill">
+                <div class="genai-shell-head">
+                  <strong>Jira</strong>
+                  <div class="controls" style="gap:6px">
+                    <button id="btnJiraRefresh" class="btn ghost tiny" type="button">Refresh</button>
+                  </div>
+                </div>
+                <p class="muted tiny-copy jira-meta" id="jiraMeta">Not configured</p>
+                <div class="jira-list" id="jiraList" aria-live="polite"></div>
+                <div class="jira-recent" id="jiraRecent">
+                  <strong class="jira-recent-title">Recent actions</strong>
+                  <ul class="jira-recent-list" id="jiraRecentList"></ul>
                 </div>
               </div>
             </div>
-          </section>
-        </main>
 
-        <div class="genai-shell hidden" id="genaiShell" aria-hidden="true">
-          <div class="genai-panel" id="genaiPanel">
-            <div class="genai-shell-head">
-              <strong>Ask liveAct</strong>
-              <button id="btnCloseGenAi" class="btn ghost tiny" type="button">Close</button>
-            </div>
-            <div class="chat-log empty" id="chatLog" aria-live="polite"></div>
-            <div class="prompt-composer">
-              <div class="attach-row" id="attachRow"></div>
-              <div class="prompt-shell">
-                <textarea
-                  id="chatInput"
-                  class="chat-input"
-                  rows="2"
-                  placeholder="Ask liveAct…"
-                ></textarea>
-                <div class="prompt-corner">
-                  <button
-                    id="btnSnippet"
-                    class="icon-btn"
-                    type="button"
-                    title="Snip screenshot (select region)"
-                  >
-                    ✂
-                  </button>
-                  <button
-                    id="btnAttach"
-                    class="icon-btn"
-                    type="button"
-                    title="Attach error file"
-                  >
-                    📎
-                  </button>
-                  <button id="btnSend" class="send-arrow" type="button" title="Send">
-                    ➤
-                  </button>
+            <div class="nav-pane hidden" id="paneAi" data-pane="ai" aria-hidden="true"></div>
+
+            <div class="genai-shell hidden" id="genaiShell" aria-hidden="true">
+              <div class="genai-panel" id="genaiPanel">
+                <div class="genai-shell-head">
+                  <strong>Ask liveAct</strong>
+                  <button id="btnCloseGenAi" class="btn ghost tiny" type="button">Close</button>
                 </div>
+                <div class="chat-log empty" id="chatLog" aria-live="polite"></div>
+                <div class="prompt-composer">
+                  <div class="attach-row" id="attachRow"></div>
+                  <div class="prompt-shell">
+                    <textarea
+                      id="chatInput"
+                      class="chat-input"
+                      rows="2"
+                      placeholder="Ask liveAct…"
+                    ></textarea>
+                    <div class="prompt-corner">
+                      <button
+                        id="btnSnippet"
+                        class="icon-btn"
+                        type="button"
+                        title="Snip screenshot (select region)"
+                      >
+                        ✂
+                      </button>
+                      <button id="btnAttach" class="icon-btn" type="button" title="Attach error file">
+                        📎
+                      </button>
+                      <button id="btnSend" class="send-arrow" type="button" title="Send">➤</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="nav-pane hidden" id="paneDashboard" data-pane="dashboard" aria-hidden="true">
+              <div class="dash-panel pane-fill">
+                <div class="genai-shell-head">
+                  <strong>Executions</strong>
+                  <div class="controls" style="gap:6px">
+                    <button id="btnDashRefresh" class="btn ghost tiny" type="button">Refresh</button>
+                  </div>
+                </div>
+                <p class="muted tiny-copy" id="dashMeta">Loading…</p>
+                <div class="dash-list" id="dashList" aria-live="polite"></div>
               </div>
             </div>
           </div>
@@ -175,7 +259,7 @@
       <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true">
         <div class="modal-card">
           <h3>Settings</h3>
-          <p class="muted tiny-copy">Stored in Documents/Coact/settings.json</p>
+          <p class="muted tiny-copy">Stored in Projects/coact/settings.json</p>
           <label class="field">
             <span>OpenAI API key</span>
             <input id="openaiKeyInput" type="password" placeholder="sk-…" autocomplete="off" />
@@ -211,6 +295,59 @@
             </div>
             <p class="muted tiny-copy" id="extInstallPath" style="margin-top:8px"></p>
           </div>
+          <label class="field">
+            <span>Jira site URL</span>
+            <input
+              id="jiraBaseUrlInput"
+              type="url"
+              placeholder="https://your-domain.atlassian.net"
+              autocomplete="off"
+            />
+          </label>
+          <label class="field">
+            <span>Jira email</span>
+            <input id="jiraEmailInput" type="email" placeholder="you@company.com" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Jira API token</span>
+            <input id="jiraTokenInput" type="password" placeholder="Atlassian API token" autocomplete="off" />
+            <p class="muted tiny-copy" style="margin-top:6px">
+              Create at id.atlassian.com → Security → API tokens
+            </p>
+          </label>
+          <label class="field">
+            <span>JQL filter</span>
+            <input
+              id="jiraJqlInput"
+              type="text"
+              placeholder="assignee = currentUser() ORDER BY updated ASC"
+              autocomplete="off"
+            />
+            <p class="muted tiny-copy" style="margin-top:6px">
+              Always limited to tickets assigned to you (<code>assignee = currentUser()</code>).
+              Include Done/Closed so liveAct can sync finished stories (open-only status filters are stripped).
+            </p>
+          </label>
+          <label class="field">
+            <span>Stale after (days)</span>
+            <input id="jiraStaleDaysInput" type="number" min="0.5" max="90" step="0.5" placeholder="2" />
+          </label>
+          <label class="field">
+            <span>Jira status → SOP stage map (JSON)</span>
+            <textarea
+              id="jiraStatusMapInput"
+              rows="5"
+              placeholder='{"To Do":"Step 1 – Intake","In Progress":"Step 2 – Working"}'
+              spellcheck="false"
+            ></textarea>
+          </label>
+          <label class="field">
+            <span>Queue card Jira key field</span>
+            <input id="jiraCardKeyFieldInput" type="text" placeholder="jiraKey" autocomplete="off" />
+            <p class="muted tiny-copy" style="margin-top:6px">
+              Matches card <code>data.&lt;field&gt;</code> or KEY-123 in the card title.
+            </p>
+          </label>
           <div class="controls">
             <button id="btnSettingsCancel" class="btn ghost" type="button">Close</button>
             <button id="btnSettingsSave" class="btn primary" type="button">Save</button>
@@ -228,7 +365,7 @@
         <div class="modal-card browser-required-card">
           <h3 id="browserRequiredTitle">Keep your browser window open</h3>
           <p class="muted">
-            Please open and keep the matching Chrome or Edge form window open, then press Start.
+            Please open and keep the matching Chrome or Edge form window open, then press Agent.
           </p>
           <div class="controls">
             <button id="btnBrowserRequiredClose" class="btn primary" type="button">Got it</button>

@@ -62,6 +62,7 @@ const MessageType = {
   SNIPPET: "snippet",
   REQUEST_STATUS: "request_status",
   OPEN_URL: "open_url",
+  JIRA_SNAPSHOT: "jira_snapshot",
 };
 
 let socket = null;
@@ -89,6 +90,8 @@ let tabStatusTimer = null;
 const pendingRepairs = new Map();
 /** @type {Map<string, { resolve: Function, timer: any, tabId: number|null }>} */
 const pendingValueChecks = new Map();
+/** Last Jira snapshot from liveAct (no credentials). */
+let jiraSnapshot = null;
 
 function resolveRepair(repairId, plan) {
   const pending = pendingRepairs.get(repairId);
@@ -113,26 +116,52 @@ function isInjectableUrl(url) {
   return /^https?:\/\//i.test(url);
 }
 
+function updateExtensionBadge() {
+  if (!connected) {
+    chrome.action.setBadgeText({ text: "" });
+    chrome.action.setBadgeBackgroundColor({ color: "#666666" });
+    return;
+  }
+  const stale = Number(jiraSnapshot?.staleCount) || 0;
+  if (stale > 0) {
+    chrome.action.setBadgeText({ text: stale > 99 ? "99+" : String(stale) });
+    chrome.action.setBadgeBackgroundColor({ color: "#dc2626" });
+  } else {
+    chrome.action.setBadgeText({ text: "ON" });
+    chrome.action.setBadgeBackgroundColor({ color: "#d71e28" });
+  }
+}
+
+function applyJiraSnapshot(msg) {
+  jiraSnapshot = {
+    ok: Boolean(msg?.ok),
+    configured: Boolean(msg?.configured),
+    staleCount: Number(msg?.staleCount) || 0,
+    issues: Array.isArray(msg?.issues) ? msg.issues : [],
+    fetchedAt: msg?.fetchedAt || null,
+    sopStages: msg?.sopStages || null,
+    error: msg?.error || null,
+  };
+  chrome.storage.session.set({ jiraSnapshot }).catch(() => {});
+  updateExtensionBadge();
+}
+
 function setConnected(value) {
   connected = value;
   if (value) {
     waitingForApp = false;
     lastError = "";
     reconnectAttempt = 0;
+  } else {
+    jiraSnapshot = null;
   }
   chrome.storage.session.set({
     bridgeConnected: value,
     waitingForApp: !value,
     lastError: value ? "" : lastError,
+    jiraSnapshot: value ? jiraSnapshot : null,
   });
-  // Quiet offline: no alarming badge text while liveAct is simply closed
-  if (value) {
-    chrome.action.setBadgeText({ text: "ON" });
-    chrome.action.setBadgeBackgroundColor({ color: "#d71e28" });
-  } else {
-    chrome.action.setBadgeText({ text: "" });
-    chrome.action.setBadgeBackgroundColor({ color: "#666666" });
-  }
+  updateExtensionBadge();
 }
 
 /** Probe HTTP first so we don't open a WebSocket (and spam console) when liveAct is closed. */
@@ -527,6 +556,11 @@ function openWebSocket() {
 
     if (msg.type === MessageType.OPEN_URL) {
       await handleOpenUrl(msg);
+      return;
+    }
+
+    if (msg.type === MessageType.JIRA_SNAPSHOT) {
+      applyJiraSnapshot(msg);
     }
   });
 
@@ -690,6 +724,11 @@ async function resumeSopRunIfReady(tabId, tabUrl) {
       data: resume.data,
       sop: resume.sop,
       startIndex: resume.nextIndex,
+      agentApproved: Boolean(resume.agentApproved),
+      agentApprovedValues:
+        resume.agentApprovedValues && typeof resume.agentApprovedValues === "object"
+          ? resume.agentApprovedValues
+          : {},
       // Background already activated this tab for the run
       bypassVisibilityGate: true,
     },
@@ -772,6 +811,11 @@ async function handleRunCard(msg) {
       sop: msg.sop,
       startIndex: Math.max(0, Number(msg.startIndex) || 0),
       completedStepIds: Array.isArray(msg.completedStepIds) ? msg.completedStepIds : [],
+      agentApproved: Boolean(msg.agentApproved),
+      agentApprovedValues:
+        msg.agentApprovedValues && typeof msg.agentApprovedValues === "object"
+          ? msg.agentApprovedValues
+          : {},
       // ensureBrowserVisible already made the tab active; Coact may occlude Chrome
       bypassVisibilityGate: true,
     },
@@ -1045,6 +1089,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         nextIndex: Number(p.nextIndex) || 0,
         urlIncludes: p.urlIncludes || null,
         urlEquals: p.urlEquals || null,
+        agentApproved: Boolean(p.agentApproved),
+        agentApprovedValues:
+          p.agentApprovedValues && typeof p.agentApprovedValues === "object"
+            ? p.agentApprovedValues
+            : {},
         savedAt: Date.now(),
       };
     }
@@ -1070,7 +1119,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       waitingForApp: !connected,
       lastError: connected ? "" : lastError,
       bridgeUrl: BRIDGE_URL,
+      jira: jiraSnapshot,
     });
+    return true;
+  }
+
+  if (message?.type === "get_jira_snapshot") {
+    sendResponse({ connected, jira: jiraSnapshot });
     return true;
   }
 

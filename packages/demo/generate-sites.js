@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /**
  * Generates demo site HTML forms + SOPs from shared/demo-catalog.js
- * and ensures matching queue cards under ~/Documents/Coact/queue.
+ * and ensures matching queue cards under <project>/queue.
  */
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
 const { DEMO_SITES } = require("@coact/shared/demo-catalog");
+const { defaultDocumentsRoot } = require("../liveact/documents");
 
 const root = path.join(__dirname);
 const sitesDir = path.join(root, "sites");
 const sopsDir = path.join(__dirname, "..", "shared", "sops");
 const DEFAULT_LOB = "TCOO";
-const queueRoot = path.join(os.homedir(), "Documents", "Coact", "queue");
+const queueRoot = defaultDocumentsRoot();
 const lobQueueRoot = path.join(queueRoot, DEFAULT_LOB);
 
 function ensureDir(dir) {
@@ -79,12 +79,21 @@ function siteHtml(site) {
       <div class="site">${site.siteName}</div>
       <h1>${site.title.split("—")[1]?.trim() || site.title}</h1>
       <p class="sub">Dummy Coact form — open this tab, then Start the matching queue card.</p>
-      <form id="demoForm" onsubmit="event.preventDefault(); alert('Submitted (demo only)');">
+      <form id="demoForm">
 ${site.fields.map(fieldHtml).join("\n")}
         <button id="submitBtn" type="submit">Submit</button>
       </form>
       <p class="hint">URL: http://127.0.0.1:4173/${site.path.replace(/\.html$/, "")}</p>
     </main>
+    <script>
+      document.getElementById("demoForm").addEventListener("submit", function (event) {
+        event.preventDefault();
+        var ref = "RD-" + Date.now().toString(36).toUpperCase() + "-" + Math.floor(Math.random() * 9000 + 1000);
+        var url = new URL(location.href);
+        url.searchParams.set("ref", ref);
+        location.href = url.toString();
+      });
+    </script>
   </body>
 </html>
 `;

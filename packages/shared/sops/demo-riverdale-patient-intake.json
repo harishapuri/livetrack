@@ -54,12 +54,6 @@
       "label": "Insurance provider",
       "selector": "#insurance",
       "valueFrom": "insurance"
-    },
-    {
-      "id": "highlight-review",
-      "action": "highlight",
-      "label": "Highlight submit for human review",
-      "selector": "#submitBtn"
     }
   ],
   "formUrl": "http://127.0.0.1:4173/sites/riverdale-patient-intake"
