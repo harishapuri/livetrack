@@ -1,21 +1,86 @@
 const http = require("http");
 const { WebSocketServer } = require("ws");
-const { BRIDGE_PORT, MessageType } = require("@coact/shared/protocol");
+const {
+  BRIDGE_PORT,
+  MessageType,
+  bridgeEndpoints,
+} = require("@coact/shared/protocol");
 
-function createBridge({ onExtensionStatus, onStepUpdate, onRunFinished, onListening, onError }) {
+function createBridge({
+  onExtensionStatus,
+  onStepUpdate,
+  onRunFinished,
+  onListening,
+  onError,
+  onReloadQueue,
+}) {
   const clients = new Map();
   const pendingSnippets = new Map();
   let listening = false;
 
   const connected = () => [...clients.entries()].filter(([socket]) => socket.readyState === 1);
   const server = http.createServer((req, res) => {
-    if (req.url === "/" || req.url === "/health") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, service: "coact-bridge", extensionConnected: connected().length > 0, extensionClients: connected().length }));
+    const url = new URL(req.url || "/", "http://127.0.0.1");
+    const pathname = url.pathname;
+    const cors = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    };
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, cors);
+      res.end();
       return;
     }
-    res.writeHead(404);
-    res.end("not found");
+
+    if (pathname === "/" || pathname === "/health") {
+      // host/wsUrl = this machine's LAN IP at request time (never a hardcoded personal IP)
+      const endpoints = bridgeEndpoints();
+      res.writeHead(200, { "Content-Type": "application/json", ...cors });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          service: "coact-bridge",
+          port: endpoints.port,
+          listen: "0.0.0.0",
+          host: endpoints.host,
+          wsUrl: endpoints.wsUrl,
+          localWsUrl: endpoints.localWsUrl,
+          extensionConnected: connected().length > 0,
+          extensionClients: connected().length,
+        })
+      );
+      return;
+    }
+
+    // Dashboard / Queue studio → push queue+SOP reload into liveAct UI
+    if (
+      (pathname === "/reload-queue" || pathname === "/publish") &&
+      (req.method === "POST" || req.method === "GET")
+    ) {
+      Promise.resolve()
+        .then(() => onReloadQueue?.())
+        .then((result) => {
+          res.writeHead(200, { "Content-Type": "application/json", ...cors });
+          res.end(
+            JSON.stringify({
+              ok: true,
+              published: true,
+              cardCount: result?.cardCount ?? null,
+              ...(result || {}),
+            })
+          );
+        })
+        .catch((err) => {
+          res.writeHead(500, { "Content-Type": "application/json", ...cors });
+          res.end(JSON.stringify({ ok: false, error: err?.message || String(err) }));
+        });
+      return;
+    }
+
+    res.writeHead(404, { "Content-Type": "application/json", ...cors });
+    res.end(JSON.stringify({ ok: false, error: "not found" }));
   });
   const wss = new WebSocketServer({ server });
 
@@ -274,9 +339,16 @@ function createBridge({ onExtensionStatus, onStepUpdate, onRunFinished, onListen
     onError?.(err);
     console.error("[coact-bridge]", err.message);
   });
+  // 0.0.0.0 = all interfaces (loopback + this machine's LAN IP)
   server.listen(BRIDGE_PORT, "0.0.0.0", () => {
     listening = true;
-    onListening?.({ port: BRIDGE_PORT });
+    const endpoints = bridgeEndpoints();
+    console.log(`[coact-bridge] listening 0.0.0.0:${BRIDGE_PORT}`);
+    console.log(`[coact-bridge] local    ${endpoints.localWsUrl}`);
+    if (endpoints.host !== "127.0.0.1") {
+      console.log(`[coact-bridge] lan      ${endpoints.wsUrl}`);
+    }
+    onListening?.(endpoints);
   });
 
   // Keep the Online/Offline badge truthful even if a focus emit was skipped

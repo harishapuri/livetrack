@@ -6,16 +6,17 @@ function renderStatus(res) {
     return;
   }
   if (res?.connected) {
-    el.textContent = "Connected to liveAct desktop.";
+    el.textContent = "Connected to liveAct.";
     el.className = "ok";
-  } else if (res?.connecting) {
-    el.textContent = "Connecting to liveAct…";
-    el.className = "";
-  } else {
-    el.textContent = res?.lastError
-      ? `Not connected: ${res.lastError}`
-      : "Not connected. Start liveAct, then click Reconnect.";
+  } else if (res?.connecting || res?.waitingForApp) {
+    el.textContent = "Waiting for liveAct… will connect automatically when the app opens.";
+    el.className = "wait";
+  } else if (res?.lastError) {
+    el.textContent = res.lastError;
     el.className = "bad";
+  } else {
+    el.textContent = "Waiting for liveAct… will connect automatically when the app opens.";
+    el.className = "wait";
   }
 }
 
@@ -26,7 +27,7 @@ function refresh() {
 document.getElementById("reconnect").addEventListener("click", () => {
   const el = document.getElementById("status");
   el.textContent = "Connecting…";
-  el.className = "";
+  el.className = "wait";
   chrome.runtime.sendMessage({ type: "reconnect_bridge" }, (res) => {
     renderStatus(res);
     setTimeout(refresh, 700);
@@ -34,3 +35,4 @@ document.getElementById("reconnect").addEventListener("click", () => {
 });
 
 refresh();
+setInterval(refresh, 2000);

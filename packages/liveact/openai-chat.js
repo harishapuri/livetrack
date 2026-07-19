@@ -577,11 +577,12 @@ async function repairFailedStep({ step, error, stepContext, snippet, questData, 
 }
 
 /**
- * Local exact compare only (no AI / no fuzzy names).
- * Mirrors extension normalizeCompare + numeric/phone/formatting rules.
+ * Fuzzy compare for mandatory field values (case-insensitive).
+ * Mirrors extension compareValues: fold case/accents, typos, token reorder,
+ * containment. Numbers/phones stay exact.
  * expected may be a scalar or an array of allowed values.
  */
-function localExactValueMatch(expected, actual) {
+function localFuzzyValueMatch(expected, actual) {
   const act = String(actual ?? "")
     .trim()
     .replace(/\s+/g, " ");
@@ -592,8 +593,10 @@ function localExactValueMatch(expected, actual) {
     : [String(expected ?? "").trim()].filter(Boolean);
   if (!list.length) return true;
 
-  const norm = (v) =>
+  const fold = (v) =>
     String(v ?? "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
       .trim()
       .toLowerCase()
       .replace(/\s+/g, " ");
@@ -607,12 +610,36 @@ function localExactValueMatch(expected, actual) {
     return /^-?\d+(\.\d+)?$/.test(t);
   };
 
+  const levenshtein = (a, b) => {
+    const s = String(a || "");
+    const t = String(b || "");
+    if (s === t) return 0;
+    if (!s.length) return t.length;
+    if (!t.length) return s.length;
+    const prev = new Array(t.length + 1);
+    const cur = new Array(t.length + 1);
+    for (let j = 0; j <= t.length; j++) prev[j] = j;
+    for (let i = 1; i <= s.length; i++) {
+      cur[0] = i;
+      const sc = s.charCodeAt(i - 1);
+      for (let j = 1; j <= t.length; j++) {
+        const cost = sc === t.charCodeAt(j - 1) ? 0 : 1;
+        cur[j] = Math.min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+      }
+      for (let j = 0; j <= t.length; j++) prev[j] = cur[j];
+    }
+    return prev[t.length];
+  };
+
   return list.some((exp) => {
     const eRaw = String(exp ?? "")
       .trim()
       .replace(/\s+/g, " ");
     if (!eRaw) return true;
-    if (norm(act) === norm(eRaw)) return true;
+
+    const a = fold(act);
+    const e = fold(eRaw);
+    if (a === e) return true;
 
     if (looksPlainNumeric(act) && looksPlainNumeric(eRaw)) {
       const an = Number(act.replace(/,/g, ""));
@@ -624,15 +651,34 @@ function localExactValueMatch(expected, actual) {
     const ed = eRaw.replace(/\D/g, "");
     if (ed.length >= 7 && ad.length >= 7 && ad === ed) return true;
 
-    const aAlnum = act.toLowerCase().replace(/[^a-z0-9]/g, "");
-    const eAlnum = eRaw.toLowerCase().replace(/[^a-z0-9]/g, "");
-    return Boolean(aAlnum && aAlnum === eAlnum);
+    const aAlnum = a.replace(/[^a-z0-9]/g, "");
+    const eAlnum = e.replace(/[^a-z0-9]/g, "");
+    if (aAlnum && aAlnum === eAlnum) return true;
+    if (aAlnum.length >= 3 && eAlnum.length >= 3) {
+      if (aAlnum.includes(eAlnum) || eAlnum.includes(aAlnum)) return true;
+    }
+
+    const aTokens = a.split(" ").filter(Boolean).sort().join(" ");
+    const eTokens = e.split(" ").filter(Boolean).sort().join(" ");
+    if (aTokens && aTokens === eTokens) return true;
+
+    const maxLen = Math.max(a.length, e.length);
+    const maxDist = maxLen <= 4 ? 1 : maxLen <= 12 ? 2 : 3;
+    if (maxLen > 0 && levenshtein(a, e) <= maxDist) return true;
+    if (
+      aAlnum.length >= 3 &&
+      eAlnum.length >= 3 &&
+      levenshtein(aAlnum, eAlnum) <= Math.min(maxDist, 2)
+    ) {
+      return true;
+    }
+    return false;
   });
 }
 
 /**
  * Judge whether an entered field value matches the SOP/case expected value.
- * Exact local compare only — no AI soft-matching of names/typos/word-order.
+ * Fuzzy local compare — case-insensitive, small typos, word order.
  */
 async function judgeValueMatch({ expected, actual }) {
   const exp = expected;
@@ -645,11 +691,11 @@ async function judgeValueMatch({ expected, actual }) {
   if (!hasExpected) return { ok: true, match: Boolean(act), reason: "No expected value", model: null };
   if (!act) return { ok: true, match: false, reason: "Empty value", model: null };
 
-  const match = localExactValueMatch(exp, act);
+  const match = localFuzzyValueMatch(exp, act);
   return {
     ok: true,
     match,
-    reason: match ? "Exact local match" : "Does not match expected value",
+    reason: match ? "Fuzzy local match" : "Does not match expected value",
     model: null,
   };
 }

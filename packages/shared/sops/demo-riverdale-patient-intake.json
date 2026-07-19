@@ -2,21 +2,22 @@
   "id": "demo-riverdale-patient-intake",
   "name": "Riverdale Clinic — Patient intake",
   "description": "Fill the Riverdale Clinic demo form on the current tab.",
-  "formUrl": "http://127.0.0.1:4173/sites/riverdale-patient-intake",
   "steps": [
     {
-      "id": "patientName",
+      "id": "patientname",
       "action": "fill",
       "label": "Patient name",
       "selector": "#patientName",
-      "valueFrom": "patientName"
+      "valueFrom": "patientName",
+      "mandatory": true
     },
     {
       "id": "dob",
       "action": "fill",
       "label": "Date of birth",
       "selector": "#dob",
-      "valueFrom": "dob"
+      "valueFrom": "dob",
+      "mandatory": true
     },
     {
       "id": "email",
@@ -60,5 +61,6 @@
       "label": "Highlight submit for human review",
       "selector": "#submitBtn"
     }
-  ]
+  ],
+  "formUrl": "http://127.0.0.1:4173/sites/riverdale-patient-intake"
 }

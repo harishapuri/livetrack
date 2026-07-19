@@ -39,6 +39,83 @@ function bundledSopsDir() {
   return path.join(__dirname, "..", "shared", "sops");
 }
 
+/** Packaged/dev path to the Chrome/Edge extension folder */
+function bundledExtensionDir() {
+  if (app.isPackaged && process.resourcesPath) {
+    const packaged = path.join(process.resourcesPath, "extension");
+    if (fs.existsSync(path.join(packaged, "manifest.json"))) return packaged;
+  }
+  const dev = path.join(__dirname, "..", "extension");
+  if (fs.existsSync(path.join(dev, "manifest.json"))) return dev;
+  return null;
+}
+
+/** Stable user-writable copy so Load unpacked keeps working across app updates */
+function userExtensionDir() {
+  return path.join(os.homedir(), "Documents", "Coact", "extension");
+}
+
+function copyDirRecursive(src, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const name of fs.readdirSync(src)) {
+    if (name === ".DS_Store") continue;
+    const from = path.join(src, name);
+    const to = path.join(dest, name);
+    const st = fs.statSync(from);
+    if (st.isDirectory()) copyDirRecursive(from, to);
+    else fs.copyFileSync(from, to);
+  }
+}
+
+/**
+ * Copy bundled extension → Documents/Coact/extension and optionally open
+ * Chrome / Edge extension pages + reveal the folder for Load unpacked.
+ */
+function installBrowserExtension(browser = "chrome") {
+  const src = bundledExtensionDir();
+  if (!src) {
+    return { ok: false, error: "Extension folder not found in this install" };
+  }
+  const dest = userExtensionDir();
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    if (fs.existsSync(dest)) fs.rmSync(dest, { recursive: true, force: true });
+    copyDirRecursive(src, dest);
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+
+  try {
+    shell.showItemInFolder(path.join(dest, "manifest.json"));
+  } catch {
+    /* ignore */
+  }
+
+  const page =
+    browser === "edge"
+      ? "edge://extensions"
+      : browser === "both"
+        ? null
+        : "chrome://extensions";
+  if (page) {
+    shell.openExternal(page).catch(() => {});
+  } else if (browser === "both") {
+    shell.openExternal("chrome://extensions").catch(() => {});
+    setTimeout(() => {
+      shell.openExternal("edge://extensions").catch(() => {});
+    }, 400);
+  }
+
+  return {
+    ok: true,
+    path: dest,
+    source: src,
+    browser,
+    hint:
+      "Developer mode → Load unpacked → select Documents/Coact/extension (folder already opened).",
+  };
+}
+
 /** User-writable SOPs (SOP builder + installed app) */
 function userSopsDir() {
   return path.join(os.homedir(), "Documents", "Coact", "sops");
@@ -207,9 +284,57 @@ function mistakesListForCard(cardId) {
 
 function normalizeMistakeCompare(value) {
   return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ");
+}
+
+function fuzzyMistakeMatch(actual, expected) {
+  const act = String(actual ?? "")
+    .trim()
+    .replace(/\s+/g, " ");
+  const exp = String(expected ?? "")
+    .trim()
+    .replace(/\s+/g, " ");
+  if (!exp) return true;
+  if (!act) return false;
+
+  const a = normalizeMistakeCompare(act);
+  const e = normalizeMistakeCompare(exp);
+  if (a === e) return true;
+
+  const aAlnum = a.replace(/[^a-z0-9]/g, "");
+  const eAlnum = e.replace(/[^a-z0-9]/g, "");
+  if (aAlnum && aAlnum === eAlnum) return true;
+  if (aAlnum.length >= 3 && eAlnum.length >= 3) {
+    if (aAlnum.includes(eAlnum) || eAlnum.includes(aAlnum)) return true;
+  }
+
+  const aTokens = a.split(" ").filter(Boolean).sort().join(" ");
+  const eTokens = e.split(" ").filter(Boolean).sort().join(" ");
+  if (aTokens && aTokens === eTokens) return true;
+
+  // light edit distance for typos
+  const s = a;
+  const t = e;
+  const prev = new Array(t.length + 1);
+  const cur = new Array(t.length + 1);
+  for (let j = 0; j <= t.length; j++) prev[j] = j;
+  for (let i = 1; i <= s.length; i++) {
+    cur[0] = i;
+    const sc = s.charCodeAt(i - 1);
+    for (let j = 1; j <= t.length; j++) {
+      const cost = sc === t.charCodeAt(j - 1) ? 0 : 1;
+      cur[j] = Math.min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    for (let j = 0; j <= t.length; j++) prev[j] = cur[j];
+  }
+  const dist = prev[t.length];
+  const maxLen = Math.max(s.length, t.length);
+  const maxDist = maxLen <= 4 ? 1 : maxLen <= 12 ? 2 : 3;
+  return maxLen > 0 && dist <= maxDist;
 }
 
 /**
@@ -249,7 +374,7 @@ function mergeFinalValueMistakes(card, sop, actions, existing) {
     expected = expected.trim();
     const actual = String(a.value ?? a.field_value ?? "").trim();
     if (!expected || !actual) continue;
-    if (normalizeMistakeCompare(actual) === normalizeMistakeCompare(expected)) {
+    if (fuzzyMistakeMatch(actual, expected)) {
       continue;
     }
 
@@ -959,10 +1084,17 @@ app.whenReady().then(() => {
 
   try {
     bridge = createBridge({
-      onListening() {
+      onReloadQueue() {
+        return publishQueueToRenderer();
+      },
+      onListening(info) {
         sendToRenderer("extension-status", {
           connected: false,
           bridgeUp: true,
+          bridgeHost: info?.host || null,
+          bridgePort: info?.port || 17321,
+          bridgeWsUrl: info?.localWsUrl || null,
+          bridgeLanWsUrl: info?.wsUrl || null,
         });
       },
       onError(err) {
@@ -1165,11 +1297,44 @@ ipcMain.handle("get-bootstrap", () => {
   };
 });
 
-ipcMain.handle("refresh-queue", () => {
+function publishQueueToRenderer() {
   reloadSops();
-  refreshQueue();
+  const loaded = refreshQueue();
+  const payload = {
+    queue: queue.map(enrichCard),
+    publishedAt: Date.now(),
+    rootDir: loaded?.rootDir || documentsRoot,
+    allCardCount: loaded?.allCardCount ?? queue.length,
+  };
+  sendToRenderer("queue-updated", payload);
+  // Make sure the chatbot actually shows the refresh (even if tucked behind other apps)
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (tailMode) {
+        // Prefer expanding so the agent sees updated cards/steps
+        exitTailMode();
+      } else if (!mainWindow.isVisible()) {
+        mainWindow.show();
+      }
+      applyAlwaysOnTop(true);
+      mainWindow.moveTop();
+    }
+  } catch {
+    /* ignore */
+  }
+  return {
+    cardCount: queue.length,
+    allCardCount: payload.allCardCount,
+    rootDir: payload.rootDir,
+    cardIds: queue.map((c) => c.id),
+  };
+}
+
+ipcMain.handle("refresh-queue", () => {
+  const result = publishQueueToRenderer();
   return {
     queue: queue.map(enrichCard),
+    ...result,
   };
 });
 
@@ -1730,6 +1895,19 @@ ipcMain.handle("pick-executions-folder", async () => {
     return { ok: false };
   }
   return { ok: true, path: result.filePaths[0] };
+});
+
+ipcMain.handle("get-extension-install-info", () => {
+  return {
+    ok: true,
+    bundled: bundledExtensionDir(),
+    userPath: userExtensionDir(),
+    installed: fs.existsSync(path.join(userExtensionDir(), "manifest.json")),
+  };
+});
+
+ipcMain.handle("install-browser-extension", (_event, browser) => {
+  return installBrowserExtension(browser === "edge" || browser === "both" ? browser : "chrome");
 });
 
 ipcMain.handle("pick-error-files", async () => {

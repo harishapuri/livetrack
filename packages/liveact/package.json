@@ -103,14 +103,27 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
         }
-      ]
+      ],
+      "artifactName": "liveAct-Setup-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "liveAct"
+      "createStartMenuShortcut": true,
+      "shortcutName": "liveAct",
+      "license": null,
+      "include": null
+    },
+    "portable": {
+      "artifactName": "liveAct-Portable-${version}-${arch}.${ext}"
     }
   }
 }

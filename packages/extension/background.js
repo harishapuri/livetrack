@@ -1,4 +1,39 @@
-const BRIDGE_URL = "ws://127.0.0.1:17321";
+// Must match packages/shared/protocol.js (BRIDGE_PORT / BRIDGE_URL).
+// Extension cannot require Node modules — keep these in sync manually.
+// 127.0.0.1 is intentional: liveAct + extension always run on the SAME machine.
+// That is each PC's own loopback — never hardcode someone else's LAN IP.
+// Optional rare remote overrides (chrome.storage.local):
+//   bridgeHost: "192.168.x.x"  → ws://that-host:17321
+//   bridgeUrl:  "ws://host:17321" (full URL wins over bridgeHost)
+const DEFAULT_BRIDGE_HOST = "127.0.0.1";
+const DEFAULT_BRIDGE_PORT = 17321;
+const DEFAULT_BRIDGE_URL = `ws://${DEFAULT_BRIDGE_HOST}:${DEFAULT_BRIDGE_PORT}`;
+let BRIDGE_URL = DEFAULT_BRIDGE_URL;
+let BRIDGE_HEALTH = `http://${DEFAULT_BRIDGE_HOST}:${DEFAULT_BRIDGE_PORT}/health`;
+
+function applyBridgeUrl(wsUrl) {
+  const url = String(wsUrl || "").trim() || DEFAULT_BRIDGE_URL;
+  BRIDGE_URL = url;
+  try {
+    const httpBase = url.replace(/^ws/i, "http");
+    const u = new URL(httpBase);
+    BRIDGE_HEALTH = `${u.origin}/health`;
+  } catch {
+    BRIDGE_HEALTH = `http://${DEFAULT_BRIDGE_HOST}:${DEFAULT_BRIDGE_PORT}/health`;
+  }
+}
+
+function applyBridgeHost(host) {
+  const h = String(host || "").trim() || DEFAULT_BRIDGE_HOST;
+  applyBridgeUrl(`ws://${h}:${DEFAULT_BRIDGE_PORT}`);
+}
+
+chrome.storage.local.get(["bridgeHost", "bridgeUrl"]).then((stored) => {
+  if (stored?.bridgeUrl) applyBridgeUrl(stored.bridgeUrl);
+  else if (stored?.bridgeHost) applyBridgeHost(stored.bridgeHost);
+  if (stored?.bridgeUrl || stored?.bridgeHost) connect(true);
+});
+
 // Stable per browser profile so desktop can rebind after SW restarts.
 let bridgeClientId = `${chrome.runtime.id}:boot`;
 chrome.storage.session.get(["bridgeClientId"]).then((stored) => {
@@ -36,6 +71,9 @@ let handshakeTimer = null;
 let connected = false;
 let lastError = "";
 let connecting = false;
+/** Quiet waiting for liveAct — not an error */
+let waitingForApp = true;
+let reconnectAttempt = 0;
 /** Last time desktop answered (HELLO / PONG / PING). Stale means orphaned WS. */
 let lastDesktopSeenAt = 0;
 const SILENCE_MS = 45000;
@@ -77,14 +115,41 @@ function isInjectableUrl(url) {
 
 function setConnected(value) {
   connected = value;
+  if (value) {
+    waitingForApp = false;
+    lastError = "";
+    reconnectAttempt = 0;
+  }
   chrome.storage.session.set({
     bridgeConnected: value,
+    waitingForApp: !value,
     lastError: value ? "" : lastError,
   });
-  chrome.action.setBadgeText({ text: value ? "ON" : "OFF" });
-  chrome.action.setBadgeBackgroundColor({
-    color: value ? "#d71e28" : "#666666",
-  });
+  // Quiet offline: no alarming badge text while liveAct is simply closed
+  if (value) {
+    chrome.action.setBadgeText({ text: "ON" });
+    chrome.action.setBadgeBackgroundColor({ color: "#d71e28" });
+  } else {
+    chrome.action.setBadgeText({ text: "" });
+    chrome.action.setBadgeBackgroundColor({ color: "#666666" });
+  }
+}
+
+/** Probe HTTP first so we don't open a WebSocket (and spam console) when liveAct is closed. */
+async function liveActIsUp() {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 700);
+    const res = await fetch(BRIDGE_HEALTH, {
+      method: "GET",
+      signal: ctrl.signal,
+      cache: "no-store",
+    });
+    clearTimeout(timer);
+    return Boolean(res?.ok);
+  } catch {
+    return false;
+  }
 }
 
 function send(msg) {
@@ -120,7 +185,11 @@ function markDesktopAlive() {
 }
 
 function forceReconnect(reason) {
-  lastError = reason || lastError;
+  const soft =
+    !reason ||
+    /silent|not open|not reachable|no handshake|reconnecting|send failed/i.test(String(reason));
+  lastError = soft ? "" : reason || lastError;
+  waitingForApp = true;
   stopKeepAlive();
   clearHandshakeTimer();
   cleanupSocket();
@@ -309,13 +378,30 @@ function connect(force = false) {
   cleanupSocket();
   stopKeepAlive();
   connecting = true;
+  waitingForApp = true;
+  lastError = "";
 
+  // Don't open WebSocket until liveAct is up — avoids ERR_CONNECTION_REFUSED spam
+  liveActIsUp().then((up) => {
+    if (!up) {
+      connecting = false;
+      setConnected(false);
+      scheduleReconnect();
+      return;
+    }
+    openWebSocket();
+  });
+}
+
+function openWebSocket() {
+  connecting = true;
   let ws;
   try {
     ws = new WebSocket(BRIDGE_URL);
-  } catch (err) {
+  } catch {
     connecting = false;
-    lastError = err?.message || "Failed to create WebSocket";
+    lastError = "";
+    waitingForApp = true;
     setConnected(false);
     scheduleReconnect();
     return;
@@ -328,13 +414,12 @@ function connect(force = false) {
     connecting = false;
     lastError = "";
     // Do NOT mark connected on TCP open — wait for desktop HELLO/PING/PONG.
-    // Half-open sockets after a long idle/desktop restart look OPEN but are dead.
     lastDesktopSeenAt = 0;
     send({
       type: MessageType.HELLO,
       role: "extension",
       clientId: bridgeClientId,
-      version: "0.1.27",
+      version: "0.1.30",
     });
     if (tabStatusTimer) clearInterval(tabStatusTimer);
     tabStatusTimer = setInterval(() => {
@@ -365,14 +450,12 @@ function connect(force = false) {
       msg.type === MessageType.HELLO
     ) {
       markDesktopAlive();
-      // Re-announce ourselves whenever desktop HELLO's — guarantees registration
-      // even if our open-time HELLO raced or was dropped.
       if (msg.type === MessageType.HELLO) {
         send({
           type: MessageType.HELLO,
           role: "extension",
           clientId: bridgeClientId,
-          version: "0.1.27",
+          version: "0.1.30",
         });
         if (connected) reportTabStatus().catch(() => {});
       }
@@ -453,14 +536,17 @@ function connect(force = false) {
     stopKeepAlive();
     clearHandshakeTimer();
     socket = null;
+    waitingForApp = true;
+    lastError = "";
     setConnected(false);
     scheduleReconnect();
   });
 
   ws.addEventListener("error", () => {
     if (socket !== ws) return;
-    lastError = "liveAct desktop not reachable on ws://127.0.0.1:17321 — start liveAct first";
-    // close() triggers the close handler / reconnect
+    // Expected when liveAct quits — not a user-facing error
+    lastError = "";
+    waitingForApp = true;
     try {
       ws.close();
     } catch {
@@ -471,10 +557,12 @@ function connect(force = false) {
 
 function scheduleReconnect() {
   if (reconnectTimer) return;
+  reconnectAttempt = Math.min((reconnectAttempt || 0) + 1, 8);
+  const delay = Math.min(1500 * Math.pow(1.45, reconnectAttempt - 1), 12000);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connect(true);
-  }, 2500);
+  }, delay);
 }
 
 async function sendToTab(tabId, payload, { failCardId = null } = {}) {
@@ -979,7 +1067,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({
       connected,
       connecting: handshaking,
-      lastError,
+      waitingForApp: !connected,
+      lastError: connected ? "" : lastError,
       bridgeUrl: BRIDGE_URL,
     });
     return true;
@@ -996,7 +1085,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({
         connected,
         connecting: handshaking,
-        lastError,
+        waitingForApp: !connected,
+        lastError: connected ? "" : lastError,
+        bridgeUrl: BRIDGE_URL,
       });
     }, 1200);
     return true;

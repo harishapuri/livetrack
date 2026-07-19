@@ -28,8 +28,12 @@ const {
   saveLobConfig,
   normalizeAssignees,
 } = require("../liveact/documents");
+const { BRIDGE_PORT } = require("../shared/protocol");
 
 const PORT = 4175;
+// Same machine by default; override only for rare remote publish (never hardcode a personal LAN IP).
+const LIVEACT_BRIDGE_HOST = String(process.env.LIVEACT_BRIDGE_HOST || "127.0.0.1").trim() || "127.0.0.1";
+const LIVEACT_BRIDGE = `http://${LIVEACT_BRIDGE_HOST}:${BRIDGE_PORT}`;
 const REPO_ROOT = path.join(__dirname, "..", "..");
 const dashRoot = path.join(__dirname);
 const converterRoot = path.join(__dirname, "converter");
@@ -64,7 +68,7 @@ function send(res, status, body, headers = {}) {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Private-Network": "true",
     ...headers,
@@ -238,7 +242,139 @@ function injectConverterNav(html) {
   return nav + html;
 }
 
+function writeSopFile(sop) {
+  const id = safeId(sop.id);
+  if (!id) throw new Error("SOP id is required");
+  sop.id = id;
+  fs.mkdirSync(SOPS_DIR, { recursive: true });
+  fs.mkdirSync(USER_SOPS_DIR, { recursive: true });
+  const fileName = `${id}.json`;
+  const filePath = path.join(SOPS_DIR, fileName);
+  const payload = `${JSON.stringify(sop, null, 2)}\n`;
+  fs.writeFileSync(filePath, payload, "utf8");
+  fs.writeFileSync(path.join(USER_SOPS_DIR, fileName), payload, "utf8");
+  return {
+    ok: true,
+    id,
+    path: path.join("shared", "sops", fileName),
+    userPath: path.join("Documents", "Coact", "sops", fileName),
+    absolutePath: filePath,
+  };
+}
+
+function removeDirRecursive(dir) {
+  if (!fs.existsSync(dir)) return;
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+function buildCardMeta(body, existing = {}) {
+  const id = safeId(body.id || existing.id);
+  const lob = safeLob(body.lob || existing.lob);
+  const title = String(body.title != null ? body.title : existing.title || id).trim() || id;
+  const status = String(body.status != null ? body.status : existing.status || "queued").trim() || "queued";
+  const sopId =
+    safeId(body.sopId != null ? body.sopId : existing.sopId || "vendor-onboarding") ||
+    "vendor-onboarding";
+  const meta = { id, title, sopId, status, lob };
+
+  const formUrlRaw = body.formUrl !== undefined ? body.formUrl : existing.formUrl;
+  if (formUrlRaw != null && String(formUrlRaw).trim()) {
+    meta.formUrl = String(formUrlRaw).trim();
+  }
+
+  if (body.formMatch !== undefined) {
+    if (Array.isArray(body.formMatch) && body.formMatch.length) {
+      meta.formMatch = body.formMatch.map(String);
+    }
+  } else if (Array.isArray(existing.formMatch) && existing.formMatch.length) {
+    meta.formMatch = existing.formMatch;
+  }
+
+  const pdfPath = body.pdfPath !== undefined ? body.pdfPath : existing.pdfPath;
+  if (pdfPath != null && String(pdfPath).trim()) {
+    meta.pdfPath = String(pdfPath).trim();
+  }
+
+  if (body.assignees !== undefined) {
+    meta.assignees = normalizeAssignees(body.assignees);
+  } else if (existing.assignees?.length) {
+    meta.assignees = normalizeAssignees(existing.assignees);
+  }
+
+  return meta;
+}
+
+function publishToLiveAct() {
+  return new Promise((resolve) => {
+    const url = new URL("/publish", LIVEACT_BRIDGE);
+    const req = http.request(
+      {
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: "POST",
+        timeout: 4000,
+        headers: { "Content-Type": "application/json", "Content-Length": 2 },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          let body = {};
+          try {
+            body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+          } catch {
+            body = {};
+          }
+          if (res.statusCode >= 200 && res.statusCode < 300 && body.ok !== false) {
+            resolve({
+              ok: true,
+              liveAct: true,
+              cardCount: body.cardCount ?? null,
+              allCardCount: body.allCardCount ?? null,
+              cardIds: body.cardIds || [],
+              ...body,
+            });
+          } else {
+            resolve({
+              ok: false,
+              liveAct: false,
+              error: body.error || `liveAct HTTP ${res.statusCode}`,
+            });
+          }
+        });
+      }
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      resolve({
+        ok: false,
+        liveAct: false,
+        error: "liveAct did not respond — is the app running?",
+      });
+    });
+    req.on("error", (err) => {
+      resolve({
+        ok: false,
+        liveAct: false,
+        error:
+          err?.code === "ECONNREFUSED"
+            ? "liveAct is not running (start the desktop app, then publish again)"
+            : err?.message || "Cannot reach liveAct",
+      });
+    });
+    req.write("{}");
+    req.end();
+  });
+}
+
 async function handleApi(req, res, pathname) {
+  if (pathname === "/api/publish-liveact" && (req.method === "POST" || req.method === "GET")) {
+    const result = await publishToLiveAct();
+    send(res, result.ok ? 200 : 503, result);
+    return true;
+  }
+
   if (pathname === "/api/sops" && req.method === "GET") {
     send(res, 200, { sops: listSops(), dir: path.relative(REPO_ROOT, SOPS_DIR) });
     return true;
@@ -265,6 +401,32 @@ async function handleApi(req, res, pathname) {
     return true;
   }
 
+  if (sopGet && req.method === "PUT") {
+    try {
+      const id = safeId(decodeURIComponent(sopGet[1]));
+      if (!id) {
+        send(res, 400, { error: "Invalid SOP id" });
+        return true;
+      }
+      const filePath = path.join(SOPS_DIR, `${id}.json`);
+      if (!fs.existsSync(filePath)) {
+        send(res, 404, { error: `SOP not found: ${id}` });
+        return true;
+      }
+      const sop = JSON.parse(await readBody(req));
+      sop.id = id;
+      const err = validateSop(sop);
+      if (err) {
+        send(res, 400, { error: err });
+        return true;
+      }
+      send(res, 200, writeSopFile(sop));
+    } catch (e) {
+      send(res, 400, { error: e.message || "Invalid JSON" });
+    }
+    return true;
+  }
+
   if (pathname === "/api/sops" && req.method === "POST") {
     try {
       const sop = JSON.parse(await readBody(req));
@@ -273,23 +435,12 @@ async function handleApi(req, res, pathname) {
         send(res, 400, { error: err });
         return true;
       }
-      const id = safeId(sop.id);
-      sop.id = id;
-      fs.mkdirSync(SOPS_DIR, { recursive: true });
-      fs.mkdirSync(USER_SOPS_DIR, { recursive: true });
-      const fileName = `${id}.json`;
-      const filePath = path.join(SOPS_DIR, fileName);
-      const payload = `${JSON.stringify(sop, null, 2)}\n`;
-      fs.writeFileSync(filePath, payload, "utf8");
-      // liveAct also reads ~/Documents/Coact/sops
-      fs.writeFileSync(path.join(USER_SOPS_DIR, fileName), payload, "utf8");
-      send(res, 200, {
-        ok: true,
-        id,
-        path: path.join("shared", "sops", fileName),
-        userPath: path.join("Documents", "Coact", "sops", fileName),
-        absolutePath: filePath,
-      });
+      const result = writeSopFile(sop);
+      if (!result.id) {
+        send(res, 400, { error: "SOP id is required" });
+        return true;
+      }
+      send(res, 200, result);
     } catch (e) {
       send(res, 400, { error: e.message || "Invalid JSON" });
     }
@@ -396,6 +547,96 @@ async function handleApi(req, res, pathname) {
     return true;
   }
 
+  if (cardGet && req.method === "PUT") {
+    try {
+      const lob = safeLob(decodeURIComponent(cardGet[1]));
+      const id = safeId(decodeURIComponent(cardGet[2]));
+      if (!id) {
+        send(res, 400, { error: "Invalid card id" });
+        return true;
+      }
+      const existing = findCard(lob, id);
+      if (!existing) {
+        send(res, 404, { error: "Card not found" });
+        return true;
+      }
+
+      const body = JSON.parse(await readBody(req));
+      const nextLob = safeLob(body.lob != null ? body.lob : lob);
+      const nextId = safeId(body.id != null ? body.id : id);
+      if (!nextId) {
+        send(res, 400, { error: "Card id is required" });
+        return true;
+      }
+
+      const root = defaultDocumentsRoot();
+      const fromDir = lobCardDir(root, id, lob);
+      const toDir = lobCardDir(root, nextId, nextLob);
+      const moving = path.resolve(fromDir) !== path.resolve(toDir);
+
+      if (moving && fs.existsSync(toDir) && isCardDir(toDir) && !body.overwrite) {
+        send(res, 409, { error: `Target card already exists: ${nextLob}/${nextId}` });
+        return true;
+      }
+
+      const data =
+        body.data && typeof body.data === "object" && !Array.isArray(body.data)
+          ? body.data
+          : existing.data || {};
+
+      const meta = buildCardMeta(
+        {
+          ...body,
+          id: nextId,
+          lob: nextLob,
+        },
+        existing
+      );
+
+      if (moving) {
+        fs.mkdirSync(path.dirname(toDir), { recursive: true });
+        if (fs.existsSync(toDir)) removeDirRecursive(toDir);
+        fs.renameSync(fromDir, toDir);
+      }
+
+      writeCardFiles(toDir, {
+        data,
+        meta,
+        readme: body.readme != null ? String(body.readme) : undefined,
+      });
+
+      send(res, 200, {
+        ok: true,
+        lob: nextLob,
+        id: nextId,
+        moved: moving,
+        path: toDir,
+        meta,
+      });
+    } catch (e) {
+      send(res, 400, { error: e.message || "Invalid request" });
+    }
+    return true;
+  }
+
+  if (cardGet && req.method === "DELETE") {
+    const lob = safeLob(decodeURIComponent(cardGet[1]));
+    const id = safeId(decodeURIComponent(cardGet[2]));
+    if (!id) {
+      send(res, 400, { error: "Invalid card id" });
+      return true;
+    }
+    const existing = findCard(lob, id);
+    if (!existing) {
+      send(res, 404, { error: "Card not found" });
+      return true;
+    }
+    const dir = lobCardDir(defaultDocumentsRoot(), id, lob);
+    removeDirRecursive(dir);
+    send(res, 200, { ok: true, lob, id, deleted: true });
+    return true;
+  }
+
   if (pathname === "/api/queue-cards" && req.method === "POST") {
     try {
       const body = JSON.parse(await readBody(req));
@@ -419,6 +660,7 @@ async function handleApi(req, res, pathname) {
           formUrl: src.formUrl,
           formMatch: src.formMatch,
           pdfPath: src.pdfPath,
+          assignees: src.assignees,
         };
         baseData = { ...(src.data || {}) };
       }
@@ -427,13 +669,6 @@ async function handleApi(req, res, pathname) {
         body.data && typeof body.data === "object" && !Array.isArray(body.data)
           ? body.data
           : baseData;
-      const sopId = safeId(body.sopId || baseMeta.sopId || "vendor-onboarding") || "vendor-onboarding";
-      const title = String(body.title || id).trim() || id;
-      const status = String(body.status || "queued").trim() || "queued";
-      const formUrl =
-        body.formUrl != null && String(body.formUrl).trim()
-          ? String(body.formUrl).trim()
-          : baseMeta.formUrl || null;
 
       const root = defaultDocumentsRoot();
       const dir = lobCardDir(root, id, lob);
@@ -442,24 +677,7 @@ async function handleApi(req, res, pathname) {
         return true;
       }
 
-      const meta = {
-        id,
-        title,
-        sopId,
-        status,
-        lob,
-      };
-      if (formUrl) meta.formUrl = formUrl;
-      if (Array.isArray(body.formMatch) && body.formMatch.length) {
-        meta.formMatch = body.formMatch;
-      } else if (Array.isArray(baseMeta.formMatch) && baseMeta.formMatch.length) {
-        meta.formMatch = baseMeta.formMatch;
-      }
-      if (baseMeta.pdfPath && body.pdfPath !== null) meta.pdfPath = baseMeta.pdfPath;
-      if (body.pdfPath) meta.pdfPath = body.pdfPath;
-      if (body.assignees != null) {
-        meta.assignees = normalizeAssignees(body.assignees);
-      }
+      const meta = buildCardMeta(body, { ...baseMeta, id, lob });
 
       writeCardFiles(dir, {
         data,
@@ -493,7 +711,7 @@ async function handler(req, res) {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
       "Access-Control-Allow-Private-Network": "true",
     });

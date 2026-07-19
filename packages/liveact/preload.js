@@ -3,6 +3,11 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("coact", {
   getBootstrap: () => ipcRenderer.invoke("get-bootstrap"),
   refreshQueue: () => ipcRenderer.invoke("refresh-queue"),
+  onQueueUpdated: (cb) => {
+    const handler = (_event, data) => cb(data);
+    ipcRenderer.on("queue-updated", handler);
+    return () => ipcRenderer.removeListener("queue-updated", handler);
+  },
   runCard: (cardId, options) => ipcRenderer.invoke("run-card", cardId, options || {}),
   watchCard: (cardId, options) => ipcRenderer.invoke("watch-card", cardId, options || {}),
   controlRun: (action) => ipcRenderer.invoke("control-run", action),
@@ -14,6 +19,9 @@ contextBridge.exposeInMainWorld("coact", {
   getOpenAiSettings: () => ipcRenderer.invoke("get-openai-settings"),
   saveOpenAiSettings: (payload) => ipcRenderer.invoke("save-openai-settings", payload),
   pickExecutionsFolder: () => ipcRenderer.invoke("pick-executions-folder"),
+  getExtensionInstallInfo: () => ipcRenderer.invoke("get-extension-install-info"),
+  installBrowserExtension: (browser) =>
+    ipcRenderer.invoke("install-browser-extension", browser || "chrome"),
   pickErrorFiles: () => ipcRenderer.invoke("pick-error-files"),
   captureLiveSnippet: () => ipcRenderer.invoke("capture-live-snippet"),
   captureRegionSnip: () => ipcRenderer.invoke("capture-region-snip"),

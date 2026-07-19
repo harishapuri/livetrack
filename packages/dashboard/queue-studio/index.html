@@ -33,32 +33,38 @@
     </header>
 
     <p class="studio-lead">
-      Clone an existing queue card, tweak <code>data.json</code> and SOP
-      <strong>click / fill</strong> steps, then save a new card into
-      <code>~/Documents/Coact/queue/&lt;LOB&gt;/</code> for liveAct.
+      <strong>Edit</strong> any existing queue card (meta, data, SOP steps), or
+      <strong>create / clone</strong> a new one into
+      <code>~/Documents/Coact/queue/&lt;LOB&gt;/</code>.
     </p>
+
+    <div class="mode-bar" role="tablist" aria-label="Studio mode">
+      <button type="button" class="mode-btn active" data-mode="edit" id="modeEdit">Edit existing</button>
+      <button type="button" class="mode-btn" data-mode="create" id="modeCreate">Create / clone</button>
+    </div>
 
     <main class="studio-grid">
       <section class="panel">
-        <h2>1. Source card</h2>
-        <p class="hint">Pick stored data to reuse (minor edits in the next step)</p>
+        <h2>1. Pick card</h2>
+        <p class="hint" id="pickHint">Load a card to edit every field below</p>
         <label>
-          <span>Existing queue cards</span>
+          <span>Queue cards</span>
           <select id="sourceCard">
             <option value="">Loading…</option>
           </select>
         </label>
         <div class="actions-row">
-          <button type="button" class="btn-filter" id="btnLoadSource">Load into form</button>
+          <button type="button" class="btn-filter" id="btnLoadSource">Load card</button>
           <button type="button" class="btn-ghost" id="btnRefreshCards">Refresh list</button>
         </div>
         <p class="status" id="sourceStatus"></p>
         <div class="source-meta" id="sourceMeta" hidden></div>
+        <p class="edit-banner" id="editBanner" hidden></p>
       </section>
 
       <section class="panel">
-        <h2>2. New queue card</h2>
-        <p class="hint">Change id / title / values, then create</p>
+        <h2>2. Card settings</h2>
+        <p class="hint">LOB, id, title, SOP, status, URLs, assignees</p>
         <div class="form-grid">
           <label>
             <span>LOB</span>
@@ -66,14 +72,14 @@
           </label>
           <label>
             <span>Card id</span>
-            <input id="cardId" placeholder="acme-supplies-copy" />
+            <input id="cardId" placeholder="acme-supplies" />
           </label>
           <label class="span-2">
             <span>Title</span>
             <input id="cardTitle" placeholder="Acme Supplies — vendor onboarding" />
           </label>
           <label>
-            <span>Base SOP</span>
+            <span>SOP</span>
             <select id="cardSopId">
               <option value="">Loading SOPs…</option>
             </select>
@@ -87,39 +93,52 @@
             </select>
           </label>
           <label class="span-2">
-            <span>Form URL (optional)</span>
+            <span>Form URL</span>
             <input id="cardFormUrl" placeholder="http://127.0.0.1:4173/sites/…" />
+          </label>
+          <label class="span-2">
+            <span>PDF path (optional)</span>
+            <input id="cardPdfPath" placeholder="/path/to/form.pdf" />
+          </label>
+          <label class="span-2">
+            <span>Form match (comma URL bits)</span>
+            <input id="cardFormMatch" placeholder="planstream, apply" />
+          </label>
+          <label class="span-2">
+            <span>Assignees (OS usernames, comma)</span>
+            <input id="cardAssignees" placeholder="alice, bob" />
           </label>
         </div>
       </section>
 
       <section class="panel wide">
-        <h2>3. SOP steps (clicks &amp; fills)</h2>
+        <h2>3. SOP steps</h2>
         <p class="hint">
-          Edit or add <code>click</code> steps. By default Create only writes the
-          <strong>new card name</strong> and reuses the Base SOP. Check “Save new SOP” only if you changed clicks.
+          Edit clicks / fills / checks. Choose how to save the SOP when you save the card.
         </p>
         <div class="form-grid sop-meta-grid">
           <label>
-            <span>New SOP id (if saving SOP)</span>
+            <span>SOP id (for new copy)</span>
             <input id="newSopId" placeholder="auto from card id" />
           </label>
           <label>
             <span>SOP name</span>
             <input id="newSopName" placeholder="Optional display name" />
           </label>
-          <label class="span-2 check-row">
-            <span>Options</span>
-            <label class="check-inline">
-              <input type="checkbox" id="saveNewSop" />
-              Save a new SOP copy (only when you changed clicks / fills)
-            </label>
+          <label class="span-2">
+            <span>When saving card</span>
+            <select id="sopSaveMode">
+              <option value="update">Update this SOP in place (steps + mandatory)</option>
+              <option value="new">Save as a new SOP copy</option>
+              <option value="none">Leave SOP file unchanged</option>
+            </select>
           </label>
         </div>
         <div class="data-toolbar">
           <button type="button" class="btn-ghost" id="btnLoadSop">Reload SOP steps</button>
-          <button type="button" class="btn-ghost" id="btnAddClick">+ Add click</button>
-          <button type="button" class="btn-ghost" id="btnAddFill">+ Add fill</button>
+          <button type="button" class="btn-ghost" id="btnAddClick">+ Click</button>
+          <button type="button" class="btn-ghost" id="btnAddFill">+ Fill</button>
+          <button type="button" class="btn-ghost" id="btnAddCheck">+ Check</button>
         </div>
         <div class="steps-list" id="stepsList"></div>
         <p class="status" id="sopStatus"></p>
@@ -127,15 +146,21 @@
 
       <section class="panel wide">
         <h2>4. Case data (<code>data.json</code>)</h2>
-        <p class="hint">Edit JSON values — keys should match SOP <code>valueFrom</code> fields</p>
+        <p class="hint">Keys should match SOP <code>valueFrom</code> fields</p>
         <div class="data-toolbar">
           <button type="button" class="btn-ghost" id="btnPrettyJson">Format JSON</button>
-          <button type="button" class="btn-ghost" id="btnClearData">Clear fields</button>
+          <button type="button" class="btn-ghost" id="btnAddDataField">+ Field</button>
+          <button type="button" class="btn-ghost" id="btnClearData">Clear</button>
         </div>
         <textarea id="dataJson" spellcheck="false" placeholder='{\n  "fullName": "…",\n  "email": "…"\n}'></textarea>
         <div class="field-editor" id="fieldEditor" aria-label="Field editors"></div>
-        <div class="actions-row">
-          <button type="button" class="btn-primary" id="btnCreate">Create card</button>
+        <div class="actions-row save-row">
+          <button type="button" class="btn-primary" id="btnSavePublish" hidden>Save &amp; publish</button>
+          <button type="button" class="btn-primary" id="btnCreatePublish">Create &amp; publish</button>
+          <button type="button" class="btn-ghost" id="btnSave" hidden>Save only</button>
+          <button type="button" class="btn-ghost" id="btnCreate" hidden>Create only</button>
+          <button type="button" class="btn-ghost" id="btnSaveAsCopy" hidden>Save as new copy</button>
+          <button type="button" class="btn-danger" id="btnDelete" hidden>Delete card</button>
         </div>
         <p class="status" id="createStatus"></p>
       </section>

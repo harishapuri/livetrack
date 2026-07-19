@@ -188,7 +188,26 @@ async function refresh() {
   document.getElementById("assignHint").textContent = `Root: ${data.rootDir || "—"} · empty assignees = everyone`;
 }
 
-async function saveLob(clear) {
+async function publishLiveAct() {
+  try {
+    const res = await api("/api/publish-liveact", { method: "POST", body: "{}" });
+    if (!res.ok && res.liveAct === false) {
+      return { ok: false, message: res.error || "liveAct not updated" };
+    }
+    const n = res.cardCount != null ? Number(res.cardCount) : null;
+    const all = res.allCardCount != null ? Number(res.allCardCount) : null;
+    let message = "Published to liveAct";
+    if (n != null) message += ` · ${n} card${n === 1 ? "" : "s"} visible`;
+    if (all != null && n != null && all > n) {
+      message += ` (${all} on disk — assignees filter hides the rest)`;
+    }
+    return { ok: true, message, cardIds: res.cardIds || [] };
+  } catch (err) {
+    return { ok: false, message: err.message || "Publish failed" };
+  }
+}
+
+async function saveLob(clear, publish = false) {
   const status = document.getElementById("lobStatus");
   const lob = document.getElementById("lobSelect").value;
   if (!lob) {
@@ -196,7 +215,7 @@ async function saveLob(clear) {
     return;
   }
   const assignees = clear ? [] : parseUsers(document.getElementById("lobUsers").value);
-  setStatus(status, "Saving…");
+  setStatus(status, publish ? "Saving & publishing…" : "Saving…");
   try {
     const res = await api(`/api/assignments/lob/${encodeURIComponent(lob)}`, {
       method: "PUT",
@@ -205,19 +224,22 @@ async function saveLob(clear) {
     state.lobs[lob] = res.assignees || [];
     document.getElementById("lobUsers").value = formatUsers(res.assignees);
     renderTable();
-    setStatus(
-      status,
-      res.assignees?.length
-        ? `LOB ${lob} → ${res.assignees.join(", ")}`
-        : `LOB ${lob} open to everyone`,
-      "ok"
-    );
+    let msg = res.assignees?.length
+      ? `LOB ${lob} → ${res.assignees.join(", ")}`
+      : `LOB ${lob} open to everyone`;
+    if (publish) {
+      const pub = await publishLiveAct();
+      msg += pub.ok ? ` · ${pub.message}` : ` · saved, but ${pub.message}`;
+      setStatus(status, msg, pub.ok ? "ok" : "err");
+    } else {
+      setStatus(status, msg, "ok");
+    }
   } catch (err) {
     setStatus(status, err.message, "err");
   }
 }
 
-async function saveCard(clear) {
+async function saveCard(clear, publish = false) {
   const status = document.getElementById("cardStatus");
   const key = document.getElementById("cardSelect").value;
   if (!key) {
@@ -226,7 +248,7 @@ async function saveCard(clear) {
   }
   const [lob, id] = key.split("/");
   const assignees = clear ? [] : parseUsers(document.getElementById("cardUsers").value);
-  setStatus(status, "Saving…");
+  setStatus(status, publish ? "Saving & publishing…" : "Saving…");
   try {
     const res = await api(
       `/api/assignments/card/${encodeURIComponent(lob)}/${encodeURIComponent(id)}`,
@@ -240,13 +262,16 @@ async function saveCard(clear) {
     if (card) card.assignees = res.assignees || [];
     document.getElementById("cardUsers").value = formatUsers(res.assignees);
     renderTable();
-    setStatus(
-      status,
-      res.assignees?.length
-        ? `Card ${key} → ${res.assignees.join(", ")}`
-        : `Card ${key} open to everyone`,
-      "ok"
-    );
+    let msg = res.assignees?.length
+      ? `Card ${key} → ${res.assignees.join(", ")}`
+      : `Card ${key} open to everyone`;
+    if (publish) {
+      const pub = await publishLiveAct();
+      msg += pub.ok ? ` · ${pub.message}` : ` · saved, but ${pub.message}`;
+      setStatus(status, msg, pub.ok ? "ok" : "err");
+    } else {
+      setStatus(status, msg, "ok");
+    }
   } catch (err) {
     setStatus(status, err.message, "err");
   }
@@ -255,10 +280,12 @@ async function saveCard(clear) {
 function bind() {
   document.getElementById("lobSelect").addEventListener("change", onLobChange);
   document.getElementById("cardSelect").addEventListener("change", onCardChange);
-  document.getElementById("btnSaveLob").addEventListener("click", () => saveLob(false));
-  document.getElementById("btnClearLob").addEventListener("click", () => saveLob(true));
-  document.getElementById("btnSaveCard").addEventListener("click", () => saveCard(false));
-  document.getElementById("btnClearCard").addEventListener("click", () => saveCard(true));
+  document.getElementById("btnSaveLobPublish").addEventListener("click", () => saveLob(false, true));
+  document.getElementById("btnSaveLob").addEventListener("click", () => saveLob(false, false));
+  document.getElementById("btnClearLob").addEventListener("click", () => saveLob(true, true));
+  document.getElementById("btnSaveCardPublish").addEventListener("click", () => saveCard(false, true));
+  document.getElementById("btnSaveCard").addEventListener("click", () => saveCard(false, false));
+  document.getElementById("btnClearCard").addEventListener("click", () => saveCard(true, true));
 }
 
 async function boot() {

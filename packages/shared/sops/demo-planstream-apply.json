@@ -99,7 +99,8 @@
       "label": "Fill full name",
       "selector": "#fullName",
       "valueFrom": "fullName",
-      "timeoutMs": 15000
+      "timeoutMs": 15000,
+      "mandatory": true
     },
     {
       "id": "email",

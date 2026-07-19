@@ -1903,6 +1903,8 @@
 
   function normalizeCompare(value) {
     return String(value ?? "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
       .trim()
       .toLowerCase()
       .replace(/\s+/g, " ");
@@ -1919,12 +1921,33 @@
     return /^-?\d+(\.\d+)?$/.test(t);
   }
 
+  function levenshtein(a, b) {
+    const s = String(a || "");
+    const t = String(b || "");
+    if (s === t) return 0;
+    if (!s.length) return t.length;
+    if (!t.length) return s.length;
+    const rows = s.length + 1;
+    const cols = t.length + 1;
+    const prev = new Array(cols);
+    const cur = new Array(cols);
+    for (let j = 0; j < cols; j++) prev[j] = j;
+    for (let i = 1; i < rows; i++) {
+      cur[0] = i;
+      const sc = s.charCodeAt(i - 1);
+      for (let j = 1; j < cols; j++) {
+        const cost = sc === t.charCodeAt(j - 1) ? 0 : 1;
+        cur[j] = Math.min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+      }
+      for (let j = 0; j < cols; j++) prev[j] = cur[j];
+    }
+    return prev[cols - 1];
+  }
+
   /**
-   * Type-aware exact compare against one SOP/case expected value.
-   * Strings: trim + collapse whitespace + case-insensitive.
-   * Numbers: numeric equality. Phones: digit equality (7+ digits).
-   * Tiny formatting edge: same alphanumerics after stripping punctuation.
-   * No fuzzy / partial / word-order / edit-distance matching.
+   * Fuzzy compare for mandatory field values.
+   * Case-insensitive + accent-fold + whitespace; allows small typos,
+   * token reorder, and containment. Numbers/phones stay exact.
    * @returns {{ verdict: 'match'|'mismatch' }}
    */
   function compareValues(actual, expected) {
@@ -1937,9 +1960,9 @@
     if (!eRaw) return { verdict: "match" };
     if (!aRaw) return { verdict: "mismatch" };
 
-    if (normalizeCompare(aRaw) === normalizeCompare(eRaw)) {
-      return { verdict: "match" };
-    }
+    const a = normalizeCompare(aRaw);
+    const e = normalizeCompare(eRaw);
+    if (a === e) return { verdict: "match" };
 
     if (looksPlainNumeric(aRaw) && looksPlainNumeric(eRaw)) {
       const an = Number(aRaw.replace(/,/g, ""));
@@ -1956,22 +1979,46 @@
       return { verdict: "match" };
     }
 
-    // Formatting only (hyphens/spaces/punctuation) — not fuzzy names
-    const aAlnum = aRaw.toLowerCase().replace(/[^a-z0-9]/g, "");
-    const eAlnum = eRaw.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (aAlnum && aAlnum === eAlnum) {
+    // Formatting only (hyphens/spaces/punctuation)
+    const aAlnum = a.replace(/[^a-z0-9]/g, "");
+    const eAlnum = e.replace(/[^a-z0-9]/g, "");
+    if (aAlnum && aAlnum === eAlnum) return { verdict: "match" };
+
+    // Containment (e.g. "Acme Inc" vs "acme")
+    if (aAlnum.length >= 3 && eAlnum.length >= 3) {
+      if (aAlnum.includes(eAlnum) || eAlnum.includes(aAlnum)) {
+        return { verdict: "match" };
+      }
+    }
+
+    // Same words, different order
+    const aTokens = a.split(" ").filter(Boolean).sort().join(" ");
+    const eTokens = e.split(" ").filter(Boolean).sort().join(" ");
+    if (aTokens && aTokens === eTokens) return { verdict: "match" };
+
+    // Small typos / fuzzy edit distance
+    const maxLen = Math.max(a.length, e.length);
+    const maxDist = maxLen <= 4 ? 1 : maxLen <= 12 ? 2 : 3;
+    if (maxLen > 0 && levenshtein(a, e) <= maxDist) {
+      return { verdict: "match" };
+    }
+    if (
+      aAlnum.length >= 3 &&
+      eAlnum.length >= 3 &&
+      levenshtein(aAlnum, eAlnum) <= Math.min(maxDist, 2)
+    ) {
       return { verdict: "match" };
     }
 
     return { verdict: "mismatch" };
   }
 
-  /** Exact match against a single expected string (or list via valuesMatchAny). */
+  /** Fuzzy match against a single expected string (or list via valuesMatchAny). */
   function valuesMatch(actual, expected) {
     return compareValues(actual, expected).verdict === "match";
   }
 
-  /** Exact match if actual equals any entry in the allowed list (normalizeCompare rules). */
+  /** Fuzzy match if actual matches any entry in the allowed list. */
   function valuesMatchAny(actual, expectedList) {
     const list = Array.isArray(expectedList) ? expectedList : [];
     if (!list.length) return true;

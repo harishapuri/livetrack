@@ -34,6 +34,100 @@
   line-height: 1.45;
 }
 
+.mode-bar {
+  display: flex;
+  gap: 8px;
+  padding: 4px 28px 8px;
+}
+
+.mode-btn {
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+  border-radius: 999px;
+  padding: 8px 16px;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+}
+
+.mode-btn:hover {
+  color: var(--text);
+  background: var(--bg1);
+}
+
+.mode-btn.active {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.edit-banner {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(226, 59, 46, 0.08);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.btn-danger {
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+  border-radius: 8px;
+  padding: 9px 14px;
+  cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  background: transparent;
+  color: var(--accent);
+}
+
+.btn-danger:hover {
+  background: rgba(226, 59, 46, 0.08);
+}
+
+.field-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.field-row input {
+  flex: 1;
+}
+
+.row-actions {
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.row-actions button {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: #fff;
+  cursor: pointer;
+}
+
+.step-fields .check-inline {
+  flex-direction: row;
+  align-items: center;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 0.82rem;
+  margin-top: 8px;
+}
+
+.save-row {
+  margin-top: 16px;
+}
+
 .studio-lead code {
   font-size: 0.85em;
   color: var(--text);

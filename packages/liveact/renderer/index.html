@@ -200,6 +200,17 @@
               Env override: <code>COACT_EXECUTIONS_ROOT</code>
             </p>
           </label>
+          <div class="field">
+            <span>Browser extension (Chrome / Edge)</span>
+            <p class="muted tiny-copy" id="extInstallHint" style="margin:6px 0 8px">
+              An .exe cannot auto-install browser extensions. Copy the bundled extension, then Load unpacked.
+            </p>
+            <div class="controls" style="gap:6px;flex-wrap:wrap">
+              <button id="btnInstallExtChrome" class="btn ghost tiny" type="button">Add to Chrome…</button>
+              <button id="btnInstallExtEdge" class="btn ghost tiny" type="button">Add to Edge…</button>
+            </div>
+            <p class="muted tiny-copy" id="extInstallPath" style="margin-top:8px"></p>
+          </div>
           <div class="controls">
             <button id="btnSettingsCancel" class="btn ghost" type="button">Close</button>
             <button id="btnSettingsSave" class="btn primary" type="button">Save</button>

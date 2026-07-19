@@ -1034,6 +1034,17 @@ async function openSettings() {
     executionsRootInput.value = s?.executionsRootOverride || s?.executionsRoot || "";
     executionsRootInput.placeholder = s?.executionsRoot || "Default: <project>/executions";
   }
+  const pathEl = document.getElementById("extInstallPath");
+  try {
+    const info = await window.coact.getExtensionInstallInfo?.();
+    if (pathEl && info?.userPath) {
+      pathEl.textContent = info.installed
+        ? `Ready to load: ${info.userPath}`
+        : `Will install to: ${info.userPath}`;
+    }
+  } catch {
+    if (pathEl) pathEl.textContent = "";
+  }
   settingsModal.classList.remove("hidden");
 }
 
@@ -1444,6 +1455,40 @@ btnRefreshQueue.addEventListener("click", async () => {
   applyQueuePayload(data);
   showQueue();
 });
+window.coact.onQueueUpdated?.((data) => {
+  applyQueuePayload(data);
+  const openId = activeCardId;
+  if (openId) {
+    // Drop cached progress chrome so mandatory / step edits from studio show immediately
+    cardProgress.delete(openId);
+    const card = cards.find((c) => c.id === openId);
+    if (card) {
+      showQuest(card);
+      // Re-bind watcher so Chrome extension gets fresh SOP steps
+      window.coact.watchCard?.(openId).catch(() => {});
+      if (runNote) {
+        runNote.className = "run-note success";
+        const mand = (card.steps || []).filter((s) => s.mandatory).length;
+        runNote.textContent =
+          mand > 0
+            ? `Updated from Queue studio · ${mand} mandatory step${mand === 1 ? "" : "s"}`
+            : "Updated from Queue studio";
+      }
+    } else {
+      showQueue();
+    }
+  } else {
+    renderQueue();
+  }
+  if (tagline && !openId) {
+    const n = (data.queue || []).length;
+    const all = data.allCardCount;
+    tagline.textContent =
+      all != null && all > n
+        ? `Updated · ${n} visible (${all} on disk)`
+        : `Updated · ${n} card${n === 1 ? "" : "s"}`;
+  }
+});
 btnFilterQueue?.addEventListener("click", () => {
   toggleQueueFilter();
 });
@@ -1512,6 +1557,27 @@ btnPickExecutions?.addEventListener("click", async () => {
     executionsRootInput.value = res.path;
   }
 });
+
+async function installExt(browser) {
+  const pathEl = document.getElementById("extInstallPath");
+  const hint = document.getElementById("extInstallHint");
+  try {
+    const res = await window.coact.installBrowserExtension?.(browser);
+    if (!res?.ok) {
+      if (pathEl) pathEl.textContent = res?.error || "Install failed";
+      return;
+    }
+    if (pathEl) pathEl.textContent = `Load unpacked from: ${res.path}`;
+    if (hint) {
+      hint.textContent =
+        "Developer mode ON → Load unpacked → select Documents/Coact/extension (folder opened).";
+    }
+  } catch (err) {
+    if (pathEl) pathEl.textContent = err?.message || String(err);
+  }
+}
+document.getElementById("btnInstallExtChrome")?.addEventListener("click", () => installExt("chrome"));
+document.getElementById("btnInstallExtEdge")?.addEventListener("click", () => installExt("edge"));
 chatInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();

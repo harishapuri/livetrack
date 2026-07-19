@@ -1,0 +1,27 @@
+liveAct Form Agent — install in Chrome or Edge
+==============================================
+
+Browsers do NOT allow an .exe to silently install extensions.
+You load this folder once as an “unpacked” extension (same for Chrome and Edge).
+
+1. Open liveAct → Settings → “Install browser extension”
+   OR copy this whole `extension` folder somewhere stable, e.g.
+   Documents\\Coact\\extension
+
+2. Chrome
+   - Open chrome://extensions
+   - Turn on Developer mode
+   - Load unpacked → select the `extension` folder
+
+3. Microsoft Edge
+   - Open edge://extensions
+   - Turn on Developer mode
+   - Load unpacked → select the same `extension` folder
+
+4. Start liveAct first. The extension uses ws://127.0.0.1:17321 on THIS PC
+   (each machine’s own loopback — no hardcoded personal IP). Confirm the
+   toolbar can show Online; if liveAct is closed it quietly waits and reconnects.
+
+Packaged app path (after install):
+  <liveAct install dir>\\resources\\extension
+  (on Mac: liveAct.app/Contents/Resources/extension)
