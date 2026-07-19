@@ -1,0 +1,116 @@
+{
+  "name": "@coact/liveact",
+  "version": "0.1.0",
+  "private": true,
+  "description": "liveAct Electron app — queue cards, step watcher, pause/takeover",
+  "author": "liveAct",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "generate-day-sql": "node scripts/generate-day-sql.js",
+    "pack": "electron-builder --dir --config.electronVersion=33.4.11",
+    "dist": "electron-builder --config.electronVersion=33.4.11",
+    "dist:mac": "electron-builder --mac --config.electronVersion=33.4.11",
+    "dist:win": "electron-builder --win --config.electronVersion=33.4.11"
+  },
+  "dependencies": {
+    "@coact/shared": "*",
+    "exceljs": "^4.4.0",
+    "pdf-lib": "^1.17.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.coact.app",
+    "productName": "liveAct",
+    "copyright": "Copyright © liveAct",
+    "electronVersion": "33.4.11",
+    "npmRebuild": false,
+    "nodeGypRebuild": false,
+    "directories": {
+      "output": "../../release"
+    },
+    "files": [
+      "**/*",
+      "!scripts/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../extension",
+        "to": "extension",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../shared",
+        "to": "shared",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../demo",
+        "to": "demo",
+        "filter": [
+          "**/*",
+          "!generate-sites.js",
+          "!package.json"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "identity": null
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "liveAct"
+    }
+  }
+}

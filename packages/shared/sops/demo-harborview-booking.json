@@ -1,0 +1,64 @@
+{
+  "id": "demo-harborview-booking",
+  "name": "Harborview Inn — Booking inquiry",
+  "description": "Fill the Harborview Inn demo form on the current tab.",
+  "formUrl": "http://127.0.0.1:4173/sites/harborview-booking",
+  "steps": [
+    {
+      "id": "guestName",
+      "action": "fill",
+      "label": "Guest name",
+      "selector": "#guestName",
+      "valueFrom": "guestName"
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "checkIn",
+      "action": "fill",
+      "label": "Check-in date",
+      "selector": "#checkIn",
+      "valueFrom": "checkIn"
+    },
+    {
+      "id": "checkOut",
+      "action": "fill",
+      "label": "Check-out date",
+      "selector": "#checkOut",
+      "valueFrom": "checkOut"
+    },
+    {
+      "id": "guests",
+      "action": "fill",
+      "label": "Number of guests",
+      "selector": "#guests",
+      "valueFrom": "guests"
+    },
+    {
+      "id": "roomType",
+      "action": "fill",
+      "label": "Room type",
+      "selector": "#roomType",
+      "valueFrom": "roomType"
+    },
+    {
+      "id": "notes",
+      "action": "fill",
+      "label": "Special requests",
+      "selector": "#notes",
+      "valueFrom": "notes"
+    },
+    {
+      "id": "highlight-review",
+      "action": "highlight",
+      "label": "Highlight submit for human review",
+      "selector": "#submitBtn"
+    }
+  ]
+}

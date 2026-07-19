@@ -1,0 +1,123 @@
+{
+  "id": "demo-section-select",
+  "name": "Segue Select — 5 section selects then form",
+  "description": "Single-page click stream: Region → Product → Intent → Plan → Confirm, then fill the request form (same URL).",
+  "formUrl": "http://127.0.0.1:4173/sites/section-select/",
+  "formMatch": [
+    "section-select",
+    "Segue Select",
+    "sites/section-select"
+  ],
+  "steps": [
+    {
+      "id": "click-region",
+      "action": "click",
+      "label": "Select region",
+      "findByText": [
+        "Select region"
+      ],
+      "selector": "#btnSelectRegion",
+      "waitAfter": {
+        "selector": "#section-product",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "click-product",
+      "action": "click",
+      "label": "Select product",
+      "findByText": [
+        "Select product"
+      ],
+      "selector": "#btnSelectProduct",
+      "waitAfter": {
+        "selector": "#section-intent",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "click-intent",
+      "action": "click",
+      "label": "Select intent",
+      "findByText": [
+        "Select intent"
+      ],
+      "selector": "#btnSelectIntent",
+      "waitAfter": {
+        "selector": "#section-plan",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "click-plan",
+      "action": "click",
+      "label": "Select plan",
+      "findByText": [
+        "Select plan"
+      ],
+      "selector": "#btnSelectPlan",
+      "waitAfter": {
+        "selector": "#section-confirm",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "click-confirm",
+      "action": "click",
+      "label": "Confirm selections",
+      "findByText": [
+        "Confirm selections"
+      ],
+      "selector": "#btnSelectConfirm",
+      "waitAfter": {
+        "selector": "#section-form",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "fullName",
+      "action": "fill",
+      "label": "Fill full name",
+      "selector": "#fullName",
+      "valueFrom": "fullName",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Fill work email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "company",
+      "action": "fill",
+      "label": "Fill company",
+      "selector": "#company",
+      "valueFrom": "company",
+      "mandatory": true
+    },
+    {
+      "id": "teamSize",
+      "action": "fill",
+      "label": "Fill team size",
+      "selector": "#teamSize",
+      "valueFrom": "teamSize"
+    },
+    {
+      "id": "notes",
+      "action": "fill",
+      "label": "Fill notes",
+      "selector": "#notes",
+      "valueFrom": "notes"
+    },
+    {
+      "id": "highlight-submit",
+      "action": "highlight",
+      "label": "Pause for Submit",
+      "selector": "#submitBtn",
+      "optional": true
+    }
+  ]
+}

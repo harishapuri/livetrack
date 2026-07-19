@@ -1,0 +1,23 @@
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.chip-row button {
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg0);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.chip-row button:hover {
+  background: var(--accent-soft, rgba(226, 59, 46, 0.1));
+  border-color: var(--accent);
+}

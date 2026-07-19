@@ -1,5 +1,30 @@
+# Dependencies
 node_modules/
+packages/*/node_modules/
+
+# Build / pack output
 dist/
-.DS_Store
-*.log
+release/
+out/
 .electron/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
+settings.json
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Runtime execution logs (kept under the project, not committed)
+executions/*.xlsx
+sql/*.sql
+packages/dashboard/data.json
+packages/dashboard/data.js
+!executions/.gitkeep
+!sql/.gitkeep

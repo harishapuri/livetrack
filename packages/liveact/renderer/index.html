@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>liveAct</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app chat-app" id="appRoot">
+      <button id="tailBar" class="tail-bar hidden" type="button" hidden aria-hidden="true"></button>
+
+      <div id="fullUi">
+        <header class="topbar compact">
+          <div class="brand">
+            <span class="brand-mark">L</span>
+            <div>
+              <h1>liveAct</h1>
+              <p class="tagline" id="tagline">Live steps</p>
+            </div>
+          </div>
+          <div class="header-actions">
+            <button id="btnSettings" class="btn ghost tiny" type="button" title="OpenAI settings">⚙</button>
+            <button id="btnMinimize" class="win-btn win-min" type="button" title="Minimize to tail">−</button>
+            <button id="btnQuit" class="win-btn win-close" type="button" title="Quit liveAct">×</button>
+            <div class="status-pill" id="extStatus">
+              <span class="dot"></span>
+              <span id="extStatusText">Offline</span>
+            </div>
+          </div>
+        </header>
+
+        <main class="screen" id="screenQueue">
+          <section class="panel full queue-panel">
+            <div class="panel-head">
+              <h2 id="queueHeading">LOB</h2>
+              <div class="controls queue-head-controls">
+                <button id="btnBackLob" class="btn ghost tiny hidden" type="button">← LOBs</button>
+                <button id="btnRefreshQueue" class="btn ghost tiny" type="button">Refresh</button>
+                <button id="btnFilterQueue" class="btn ghost tiny" type="button" aria-expanded="false" title="Filter tasks">
+                  Filter
+                </button>
+                <span class="muted" id="queueCount">0</span>
+                <button
+                  id="btnQueueGenAi"
+                  class="genai-circle"
+                  type="button"
+                  title="Open GenAI chat"
+                  aria-expanded="false"
+                >
+                  AI
+                </button>
+              </div>
+            </div>
+            <label class="queue-search-wrap hidden" id="queueSearchWrap">
+              <span class="sr-only">Search</span>
+              <input
+                id="queueSearch"
+                class="queue-search"
+                type="search"
+                placeholder="Search…"
+                autocomplete="off"
+              />
+            </label>
+            <div id="queueList" class="queue-list"></div>
+          </section>
+        </main>
+
+        <main class="screen hidden" id="screenQuest">
+          <section class="panel full quest-panel">
+            <div class="quest-top">
+              <div class="chat-toolbar">
+                <button id="btnBack" class="btn ghost tiny" type="button">← Queue</button>
+                <div class="chat-title-wrap">
+                  <strong id="questTitle">—</strong>
+                  <span class="quest-meta" id="questMeta"></span>
+                </div>
+              </div>
+
+              <ol id="stepList" class="step-list compact-fit" aria-live="polite"></ol>
+            </div>
+
+            <div class="quest-dock">
+              <div class="chat-composer">
+                <p class="run-note" id="runNote"></p>
+                <div class="controls chat-actions">
+                  <button id="btnStart" class="btn primary" type="button">Start</button>
+                  <button id="btnCancel" class="btn danger" type="button" disabled>Take over</button>
+                  <button id="btnRefresh" class="btn ghost" type="button" title="Re-scan form steps">
+                    Refresh
+                  </button>
+                  <div class="more-menu" id="moreMenu">
+                    <button
+                      id="btnMore"
+                      class="btn ghost"
+                      type="button"
+                      aria-haspopup="true"
+                      aria-expanded="false"
+                    >
+                      More ▾
+                    </button>
+                    <div class="more-dropdown hidden" id="moreDropdown" role="menu">
+                      <button id="btnPause" class="more-item" type="button" role="menuitem" disabled>
+                        Pause
+                      </button>
+                      <button id="btnResume" class="more-item" type="button" role="menuitem" disabled>
+                        Resume
+                      </button>
+                      <button id="btnClearFields" class="more-item" type="button" role="menuitem">
+                        Clear fields
+                      </button>
+                      <button id="btnStop" class="more-item danger" type="button" role="menuitem" disabled>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    id="btnGenAi"
+                    class="genai-circle"
+                    type="button"
+                    title="Open GenAI chat"
+                    aria-expanded="false"
+                  >
+                    AI
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </main>
+
+        <div class="genai-shell hidden" id="genaiShell" aria-hidden="true">
+          <div class="genai-panel" id="genaiPanel">
+            <div class="genai-shell-head">
+              <strong>Ask liveAct</strong>
+              <button id="btnCloseGenAi" class="btn ghost tiny" type="button">Close</button>
+            </div>
+            <div class="chat-log empty" id="chatLog" aria-live="polite"></div>
+            <div class="prompt-composer">
+              <div class="attach-row" id="attachRow"></div>
+              <div class="prompt-shell">
+                <textarea
+                  id="chatInput"
+                  class="chat-input"
+                  rows="2"
+                  placeholder="Ask liveAct…"
+                ></textarea>
+                <div class="prompt-corner">
+                  <button
+                    id="btnSnippet"
+                    class="icon-btn"
+                    type="button"
+                    title="Snip screenshot (select region)"
+                  >
+                    ✂
+                  </button>
+                  <button
+                    id="btnAttach"
+                    class="icon-btn"
+                    type="button"
+                    title="Attach error file"
+                  >
+                    📎
+                  </button>
+                  <button id="btnSend" class="send-arrow" type="button" title="Send">
+                    ➤
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-card">
+          <h3>Settings</h3>
+          <p class="muted tiny-copy">Stored in Documents/Coact/settings.json</p>
+          <label class="field">
+            <span>OpenAI API key</span>
+            <input id="openaiKeyInput" type="password" placeholder="sk-…" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <input id="openaiModelInput" type="text" placeholder="gpt-4o-mini" />
+          </label>
+          <label class="field">
+            <span>Shared executions folder</span>
+            <div class="controls" style="gap:6px;align-items:center">
+              <input
+                id="executionsRootInput"
+                type="text"
+                placeholder="Default: &lt;project&gt;/executions"
+                style="flex:1;min-width:0"
+              />
+              <button id="btnPickExecutions" class="btn ghost tiny" type="button">Browse…</button>
+            </div>
+            <p class="muted tiny-copy" style="margin-top:6px">
+              All agents should point at the same network/sync folder so supervisors can aggregate Excel.
+              Env override: <code>COACT_EXECUTIONS_ROOT</code>
+            </p>
+          </label>
+          <div class="controls">
+            <button id="btnSettingsCancel" class="btn ghost" type="button">Close</button>
+            <button id="btnSettingsSave" class="btn primary" type="button">Save</button>
+          </div>
+        </div>
+      </div>
+
+      <div
+        id="browserRequiredModal"
+        class="modal hidden"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="browserRequiredTitle"
+      >
+        <div class="modal-card browser-required-card">
+          <h3 id="browserRequiredTitle">Keep your browser window open</h3>
+          <p class="muted">
+            Please open and keep the matching Chrome or Edge form window open, then press Start.
+          </p>
+          <div class="controls">
+            <button id="btnBrowserRequiredClose" class="btn primary" type="button">Got it</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script src="renderer.js"></script>
+  </body>
+</html>

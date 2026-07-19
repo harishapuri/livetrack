@@ -1,0 +1,100 @@
+{
+  "id": "demo-gateform-access",
+  "name": "Gateform Access — click gate then form",
+  "description": "Single-page click stream: Start → Accept → Open form → fill access request.",
+  "formUrl": "http://127.0.0.1:4173/sites/gateform-access/",
+  "formMatch": [
+    "gateform-access",
+    "Gateform Access",
+    "sites/gateform-access"
+  ],
+  "steps": [
+    {
+      "id": "click-start",
+      "action": "click",
+      "label": "Click Start",
+      "findByText": [
+        "Start"
+      ],
+      "selector": "#btnStart",
+      "waitAfter": {
+        "selector": "#btnAccept",
+        "hideSelector": "#btnStart",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "click-accept",
+      "action": "click",
+      "label": "Click Accept",
+      "findByText": [
+        "Accept"
+      ],
+      "selector": "#btnAccept",
+      "waitAfter": {
+        "selector": "#btnOpenForm",
+        "hideSelector": "#btnAccept",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "click-open-form",
+      "action": "click",
+      "label": "Click Open form",
+      "findByText": [
+        "Open form"
+      ],
+      "selector": "#btnOpenForm",
+      "waitAfter": {
+        "selector": "#fullName",
+        "hideSelector": "#btnOpenForm",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "fullName",
+      "action": "fill",
+      "label": "Fill full name",
+      "selector": "#fullName",
+      "valueFrom": "fullName",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Fill work email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "company",
+      "action": "fill",
+      "label": "Fill company",
+      "selector": "#company",
+      "valueFrom": "company",
+      "mandatory": true
+    },
+    {
+      "id": "accessType",
+      "action": "fill",
+      "label": "Fill access type",
+      "selector": "#accessType",
+      "valueFrom": "accessType"
+    },
+    {
+      "id": "reason",
+      "action": "fill",
+      "label": "Fill reason",
+      "selector": "#reason",
+      "valueFrom": "reason"
+    },
+    {
+      "id": "highlight-submit",
+      "action": "highlight",
+      "label": "Pause for Submit",
+      "selector": "#submitBtn",
+      "optional": true
+    }
+  ]
+}

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PlanStream Apply — Application</title>
+    <style>
+      :root {
+        --bg: #f7f4ef;
+        --ink: #1c1917;
+        --line: #d6d3d1;
+        --accent: #c2410c;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Avenir Next", sans-serif;
+        color: var(--ink);
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 36%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      main { max-width: 640px; margin: 0 auto; padding: 40px 22px 64px; }
+      .site { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+      h1 { margin: 6px 0 8px; font-size: 1.75rem; }
+      .sub { margin: 0 0 24px; color: #57534e; line-height: 1.45; }
+      form { display: grid; gap: 12px; background: transparent; border: 0; border-radius: 0; padding: 4px 0; }
+      label { display: grid; gap: 6px; font-size: 0.92rem; }
+      input, textarea {
+        font: inherit; padding: 10px 12px; border: 1px solid var(--line);
+        border-radius: 8px; background: #fff;
+      }
+      button {
+        justify-self: start; font: inherit; padding: 11px 16px; border: 0;
+        border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer;
+      }
+      .hint { margin-top: 18px; color: #78716c; font-size: 0.88rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="site">PlanStream Apply</div>
+      <h1>Application</h1>
+      <p class="sub">Final page — Coact fills these fields after the multi-page click stream.</p>
+      <form id="applyForm" onsubmit="event.preventDefault(); alert('Submitted (demo only)');">
+        <label>
+          Full name
+          <input id="fullName" name="fullName" type="text" />
+        </label>
+        <label>
+          Work email
+          <input id="email" name="email" type="email" />
+        </label>
+        <label>
+          Company
+          <input id="company" name="company" type="text" />
+        </label>
+        <label>
+          Team size
+          <input id="teamSize" name="teamSize" type="text" />
+        </label>
+        <label>
+          Use case
+          <textarea id="useCase" name="useCase" rows="3"></textarea>
+        </label>
+        <button id="submitBtn" type="submit">Submit</button>
+      </form>
+      <p class="hint">URL: http://127.0.0.1:4173/sites/planstream-apply/form</p>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,57 @@
+{
+  "id": "demo-metro-permit",
+  "name": "Metro City — Permit application",
+  "description": "Fill the Metro City Permits demo form on the current tab.",
+  "formUrl": "http://127.0.0.1:4173/sites/metro-permit",
+  "steps": [
+    {
+      "id": "applicant",
+      "action": "fill",
+      "label": "Applicant name",
+      "selector": "#applicant",
+      "valueFrom": "applicant"
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "address",
+      "action": "fill",
+      "label": "Property address",
+      "selector": "#address",
+      "valueFrom": "address"
+    },
+    {
+      "id": "permitType",
+      "action": "fill",
+      "label": "Permit type",
+      "selector": "#permitType",
+      "valueFrom": "permitType"
+    },
+    {
+      "id": "startDate",
+      "action": "fill",
+      "label": "Proposed start date",
+      "selector": "#startDate",
+      "valueFrom": "startDate"
+    },
+    {
+      "id": "scope",
+      "action": "fill",
+      "label": "Project scope",
+      "selector": "#scope",
+      "valueFrom": "scope"
+    },
+    {
+      "id": "highlight-review",
+      "action": "highlight",
+      "label": "Highlight submit for human review",
+      "selector": "#submitBtn"
+    }
+  ]
+}

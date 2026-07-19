@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>liveAct Extension</title>
+    <style>
+      body {
+        font-family: "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 12px 14px;
+        min-width: 240px;
+        background: #14090a;
+        color: #f7ecee;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+      p {
+        margin: 0 0 10px;
+        color: #b39aa0;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      .ok {
+        color: #d71e28;
+      }
+      .bad {
+        color: #ff6b6b;
+      }
+      button {
+        width: 100%;
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: #d71e28;
+        color: #fff;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>liveAct Form Agent</h1>
+    <p id="status">Checking bridge…</p>
+    <button id="reconnect" type="button">Reconnect to liveAct</button>
+    <script src="popup.js"></script>
+  </body>
+</html>

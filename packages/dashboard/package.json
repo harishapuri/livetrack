@@ -1,0 +1,17 @@
+{
+  "name": "@coact/dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Supervisor dashboard, queue studio, assignments, and SOP converter",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dashboard": "node server.js"
+  },
+  "dependencies": {
+    "@coact/shared": "*"
+  },
+  "files": [
+    "**/*"
+  ]
+}

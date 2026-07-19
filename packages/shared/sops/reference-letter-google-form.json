@@ -1,0 +1,82 @@
+{
+  "id": "reference-letter-google-form",
+  "name": "Reference letter Google Form",
+  "description": "Fills the KSJ Studio reference letter Google Form using question titles.",
+  "formMatch": [
+    "docs.google.com/forms",
+    "forms.gle",
+    "Reference Letter Request"
+  ],
+  "steps": [
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Fill email",
+      "findByLabel": ["Email"],
+      "matchMode": "exact",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "name",
+      "action": "fill",
+      "label": "Fill name",
+      "findByLabel": ["Name"],
+      "matchMode": "exact",
+      "valueFrom": "name",
+      "mandatory": true
+    },
+    {
+      "id": "deadline",
+      "action": "fill",
+      "label": "Fill needed-by date",
+      "findByLabel": ["By when do you need the reference letter"],
+      "matchMode": "startsWith",
+      "valueFrom": "letterNeededBy"
+    },
+    {
+      "id": "fee",
+      "action": "fill",
+      "label": "Confirm fee (yes)",
+      "findByLabel": ["The fee for each reference letter is $900"],
+      "matchMode": "startsWith",
+      "valueFrom": "feeAcknowledged"
+    },
+    {
+      "id": "evidence",
+      "action": "fill",
+      "label": "Fill evidence / petition type",
+      "findByLabel": ["Please list out the evidence you would like reviewed"],
+      "matchMode": "startsWith",
+      "valueFrom": "evidenceSummary"
+    },
+    {
+      "id": "expert-jorge",
+      "action": "check",
+      "label": "Select Jorge O.",
+      "findCheckboxByLabel": ["Jorge O"],
+      "optional": true
+    },
+    {
+      "id": "expert-moody",
+      "action": "check",
+      "label": "Select Moody B.",
+      "findCheckboxByLabel": ["Moody B"],
+      "optional": true
+    },
+    {
+      "id": "expert-sainyam",
+      "action": "check",
+      "label": "Select Sainyam G.",
+      "findCheckboxByLabel": ["Sainyam G"],
+      "optional": true
+    },
+    {
+      "id": "review",
+      "action": "highlight",
+      "label": "Pause for resume upload",
+      "selector": "form",
+      "optional": true
+    }
+  ]
+}

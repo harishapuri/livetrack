@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Segue Select — Demo</title>
+    <style>
+      :root {
+        --bg: #f1f5f9;
+        --ink: #0f172a;
+        --line: #cbd5e1;
+        --accent: #1d4ed8;
+        --muted: #64748b;
+        --done: #0f766e;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Avenir Next", sans-serif;
+        color: var(--ink);
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 40%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      main { max-width: 680px; margin: 0 auto; padding: 40px 22px 64px; }
+      .site { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+      h1 { margin: 6px 0 8px; font-size: 1.75rem; }
+      .sub { margin: 0 0 24px; color: var(--muted); line-height: 1.45; }
+      .stack { display: grid; gap: 18px; }
+      .section {
+        background: transparent; border: 0; border-radius: 0;
+        padding: 4px 0 18px; display: grid; gap: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      .section.complete { opacity: 0.92; }
+      .section:last-child { border-bottom: 0; }
+      .section h2 { margin: 0; font-size: 1.05rem; }
+      .section .meta { margin: 0; color: var(--muted); font-size: 0.88rem; }
+      .options { display: grid; gap: 8px; }
+      .options label {
+        display: flex; gap: 10px; align-items: flex-start;
+        padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+        cursor: pointer;
+      }
+      .options label:has(input:checked) {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 8%, #fff);
+      }
+      button {
+        justify-self: start; font: inherit; padding: 11px 16px; border: 0;
+        border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer;
+      }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      form { display: grid; gap: 12px; }
+      form label { display: grid; gap: 6px; font-size: 0.92rem; }
+      input, textarea {
+        font: inherit; padding: 10px 12px; border: 1px solid var(--line);
+        border-radius: 8px; background: #fff;
+      }
+      .picked { font-size: 0.85rem; color: var(--done); font-weight: 600; margin: 0; }
+      .hint { margin-top: 18px; color: var(--muted); font-size: 0.88rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="site">Segue Select</div>
+      <h1>Build your path</h1>
+      <p class="sub">
+        Five same-page section selects — each click appends the next panel (no navigation).
+        Track progress as steps in Coact (not on-page pill sliders).
+      </p>
+      <div class="stack" id="stack"></div>
+      <p class="hint">URL: http://127.0.0.1:4173/sites/section-select/</p>
+    </main>
+    <script>
+      const picks = { region: null, product: null, intent: null, plan: null };
+      const stack = document.getElementById("stack");
+
+      function radioLabel(name) {
+        const input = document.querySelector(`input[name="${name}"]:checked`);
+        if (!input) return "";
+        const strong = input.closest("label")?.querySelector("strong");
+        return strong ? strong.textContent : input.value;
+      }
+
+      function markComplete(section, summary) {
+        section.classList.add("complete");
+        const btn = section.querySelector("button");
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = "Selected";
+        }
+        section.querySelectorAll(".options input").forEach((el) => {
+          el.disabled = true;
+        });
+        if (summary) {
+          const tag = document.createElement("p");
+          tag.className = "picked";
+          tag.textContent = "Selected: " + summary;
+          section.appendChild(tag);
+        }
+      }
+
+      function appendSection(html) {
+        const wrap = document.createElement("div");
+        wrap.innerHTML = html.trim();
+        const section = wrap.firstElementChild;
+        stack.appendChild(section);
+        section.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        return section;
+      }
+
+      function showRegion() {
+        const section = appendSection(
+          '<section id="section-region" class="section">' +
+            "<h2>1. Region</h2>" +
+            '<p class="meta">Where should this rollout run?</p>' +
+            '<div class="options">' +
+            '<label><input type="radio" name="region" value="americas" checked /><span><strong>Americas</strong> — US &amp; Canada</span></label>' +
+            '<label><input type="radio" name="region" value="emea" /><span><strong>EMEA</strong> — Europe &amp; Middle East</span></label>' +
+            '<label><input type="radio" name="region" value="apac" /><span><strong>APAC</strong> — Asia Pacific</span></label>' +
+            "</div>" +
+            '<button id="btnSelectRegion" type="button">Select region</button>' +
+            "</section>"
+        );
+        section.querySelector("#btnSelectRegion").onclick = function () {
+          picks.region = radioLabel("region");
+          markComplete(section, picks.region);
+          showProduct();
+        };
+      }
+
+      function showProduct() {
+        const section = appendSection(
+          '<section id="section-product" class="section">' +
+            "<h2>2. Product</h2>" +
+            '<p class="meta">Which product line are you configuring?</p>' +
+            '<div class="options">' +
+            '<label><input type="radio" name="product" value="core" checked /><span><strong>Core</strong> — baseline workspace</span></label>' +
+            '<label><input type="radio" name="product" value="insights" /><span><strong>Insights</strong> — analytics add-on</span></label>' +
+            '<label><input type="radio" name="product" value="secure" /><span><strong>Secure</strong> — compliance pack</span></label>' +
+            "</div>" +
+            '<button id="btnSelectProduct" type="button">Select product</button>' +
+            "</section>"
+        );
+        section.querySelector("#btnSelectProduct").onclick = function () {
+          picks.product = radioLabel("product");
+          markComplete(section, picks.product);
+          showIntent();
+        };
+      }
+
+      function showIntent() {
+        const section = appendSection(
+          '<section id="section-intent" class="section">' +
+            "<h2>3. Intent</h2>" +
+            '<p class="meta">What is the primary goal?</p>' +
+            '<div class="options">' +
+            '<label><input type="radio" name="intent" value="pilot" checked /><span><strong>Pilot</strong> — try with a small team</span></label>' +
+            '<label><input type="radio" name="intent" value="migrate" /><span><strong>Migrate</strong> — move from an existing tool</span></label>' +
+            '<label><input type="radio" name="intent" value="expand" /><span><strong>Expand</strong> — grow seats org-wide</span></label>' +
+            "</div>" +
+            '<button id="btnSelectIntent" type="button">Select intent</button>' +
+            "</section>"
+        );
+        section.querySelector("#btnSelectIntent").onclick = function () {
+          picks.intent = radioLabel("intent");
+          markComplete(section, picks.intent);
+          showPlan();
+        };
+      }
+
+      function showPlan() {
+        const section = appendSection(
+          '<section id="section-plan" class="section">' +
+            "<h2>4. Plan</h2>" +
+            '<p class="meta">Pick a commercial plan.</p>' +
+            '<div class="options">' +
+            '<label><input type="radio" name="plan" value="starter" checked /><span><strong>Starter</strong> — individuals</span></label>' +
+            '<label><input type="radio" name="plan" value="team" /><span><strong>Team</strong> — shared seats</span></label>' +
+            '<label><input type="radio" name="plan" value="scale" /><span><strong>Scale</strong> — org rollout</span></label>' +
+            "</div>" +
+            '<button id="btnSelectPlan" type="button">Select plan</button>' +
+            "</section>"
+        );
+        section.querySelector("#btnSelectPlan").onclick = function () {
+          picks.plan = radioLabel("plan");
+          markComplete(section, picks.plan);
+          showConfirm();
+        };
+      }
+
+      function showConfirm() {
+        const summary = [picks.region, picks.product, picks.intent, picks.plan].join(" → ");
+        const section = appendSection(
+          '<section id="section-confirm" class="section">' +
+            "<h2>5. Confirm</h2>" +
+            '<p class="meta">Review your path, then unlock the request form.</p>' +
+            '<p class="picked">' +
+            summary +
+            "</p>" +
+            '<button id="btnSelectConfirm" type="button">Confirm selections</button>' +
+            "</section>"
+        );
+        section.querySelector("#btnSelectConfirm").onclick = function () {
+          markComplete(section, "path locked");
+          showForm();
+        };
+      }
+
+      function showForm() {
+        appendSection(
+          '<section id="section-form" class="section">' +
+            "<h2>Request form</h2>" +
+            '<p class="meta">Real form — Coact fills these fields after the five section selects.</p>' +
+            '<form id="requestForm" onsubmit="event.preventDefault(); alert(\'Submitted (demo only)\');">' +
+            "<label>Full name" +
+            '<input id="fullName" name="fullName" type="text" />' +
+            "</label>" +
+            "<label>Work email" +
+            '<input id="email" name="email" type="email" />' +
+            "</label>" +
+            "<label>Company" +
+            '<input id="company" name="company" type="text" />' +
+            "</label>" +
+            "<label>Team size" +
+            '<input id="teamSize" name="teamSize" type="text" />' +
+            "</label>" +
+            "<label>Notes" +
+            '<textarea id="notes" name="notes" rows="3"></textarea>' +
+            "</label>" +
+            '<button id="submitBtn" type="submit">Submit</button>' +
+            "</form>" +
+            "</section>"
+        );
+      }
+
+      showRegion();
+    </script>
+  </body>
+</html>

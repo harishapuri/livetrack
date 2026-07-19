@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gateform Access — Demo</title>
+    <style>
+      :root {
+        --bg: #f0f4f8;
+        --ink: #0f172a;
+        --line: #cbd5e1;
+        --accent: #0f766e;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Avenir Next", sans-serif;
+        color: var(--ink);
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 36%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      main { max-width: 640px; margin: 0 auto; padding: 40px 22px 64px; }
+      .site { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+      h1 { margin: 6px 0 8px; font-size: 1.75rem; }
+      .sub { margin: 0 0 24px; color: #475569; line-height: 1.45; }
+      .steps { display: flex; gap: 8px; margin: 0 0 28px; }
+      .steps span {
+        flex: 1; text-align: center; font-size: 0.72rem; padding: 8px 4px;
+        border-radius: 999px; background: #e2e8f0; color: #64748b;
+      }
+      .steps span.on { background: var(--accent); color: #fff; }
+      .card {
+        background: #fff; border: 1px solid var(--line); border-radius: 14px;
+        padding: 22px; display: grid; gap: 14px;
+      }
+      form { display: grid; gap: 12px; background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+      label { display: grid; gap: 6px; font-size: 0.92rem; }
+      input, textarea {
+        font: inherit; padding: 10px 12px; border: 1px solid var(--line);
+        border-radius: 8px; background: #fff;
+      }
+      button {
+        justify-self: start; font: inherit; padding: 11px 16px; border: 0;
+        border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer;
+      }
+      .hint { margin-top: 18px; color: #64748b; font-size: 0.88rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="site">Gateform Access</div>
+      <div id="app"></div>
+      <p class="hint">URL: http://127.0.0.1:4173/sites/gateform-access/</p>
+    </main>
+    <script>
+      const app = document.getElementById("app");
+
+      function stepsHtml(active) {
+        const labels = ["1 Start", "2 Accept", "3 Open", "4 Form"];
+        return (
+          '<div class="steps">' +
+          labels
+            .map((label, i) => `<span class="${i === active ? "on" : ""}">${label}</span>`)
+            .join("") +
+          "</div>"
+        );
+      }
+
+      function showStart() {
+        app.innerHTML =
+          "<h1>Welcome</h1>" +
+          '<p class="sub">Single-page click-stream — three clicks unlock the real form. Open this tab, then Start the Gateform Access card in Coact.</p>' +
+          stepsHtml(0) +
+          '<div class="card">' +
+          "<p>Begin the access wizard. Each step replaces this panel (SPA — same URL).</p>" +
+          '<button id="btnStart" type="button">Start</button>' +
+          "</div>";
+        document.getElementById("btnStart").onclick = showAccept;
+      }
+
+      function showAccept() {
+        app.innerHTML =
+          "<h1>Terms</h1>" +
+          '<p class="sub">Step 2 — accept terms to continue.</p>' +
+          stepsHtml(1) +
+          '<div class="card">' +
+          "<p>Demo terms: this is a Coact click-stream gate. Accept to proceed.</p>" +
+          '<button id="btnAccept" type="button">Accept</button>' +
+          "</div>";
+        document.getElementById("btnAccept").onclick = showOpen;
+      }
+
+      function showOpen() {
+        app.innerHTML =
+          "<h1>Ready</h1>" +
+          '<p class="sub">Step 3 — open the fillable form.</p>' +
+          stepsHtml(2) +
+          '<div class="card">' +
+          "<p>All gates cleared. Click <strong>Open form</strong> to reveal the application.</p>" +
+          '<button id="btnOpenForm" type="button">Open form</button>' +
+          "</div>";
+        document.getElementById("btnOpenForm").onclick = showForm;
+      }
+
+      function showForm() {
+        app.innerHTML =
+          "<h1>Access request</h1>" +
+          '<p class="sub">Real form — Coact fills these fields after the click stream.</p>' +
+          stepsHtml(3) +
+          '<form id="accessForm" onsubmit="event.preventDefault(); alert(\'Submitted (demo only)\');">' +
+          "<label>Full name" +
+          '<input id="fullName" name="fullName" type="text" />' +
+          "</label>" +
+          "<label>Work email" +
+          '<input id="email" name="email" type="email" />' +
+          "</label>" +
+          "<label>Company" +
+          '<input id="company" name="company" type="text" />' +
+          "</label>" +
+          "<label>Access type" +
+          '<input id="accessType" name="accessType" type="text" />' +
+          "</label>" +
+          "<label>Reason" +
+          '<textarea id="reason" name="reason" rows="3"></textarea>' +
+          "</label>" +
+          '<button id="submitBtn" type="submit">Submit</button>' +
+          "</form>";
+      }
+
+      showStart();
+    </script>
+  </body>
+</html>

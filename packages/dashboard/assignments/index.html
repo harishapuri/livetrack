@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <title>liveAct — Assignments</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../styles.css" />
+    <link rel="stylesheet" href="../queue-studio/styles.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="bg"></div>
+    <header class="top">
+      <div class="brand">
+        <span class="mark">L</span>
+        <div>
+          <h1>liveAct</h1>
+          <p class="sub">Assign users · LOB &amp; queue cards</p>
+        </div>
+      </div>
+      <nav class="dash-nav" aria-label="Dashboard sections">
+        <a href="../index.html" data-nav="executions">Executions</a>
+        <a href="../queue-studio/index.html" data-nav="studio">Queue studio</a>
+        <a href="./index.html" data-nav="assignments" class="active">Assignments</a>
+        <a href="../converter/index.html" data-nav="converter">SOP converter</a>
+      </nav>
+    </header>
+
+    <p class="studio-lead">
+      Assign OS usernames to a <strong>LOB</strong> and/or a <strong>queue card</strong>.
+      If you are listed on any card, liveAct shows <strong>only those cards</strong>.
+      Users with no card assignments still see unassigned cards (empty list = open).
+    </p>
+
+    <main class="studio-grid">
+      <section class="panel">
+        <h2>1. Assign LOB</h2>
+        <p class="hint">Users who can open this line of business</p>
+        <label>
+          <span>LOB</span>
+          <select id="lobSelect">
+            <option value="">Loading…</option>
+          </select>
+        </label>
+        <label>
+          <span>Users (comma-separated OS usernames)</span>
+          <input id="lobUsers" placeholder="alice, bob" list="userSuggestions" />
+        </label>
+        <div class="chip-row" id="knownUsersLob"></div>
+        <div class="actions-row">
+          <button type="button" class="btn-primary" id="btnSaveLob">Save LOB assignees</button>
+          <button type="button" class="btn-ghost" id="btnClearLob">Clear (everyone)</button>
+        </div>
+        <p class="status" id="lobStatus"></p>
+      </section>
+
+      <section class="panel">
+        <h2>2. Assign queue card</h2>
+        <p class="hint">Users who can see this specific card (within LOB access)</p>
+        <label>
+          <span>Queue card</span>
+          <select id="cardSelect">
+            <option value="">Loading…</option>
+          </select>
+        </label>
+        <label>
+          <span>Users (comma-separated OS usernames)</span>
+          <input id="cardUsers" placeholder="alice" list="userSuggestions" />
+        </label>
+        <div class="chip-row" id="knownUsersCard"></div>
+        <div class="actions-row">
+          <button type="button" class="btn-primary" id="btnSaveCard">Save card assignees</button>
+          <button type="button" class="btn-ghost" id="btnClearCard">Clear (everyone)</button>
+        </div>
+        <p class="status" id="cardStatus"></p>
+      </section>
+
+      <section class="panel wide">
+        <h2>Current assignments</h2>
+        <p class="hint" id="assignHint">Loading…</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Scope</th>
+                <th>Name</th>
+                <th>Assignees</th>
+              </tr>
+            </thead>
+            <tbody id="assignBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <datalist id="userSuggestions"></datalist>
+    <script src="../nav.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

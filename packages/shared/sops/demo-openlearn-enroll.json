@@ -1,0 +1,57 @@
+{
+  "id": "demo-openlearn-enroll",
+  "name": "OpenLearn Academy — Course enrollment",
+  "description": "Fill the OpenLearn Academy demo form on the current tab.",
+  "formUrl": "http://127.0.0.1:4173/sites/openlearn-enroll",
+  "steps": [
+    {
+      "id": "studentName",
+      "action": "fill",
+      "label": "Student name",
+      "selector": "#studentName",
+      "valueFrom": "studentName"
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "course",
+      "action": "fill",
+      "label": "Course name",
+      "selector": "#course",
+      "valueFrom": "course"
+    },
+    {
+      "id": "term",
+      "action": "fill",
+      "label": "Term",
+      "selector": "#term",
+      "valueFrom": "term"
+    },
+    {
+      "id": "level",
+      "action": "fill",
+      "label": "Experience level",
+      "selector": "#level",
+      "valueFrom": "level"
+    },
+    {
+      "id": "goals",
+      "action": "fill",
+      "label": "Learning goals",
+      "selector": "#goals",
+      "valueFrom": "goals"
+    },
+    {
+      "id": "highlight-review",
+      "action": "highlight",
+      "label": "Highlight submit for human review",
+      "selector": "#submitBtn"
+    }
+  ]
+}

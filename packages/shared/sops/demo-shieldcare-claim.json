@@ -1,0 +1,57 @@
+{
+  "id": "demo-shieldcare-claim",
+  "name": "ShieldCare — Insurance claim intake",
+  "description": "Fill the ShieldCare Insurance demo form on the current tab.",
+  "formUrl": "http://127.0.0.1:4173/sites/shieldcare-claim",
+  "steps": [
+    {
+      "id": "policyHolder",
+      "action": "fill",
+      "label": "Policy holder",
+      "selector": "#policyHolder",
+      "valueFrom": "policyHolder"
+    },
+    {
+      "id": "policyNumber",
+      "action": "fill",
+      "label": "Policy number",
+      "selector": "#policyNumber",
+      "valueFrom": "policyNumber"
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "incidentDate",
+      "action": "fill",
+      "label": "Incident date",
+      "selector": "#incidentDate",
+      "valueFrom": "incidentDate"
+    },
+    {
+      "id": "claimType",
+      "action": "fill",
+      "label": "Claim type",
+      "selector": "#claimType",
+      "valueFrom": "claimType"
+    },
+    {
+      "id": "description",
+      "action": "fill",
+      "label": "What happened",
+      "selector": "#description",
+      "valueFrom": "description"
+    },
+    {
+      "id": "highlight-review",
+      "action": "highlight",
+      "label": "Highlight submit for human review",
+      "selector": "#submitBtn"
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "id": "vendor-onboarding",
+  "name": "Vendor onboarding form",
+  "description": "Fill the vendor registration form on the current Chrome tab.",
+  "formUrl": "http://127.0.0.1:4173/",
+  "steps": [
+    {
+      "id": "company",
+      "action": "fill",
+      "label": "Company name",
+      "selector": "#companyName",
+      "valueFrom": "companyName"
+    },
+    {
+      "id": "contact",
+      "action": "fill",
+      "label": "Contact name",
+      "selector": "#contactName",
+      "valueFrom": "contactName"
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Email",
+      "selector": "#email",
+      "valueFrom": "email"
+    },
+    {
+      "id": "phone",
+      "action": "fill",
+      "label": "Phone",
+      "selector": "#phone",
+      "valueFrom": "phone"
+    },
+    {
+      "id": "tax",
+      "action": "fill",
+      "label": "Tax ID",
+      "selector": "#taxId",
+      "valueFrom": "taxId"
+    },
+    {
+      "id": "address",
+      "action": "fill",
+      "label": "Address",
+      "selector": "#address",
+      "valueFrom": "address"
+    },
+    {
+      "id": "city",
+      "action": "fill",
+      "label": "City",
+      "selector": "#city",
+      "valueFrom": "city"
+    },
+    {
+      "id": "state",
+      "action": "fill",
+      "label": "State",
+      "selector": "#state",
+      "valueFrom": "state"
+    },
+    {
+      "id": "zip",
+      "action": "fill",
+      "label": "ZIP",
+      "selector": "#zip",
+      "valueFrom": "zip"
+    },
+    {
+      "id": "highlight-review",
+      "action": "highlight",
+      "label": "Highlight submit for human review",
+      "selector": "#submitBtn"
+    }
+  ]
+}

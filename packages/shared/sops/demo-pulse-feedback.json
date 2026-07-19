@@ -1,0 +1,57 @@
+{
+  "id": "demo-pulse-feedback",
+  "name": "Pulse — Customer feedback survey",
+  "description": "Fill the Pulse Feedback demo form on the current tab.",
+  "formUrl": "http://127.0.0.1:4173/sites/pulse-feedback",
+  "steps": [
+    {
+      "id": "name",
+      "action": "fill",
+      "label": "Your name",
+      "selector": "#name",
+      "valueFrom": "name"
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "product",
+      "action": "fill",
+      "label": "Product used",
+      "selector": "#product",
+      "valueFrom": "product"
+    },
+    {
+      "id": "rating",
+      "action": "fill",
+      "label": "Satisfaction (1-10)",
+      "selector": "#rating",
+      "valueFrom": "rating"
+    },
+    {
+      "id": "liked",
+      "action": "fill",
+      "label": "What worked well",
+      "selector": "#liked",
+      "valueFrom": "liked"
+    },
+    {
+      "id": "improve",
+      "action": "fill",
+      "label": "What to improve",
+      "selector": "#improve",
+      "valueFrom": "improve"
+    },
+    {
+      "id": "highlight-review",
+      "action": "highlight",
+      "label": "Highlight submit for human review",
+      "selector": "#submitBtn"
+    }
+  ]
+}

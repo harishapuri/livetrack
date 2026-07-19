@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Coact demo sites</title>
+    <style>
+      :root {
+        --bg: #f4f6f5;
+        --ink: #14201c;
+        --muted: #5c6b64;
+        --line: #d5ddd8;
+        --accent: #0f766e;
+        --card: #ffffff;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(ellipse 80% 50% at 10% -10%, rgba(15, 118, 110, 0.14), transparent 55%),
+          radial-gradient(ellipse 60% 40% at 100% 0%, rgba(3, 105, 161, 0.08), transparent 50%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      main {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 48px 24px 72px;
+      }
+      .brand {
+        font-size: 0.72rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--accent);
+        font-weight: 700;
+      }
+      h1 {
+        margin: 8px 0 10px;
+        font-size: 2rem;
+        letter-spacing: -0.02em;
+      }
+      .lead {
+        margin: 0 0 32px;
+        color: var(--muted);
+        line-height: 1.5;
+        max-width: 42rem;
+      }
+      h2 {
+        margin: 28px 0 12px;
+        font-size: 0.78rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 8px;
+      }
+      a.site {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 4px 16px;
+        align-items: baseline;
+        padding: 14px 16px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        text-decoration: none;
+        color: inherit;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      a.site:hover {
+        border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+        box-shadow: 0 6px 18px rgba(20, 32, 28, 0.06);
+      }
+      a.site strong {
+        font-size: 1rem;
+        font-weight: 650;
+      }
+      a.site span {
+        grid-column: 1;
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+      a.site em {
+        grid-column: 2;
+        grid-row: 1 / span 2;
+        align-self: center;
+        font-style: normal;
+        font-size: 0.75rem;
+        color: var(--accent);
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      .foot {
+        margin-top: 36px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 0.9rem;
+        line-height: 1.5;
+      }
+      .foot code {
+        font-size: 0.85em;
+        background: rgba(15, 118, 110, 0.08);
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+      .foot a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="brand">Coact</div>
+      <h1>Demo sites</h1>
+      <p class="lead">
+        Open a form, keep the tab focused, then Start the matching queue card in liveAct.
+        Server: <code>npm run demo-form</code> → port 4173.
+      </p>
+
+      <h2>Single-page forms</h2>
+      <ul>
+        <li>
+          <a class="site" href="./northstar-job-apply">
+            <strong>Northstar Careers</strong>
+            <span>Job application</span>
+            <em>fill</em>
+          </a>
+        </li>
+        <li>
+          <a class="site" href="./riverdale-patient-intake">
+            <strong>Riverdale Clinic</strong>
+            <span>Patient intake</span>
+            <em>fill</em>
+          </a>
+        </li>
+        <li>
+          <a class="site" href="./summit-event-rsvp">
+            <strong>Summit Conference</strong>
+            <span>Event RSVP</span>
+            <em>fill</em>
+          </a>
+        </li>
+        <li>
+          <a class="site" href="./cloudhelp-support">
+            <strong>CloudHelp Desk</strong>
+            <span>Support ticket</span>
+            <em>fill</em>
+          </a>
+        </li>
+        <li>
+          <a class="site" href="./greenpath-volunteer">
+            <strong>GreenPath Nonprofit</strong>
+            <span>Volunteer signup</span>
+            <em>fill</em>
+          </a>
+        </li>
+        <li>
+          <a class="site" href="./harborview-booking">
+            <strong>Harborview Inn</strong>
+            <span>Booking inquiry</span>
+            <em>fill</em>
+          </a>
+        </li>
+        <li>
+          <a class="site" href="./openlearn-enroll">
+            <strong>OpenLearn Academy</strong>
+            <span>Course enrollment</span>
+            <em>fill</em>
+          </a>
+        </li>
+        <li>
+          <a class="site" href="./shieldcare-claim">
+            <strong>ShieldCare Insurance</strong>
+            <span>Insurance claim intake</span>
+            <em>fill</em>
+          </a>
+        </li>
+        <li>
+          <a class="site" href="./pulse-feedback">
+            <strong>Pulse Feedback</strong>
+            <span>Customer feedback survey</span>
+            <em>fill</em>
+          </a>
+        </li>
+        <li>
+          <a class="site" href="./metro-permit">
+            <strong>Metro City Permits</strong>
+            <span>Permit application</span>
+            <em>fill</em>
+          </a>
+        </li>
+      </ul>
+
+      <h2>Click-stream demos</h2>
+      <ul>
+        <li>
+          <a class="site" href="./orbit-onboard/">
+            <strong>Orbit Onboard</strong>
+            <span>Multi-page wizard (welcome → profile → review)</span>
+            <em>click + fill</em>
+          </a>
+        </li>
+        <li>
+          <a class="site" href="./gateform-access/">
+            <strong>Gateform Access</strong>
+            <span>Same-page click gates, then form</span>
+            <em>click + fill</em>
+          </a>
+        </li>
+        <li>
+          <a class="site" href="./planstream-apply/">
+            <strong>PlanStream Apply</strong>
+            <span>Landing → eligibility → form</span>
+            <em>click + fill</em>
+          </a>
+        </li>
+        <li>
+          <a class="site" href="./section-select/">
+            <strong>Segue Select</strong>
+            <span>Five section selects, then form</span>
+            <em>click + fill</em>
+          </a>
+        </li>
+      </ul>
+
+      <p class="foot">
+        Original vendor form:
+        <a href="../">http://127.0.0.1:4173/</a>
+        · Hub:
+        <a href="./">http://127.0.0.1:4173/sites/</a>
+      </p>
+    </main>
+  </body>
+</html>

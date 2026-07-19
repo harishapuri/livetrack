@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>liveAct Snip</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        cursor: crosshair;
+        user-select: none;
+        background: #000;
+      }
+      #bg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: fill;
+        pointer-events: none;
+      }
+      #veil {
+        position: absolute;
+        inset: 0;
+        background: rgba(10, 6, 8, 0.42);
+        pointer-events: none;
+      }
+      #hint {
+        position: absolute;
+        top: 18px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 3;
+        padding: 8px 14px;
+        border-radius: 999px;
+        background: rgba(20, 9, 10, 0.88);
+        border: 1px solid rgba(255, 180, 180, 0.35);
+        color: #f6e6e6;
+        font: 13px/1.3 system-ui, -apple-system, sans-serif;
+        pointer-events: none;
+        letter-spacing: 0.01em;
+      }
+      #sel {
+        position: absolute;
+        border: 1.5px solid #ffb4b4;
+        box-shadow: 0 0 0 9999px rgba(10, 6, 8, 0.45);
+        background: transparent;
+        display: none;
+        z-index: 2;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <img id="bg" alt="" />
+    <div id="veil"></div>
+    <div id="hint">Drag to select · Esc to cancel</div>
+    <div id="sel"></div>
+    <script>
+      const params = new URLSearchParams(location.search);
+      const displayId = params.get("displayId") || "";
+      const frame = decodeURIComponent(params.get("frame") || "");
+      const bg = document.getElementById("bg");
+      const sel = document.getElementById("sel");
+      const veil = document.getElementById("veil");
+      const hint = document.getElementById("hint");
+
+      if (frame) {
+        bg.src = frame;
+      }
+
+      let dragging = false;
+      let startX = 0;
+      let startY = 0;
+
+      function showSel(x, y, w, h) {
+        sel.style.display = "block";
+        sel.style.left = `${x}px`;
+        sel.style.top = `${y}px`;
+        sel.style.width = `${w}px`;
+        sel.style.height = `${h}px`;
+        veil.style.display = "none";
+        hint.style.display = "none";
+      }
+
+      function resetSel() {
+        sel.style.display = "none";
+        veil.style.display = "block";
+        hint.style.display = "block";
+      }
+
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          window.snipper.cancel();
+        }
+      });
+
+      window.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        dragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        showSel(startX, startY, 0, 0);
+      });
+
+      window.addEventListener("mousemove", (e) => {
+        if (!dragging) return;
+        const x = Math.min(startX, e.clientX);
+        const y = Math.min(startY, e.clientY);
+        const w = Math.abs(e.clientX - startX);
+        const h = Math.abs(e.clientY - startY);
+        showSel(x, y, w, h);
+      });
+
+      window.addEventListener("mouseup", (e) => {
+        if (!dragging || e.button !== 0) return;
+        dragging = false;
+        const x = Math.min(startX, e.clientX);
+        const y = Math.min(startY, e.clientY);
+        const w = Math.abs(e.clientX - startX);
+        const h = Math.abs(e.clientY - startY);
+        if (w < 4 || h < 4) {
+          resetSel();
+          return;
+        }
+        window.snipper.complete({ displayId, x, y, width: w, height: h });
+      });
+    </script>
+  </body>
+</html>

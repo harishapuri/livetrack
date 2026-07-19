@@ -1,0 +1,64 @@
+{
+  "id": "demo-northstar-job-apply",
+  "name": "Northstar Careers — Job application",
+  "description": "Fill the Northstar Careers demo form on the current tab.",
+  "formUrl": "http://127.0.0.1:4173/sites/northstar-job-apply",
+  "steps": [
+    {
+      "id": "fullName",
+      "action": "fill",
+      "label": "Full name",
+      "selector": "#fullName",
+      "valueFrom": "fullName"
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "phone",
+      "action": "fill",
+      "label": "Phone",
+      "selector": "#phone",
+      "valueFrom": "phone"
+    },
+    {
+      "id": "role",
+      "action": "fill",
+      "label": "Role applying for",
+      "selector": "#role",
+      "valueFrom": "role"
+    },
+    {
+      "id": "years",
+      "action": "fill",
+      "label": "Years of experience",
+      "selector": "#years",
+      "valueFrom": "years"
+    },
+    {
+      "id": "linkedin",
+      "action": "fill",
+      "label": "LinkedIn URL",
+      "selector": "#linkedin",
+      "valueFrom": "linkedin"
+    },
+    {
+      "id": "summary",
+      "action": "fill",
+      "label": "Why this role",
+      "selector": "#summary",
+      "valueFrom": "summary"
+    },
+    {
+      "id": "highlight-review",
+      "action": "highlight",
+      "label": "Highlight submit for human review",
+      "selector": "#submitBtn"
+    }
+  ]
+}

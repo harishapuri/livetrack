@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PlanStream Apply — Eligibility</title>
+    <style>
+      :root {
+        --bg: #f7f4ef;
+        --ink: #1c1917;
+        --line: #d6d3d1;
+        --accent: #c2410c;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Avenir Next", sans-serif;
+        color: var(--ink);
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 36%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      main { max-width: 640px; margin: 0 auto; padding: 40px 22px 64px; }
+      .site { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+      h1 { margin: 6px 0 8px; font-size: 1.75rem; }
+      .sub { margin: 0 0 24px; color: #57534e; line-height: 1.45; }
+      .card {
+        background: transparent; border: 0; border-radius: 0;
+        padding: 4px 0; display: grid; gap: 14px;
+      }
+      .ws-options { display: grid; gap: 10px; }
+      .ws-options label {
+        display: flex; gap: 10px; align-items: flex-start;
+        padding: 12px; border: 1px solid var(--line); border-radius: 10px;
+        cursor: pointer;
+      }
+      .ws-options label:has(input:checked) {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 8%, #fff);
+      }
+      button {
+        justify-self: start; font: inherit; padding: 11px 16px; border: 0;
+        border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer;
+      }
+      .hint { margin-top: 18px; color: #78716c; font-size: 0.88rem; }
+      ul { margin: 0; padding-left: 1.2rem; color: #57534e; line-height: 1.5; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="site">PlanStream Apply</div>
+      <div id="app"></div>
+      <p class="hint">URL: http://127.0.0.1:4173/sites/planstream-apply/eligibility</p>
+    </main>
+    <script>
+      const app = document.getElementById("app");
+
+      function showConfirm() {
+        app.innerHTML =
+          "<h1>Eligibility</h1>" +
+          '<p class="sub">Page 2 of 2 — three clicks on this URL, then the form page.</p>' +
+          '<div class="card">' +
+          "<p>You’re eligible if your org meets these demo checks:</p>" +
+          "<ul>" +
+          "<li>Team size of 2 or more</li>" +
+          "<li>Work email domain (not personal free mail)</li>" +
+          "<li>Primary use case defined</li>" +
+          "</ul>" +
+          '<button id="btnConfirmEligibility" type="button">Confirm eligibility</button>' +
+          "</div>";
+        document.getElementById("btnConfirmEligibility").onclick = showWorkspace;
+      }
+
+      function showWorkspace() {
+        app.innerHTML =
+          "<h1>Select workspace</h1>" +
+          '<p class="sub">Click 2 — still this page. Choose a workspace, then Select workspace.</p>' +
+          '<div class="card">' +
+          "<p>Where should this application land?</p>" +
+          '<div class="ws-options">' +
+          '<label><input type="radio" name="ws" value="ops" checked /><span><strong>Ops</strong> — day-to-day workflows</span></label>' +
+          '<label><input type="radio" name="ws" value="growth" /><span><strong>Growth</strong> — GTM and expansion</span></label>' +
+          '<label><input type="radio" name="ws" value="eng" /><span><strong>Engineering</strong> — product delivery</span></label>' +
+          "</div>" +
+          '<button id="btnSelectWorkspace" type="button">Select workspace</button>' +
+          "</div>";
+        document.getElementById("btnSelectWorkspace").onclick = showOpen;
+      }
+
+      function showOpen() {
+        app.innerHTML =
+          "<h1>Ready to apply</h1>" +
+          '<p class="sub">Click 3 — navigates to the real form page (new URL).</p>' +
+          '<div class="card">' +
+          "<p>Eligibility and workspace cleared. Open application loads the fillable form.</p>" +
+          '<button id="btnOpenApp" type="button">Open application</button>' +
+          "</div>";
+        document.getElementById("btnOpenApp").onclick = function () {
+          location.href = "/sites/planstream-apply/form";
+        };
+      }
+
+      showConfirm();
+    </script>
+  </body>
+</html>

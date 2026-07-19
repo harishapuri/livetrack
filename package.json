@@ -2,16 +2,25 @@
   "name": "coact",
   "version": "0.1.0",
   "private": true,
-  "description": "Attended form automation — desktop queue + Chrome extension",
-  "main": "desktop/main.js",
+  "description": "Attended form automation monorepo — liveAct, Chrome extension, supervisor dashboard",
+  "author": "liveAct",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "start": "electron .",
-    "demo-form": "npx --yes serve demo -p 4173"
+    "start": "npm run start -w @coact/liveact",
+    "dashboard": "npm run start -w @coact/dashboard",
+    "sop-builder": "npm run dashboard",
+    "demo-form": "npm run serve -w @coact/demo",
+    "seed-demo-sites": "npm run seed -w @coact/demo",
+    "generate-day-sql": "npm run generate-day-sql -w @coact/liveact",
+    "pack": "npm run pack -w @coact/liveact",
+    "dist": "npm run dist -w @coact/liveact",
+    "dist:mac": "npm run dist:mac -w @coact/liveact",
+    "dist:win": "npm run dist:win -w @coact/liveact",
+    "extension:path": "node -e \"console.log(require('path').resolve('packages/extension'))\""
   },
-  "dependencies": {
-    "ws": "^8.18.0"
-  },
-  "devDependencies": {
-    "electron": "^33.2.0"
+  "engines": {
+    "node": ">=18"
   }
 }

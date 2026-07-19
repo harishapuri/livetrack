@@ -1,19 +1,20 @@
 # Coact
 
-Attended form automation: click a **queue card** in the desktop app, and the **Chrome extension** fills the form on the tab you’re already watching.
+Attended form automation monorepo: click a **queue card** in **liveAct**, and the **Chrome extension** fills the form on the tab you’re already watching.
 
 ```
-Desktop (queue + live steps)  ←WebSocket→  Chrome extension  →  current form tab
+liveAct (queue + live steps)  ←WebSocket→  Chrome extension  →  current form tab
 ```
 
-## What’s included
+## Packages
 
-| Path | Purpose |
-|------|---------|
-| `desktop/` | Electron app — queue cards, step watcher, pause/takeover |
-| `extension/` | Chrome extension — fills/highlights fields on the open page |
-| `shared/` | Sample queue + SOP JSON |
-| `demo/` | Local vendor form for testing |
+| Package | Path | Purpose |
+|---------|------|---------|
+| `@coact/liveact` | `packages/liveact` | Electron app — queue cards, step watcher, pause/takeover |
+| `@coact/extension` | `packages/extension` | Chrome extension — fills/highlights fields |
+| `@coact/dashboard` | `packages/dashboard` | Supervisor dashboard, queue studio, assignments, SOP converter |
+| `@coact/shared` | `packages/shared` | Protocol + SOP JSON + demo catalog |
+| `@coact/demo` | `packages/demo` | Local demo form sites |
 
 ## Setup
 
@@ -22,18 +23,29 @@ cd ~/Projects/coact
 npm install
 ```
 
-### 1. Start the desktop app
+### Build installable package (Mac)
+
+```bash
+npm run dist:mac
+```
+
+Installer lands in `release/` (`.dmg` + `.zip`). The Chrome extension is bundled under the app’s Resources as `extension/` — load that folder in Chrome after install.
+
+### 1. Start liveAct (dev)
 
 ```bash
 npm start
+# same as: npm run start -w @coact/liveact
 ```
 
 ### 2. Load the Chrome extension
 
 1. Open `chrome://extensions`
 2. Enable **Developer mode**
-3. **Load unpacked** → select the `extension/` folder
-4. Confirm the toolbar badge can show `ON` when the desktop app is running
+3. **Load unpacked** → choose:
+   - **Installed app:** `/Applications/liveAct.app/Contents/Resources/extension`
+   - **From source:** `packages/extension` (full path: `~/Projects/coact/packages/extension`)
+4. Confirm the toolbar badge can show `ON` when liveAct is running
 
 ### 3. Open the demo form
 
@@ -41,29 +53,54 @@ npm start
 npm run demo-form
 ```
 
-Open http://localhost:4173 in Chrome (leave this tab active).
+Open http://localhost:4173 in Chrome.
 
-### 4. Run a card
+### 4. Supervisor dashboard
 
-1. In Coact desktop, wait until status shows **Extension online**
-2. Click a queue card
-3. Watch fields fill in Chrome and steps update in the desktop app
-4. Use **Pause** / **Resume** / **Take over** as needed
+```bash
+npm run dashboard
+```
 
-## Customize
+| URL | Purpose |
+|-----|---------|
+| http://127.0.0.1:4175/ | Executions |
+| http://127.0.0.1:4175/queue-studio/ | Create / clone queue cards |
+| http://127.0.0.1:4175/assignments/ | Assign users to LOB / cards |
+| http://127.0.0.1:4175/converter/ | PPT / PDF / DOCX → SOP JSON |
 
-- **Queue cards:** `shared/sample-queue.json`
-- **SOP steps:** `shared/sops/vendor-onboarding.json`
-  - `selector` — CSS selector on the page
-  - `valueFrom` — key in the card’s `data` object
-  - `action` — `fill` | `click` | `highlight`
+Date filters:
 
-## Bridge
+```bash
+node packages/dashboard/server.js --from=2026-07-01 --to=2026-07-18
+node packages/dashboard/server.js --days=14
+```
 
-Desktop listens on `ws://127.0.0.1:17321`. The extension reconnects automatically when the app starts.
+### SQL from executions
 
-## Next ideas
+```bash
+npm run generate-day-sql
+node packages/liveact/scripts/generate-day-sql.js --date=2026-07-18
+```
 
-- Map real portal selectors into a new SOP JSON
-- Add validation-error “fix” steps
-- Persist queue from your real system instead of sample JSON
+### Seed demo sites
+
+```bash
+npm run seed-demo-sites
+```
+
+## Workspace commands
+
+| Command | Package |
+|---------|---------|
+| `npm start` | `@coact/liveact` |
+| `npm run dashboard` | `@coact/dashboard` |
+| `npm run demo-form` | `@coact/demo` |
+| `npm run pack` / `dist:mac` | `@coact/liveact` |
+
+Run a package directly:
+
+```bash
+npm run start -w @coact/liveact
+npm run start -w @coact/dashboard
+npm run serve -w @coact/demo
+```

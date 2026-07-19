@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Orbit Onboard — Welcome</title>
+    <style>
+      :root {
+        --bg: #f3f6f9;
+        --ink: #0f172a;
+        --line: #cbd5e1;
+        --accent: #0ea5e9;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Avenir Next", sans-serif;
+        color: var(--ink);
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--accent) 16%, transparent), transparent 36%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      main { max-width: 640px; margin: 0 auto; padding: 40px 22px 64px; }
+      .site { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+      h1 { margin: 6px 0 8px; font-size: 1.75rem; }
+      .sub { margin: 0 0 24px; color: #475569; line-height: 1.45; }
+      .steps { display: flex; gap: 8px; margin: 0 0 28px; }
+      .steps span {
+        flex: 1; text-align: center; font-size: 0.78rem; padding: 8px;
+        border-radius: 999px; background: #e2e8f0; color: #64748b;
+      }
+      .steps span.on { background: var(--accent); color: #fff; }
+      .card {
+        background: #fff; border: 1px solid var(--line); border-radius: 14px;
+        padding: 22px; display: grid; gap: 14px;
+      }
+      button {
+        justify-self: start; font: inherit; padding: 11px 16px; border: 0;
+        border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer;
+      }
+      .hint { margin-top: 18px; color: #64748b; font-size: 0.88rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="site">Orbit Onboard</div>
+      <h1>Welcome</h1>
+      <p class="sub">Click-stream demo — Continue moves to the next page. Open this tab, then Start the Orbit Onboard card in Coact.</p>
+      <div class="steps">
+        <span class="on">1 Welcome</span>
+        <span>2 Profile</span>
+        <span>3 Review</span>
+      </div>
+      <div class="card">
+        <p>We’ll collect a few details across multiple pages. Use <strong>Continue</strong> to advance.</p>
+        <button id="btnContinue" type="button" onclick="location.href='/sites/orbit-onboard/profile'">Continue</button>
+      </div>
+      <p class="hint">URL: http://127.0.0.1:4173/sites/orbit-onboard/</p>
+    </main>
+  </body>
+</html>

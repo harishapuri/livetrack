@@ -1,0 +1,12 @@
+{
+  "name": "@coact/extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chrome extension — fills and highlights form fields for liveAct",
+  "scripts": {
+    "path": "node -e \"console.log(__dirname)\""
+  },
+  "files": [
+    "**/*"
+  ]
+}

@@ -1,0 +1,141 @@
+{
+  "id": "demo-planstream-apply-copy",
+  "name": "PlanStream Apply — 3 clicks per page then form44",
+  "description": "Landing: Accept → Choose plan → Continue (new URL). Eligibility: Confirm → Select workspace → Open application (form). Then fill and submit.",
+  "steps": [
+    {
+      "id": "click-accept",
+      "action": "click",
+      "label": "Click Accept",
+      "selector": "#btnAccept",
+      "findByText": [
+        "Accept"
+      ],
+      "waitAfter": {
+        "selector": "#btnChoosePlan",
+        "hideSelector": "#btnAccept",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "click-choose-plan",
+      "action": "click",
+      "label": "Click Choose plan",
+      "selector": "#btnChoosePlan",
+      "findByText": [
+        "Choose plan"
+      ],
+      "waitAfter": {
+        "selector": "#btnContinueLanding",
+        "hideSelector": "#btnChoosePlan",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "click-continue-landing",
+      "action": "click",
+      "label": "Click Continue",
+      "selector": "#btnContinueLanding",
+      "findByText": [
+        "Continue"
+      ],
+      "waitAfter": {
+        "urlIncludes": "planstream-apply/eligibility",
+        "timeoutMs": 15000
+      },
+      "navigates": true
+    },
+    {
+      "id": "click-confirm-eligibility",
+      "action": "click",
+      "label": "Click Confirm eligibility",
+      "selector": "#btnConfirmEligibility",
+      "findByText": [
+        "Confirm eligibility"
+      ],
+      "waitAfter": {
+        "selector": "#btnSelectWorkspace",
+        "hideSelector": "#btnConfirmEligibility",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "click-select-workspace",
+      "action": "click",
+      "label": "Click Select workspace",
+      "selector": "#btnSelectWorkspace",
+      "findByText": [
+        "Select workspace"
+      ],
+      "waitAfter": {
+        "selector": "#btnOpenApp",
+        "hideSelector": "#btnSelectWorkspace",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "click-open-application",
+      "action": "click",
+      "label": "Click Open application",
+      "selector": "#btnOpenApp",
+      "findByText": [
+        "Open application"
+      ],
+      "waitAfter": {
+        "urlIncludes": "planstream-apply/form",
+        "timeoutMs": 15000
+      },
+      "navigates": true
+    },
+    {
+      "id": "name",
+      "action": "fill",
+      "label": "Fill full name",
+      "selector": "#fullName",
+      "valueFrom": "harish"
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "company",
+      "action": "fill",
+      "label": "Fill company",
+      "selector": "#company",
+      "valueFrom": "company",
+      "mandatory": true
+    },
+    {
+      "id": "teamsize",
+      "action": "fill",
+      "label": "Fill team size",
+      "selector": "#teamSize",
+      "valueFrom": "teamSize"
+    },
+    {
+      "id": "usecase",
+      "action": "fill",
+      "label": "Fill use case",
+      "selector": "#useCase",
+      "valueFrom": "useCase"
+    },
+    {
+      "id": "highlight-submit",
+      "action": "highlight",
+      "label": "Pause for Submit",
+      "selector": "#submitBtn",
+      "optional": true
+    }
+  ],
+  "formUrl": "http://127.0.0.1:4173/sites/planstream-apply/",
+  "formMatch": [
+    "planstream-apply",
+    "PlanStream Apply",
+    "sites/planstream-apply"
+  ]
+}

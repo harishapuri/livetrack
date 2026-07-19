@@ -1,0 +1,16 @@
+{
+  "name": "@coact/demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local demo form sites for liveAct testing",
+  "scripts": {
+    "serve": "npx --yes serve . -p 4173",
+    "seed": "node generate-sites.js"
+  },
+  "dependencies": {
+    "@coact/shared": "*"
+  },
+  "files": [
+    "**/*"
+  ]
+}

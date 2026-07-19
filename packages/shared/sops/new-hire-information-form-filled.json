@@ -1,0 +1,162 @@
+{
+  "id": "new-hire-information-form-filled",
+  "name": "New Hire Information Form",
+  "description": "Fill the New Hire AcroForm PDF (also works with the web mirror at /new-hire.html).",
+  "targetType": "pdf",
+  "formUrl": "http://127.0.0.1:17322/pdf/new-hire-information.pdf",
+  "formMatch": [
+    "new-hire-information",
+    "17322/pdf/new-hire",
+    "New Hire Information Form"
+  ],
+  "steps": [
+    {
+      "id": "first-name",
+      "action": "fill",
+      "label": "First Name",
+      "pdfField": "first_name",
+      "selector": "#firstName",
+      "valueFrom": "firstName",
+      "mandatory": true
+    },
+    {
+      "id": "last-name",
+      "action": "fill",
+      "label": "Last Name",
+      "pdfField": "last_name",
+      "selector": "#lastName",
+      "valueFrom": "lastName",
+      "mandatory": true
+    },
+    {
+      "id": "dob",
+      "action": "fill",
+      "label": "Date of Birth",
+      "pdfField": "dob",
+      "selector": "#dob",
+      "valueFrom": "dateOfBirth",
+      "mandatory": true
+    },
+    {
+      "id": "ssn",
+      "action": "fill",
+      "label": "Social Security / Tax ID",
+      "pdfField": "ssn",
+      "selector": "#ssn",
+      "valueFrom": "ssn",
+      "mandatory": true
+    },
+    {
+      "id": "address",
+      "action": "fill",
+      "label": "Home Address",
+      "pdfField": "address",
+      "selector": "#address",
+      "valueFrom": "homeAddress",
+      "findByLabel": [
+        "Home Address"
+      ],
+      "matchMode": "startsWith",
+      "mandatory": true
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Email Address",
+      "pdfField": "email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "phone",
+      "action": "fill",
+      "label": "Phone Number",
+      "pdfField": "phone",
+      "selector": "#phone",
+      "valueFrom": "phone",
+      "mandatory": true
+    },
+    {
+      "id": "ec-name",
+      "action": "fill",
+      "label": "Emergency Contact Name",
+      "pdfField": "ec_name",
+      "selector": "#ecName",
+      "valueFrom": "emergencyContactName",
+      "mandatory": true
+    },
+    {
+      "id": "ec-relationship",
+      "action": "fill",
+      "label": "Emergency Contact Relationship",
+      "pdfField": "ec_relationship",
+      "selector": "#ecRelationship",
+      "valueFrom": "emergencyContactRelationship",
+      "mandatory": true
+    },
+    {
+      "id": "ec-phone",
+      "action": "fill",
+      "label": "Emergency Contact Phone",
+      "pdfField": "ec_phone",
+      "selector": "#ecPhone",
+      "valueFrom": "emergencyContactPhone",
+      "mandatory": true
+    },
+    {
+      "id": "bank-name",
+      "action": "fill",
+      "label": "Bank Name",
+      "pdfField": "bank_name",
+      "selector": "#bankName",
+      "valueFrom": "bankName",
+      "optional": true
+    },
+    {
+      "id": "routing-number",
+      "action": "fill",
+      "label": "Routing Number",
+      "pdfField": "routing_number",
+      "selector": "#routingNumber",
+      "valueFrom": "routingNumber",
+      "optional": true
+    },
+    {
+      "id": "account-number",
+      "action": "fill",
+      "label": "Account Number",
+      "pdfField": "account_number",
+      "selector": "#accountNumber",
+      "valueFrom": "accountNumber",
+      "optional": true
+    },
+    {
+      "id": "agree",
+      "action": "check",
+      "label": "Certify information is accurate",
+      "pdfField": "agree",
+      "selector": "#agree",
+      "mandatory": true
+    },
+    {
+      "id": "signature",
+      "action": "fill",
+      "label": "Signature",
+      "pdfField": "signature",
+      "selector": "#signature",
+      "valueFrom": "signature",
+      "mandatory": true
+    },
+    {
+      "id": "sign-date",
+      "action": "fill",
+      "label": "Date",
+      "pdfField": "sign_date",
+      "selector": "#signDate",
+      "valueFrom": "signDate",
+      "mandatory": true
+    }
+  ],
+  "pdfPath": "/Users/harishchowdary/Documents/Coact/queue/new-hire-information/New_Hire_Information_Form.pdf"
+}

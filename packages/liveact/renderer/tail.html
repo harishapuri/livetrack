@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>liveAct</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent !important;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      button#open {
+        display: block;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
+        background: linear-gradient(145deg, #d71e28, #9e151c);
+        color: #fff;
+        cursor: pointer;
+        box-shadow: 0 6px 18px rgba(215, 30, 40, 0.28);
+        border: 2px solid rgba(255, 255, 255, 0.28);
+        font-family: "Segoe UI", "Avenir Next", sans-serif;
+        -webkit-app-region: no-drag;
+      }
+      button#open.ok {
+        box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.45), 0 6px 18px rgba(215, 30, 40, 0.28);
+      }
+      button#open.bad {
+        box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.5), 0 6px 18px rgba(215, 30, 40, 0.28);
+        animation: pulse 1s ease infinite;
+      }
+      .mark {
+        display: block;
+        font-size: 1.15rem;
+        font-weight: 700;
+        line-height: 1;
+      }
+      .name {
+        display: block;
+        margin-top: 2px;
+        font-size: 0.58rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          transform: scale(1);
+        }
+        50% {
+          transform: scale(1.05);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <button id="open" type="button" title="Open liveAct">
+      <span class="mark">L</span>
+      <span class="name">liveAct</span>
+    </button>
+    <script>
+      const openBtn = document.getElementById("open");
+
+      function openMain() {
+        if (window.coactTail?.openMain) {
+          window.coactTail.openMain();
+        }
+      }
+
+      openBtn.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openMain();
+      });
+
+      if (window.coactTail?.onStatus) {
+        window.coactTail.onStatus((status) => {
+          openBtn.classList.toggle("ok", Boolean(status?.ok));
+          openBtn.classList.toggle("bad", Boolean(status?.bad));
+        });
+      }
+    </script>
+  </body>
+</html>

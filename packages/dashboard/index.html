@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <title>liveAct — Supervisor dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="bg"></div>
+    <header class="top">
+      <div class="brand">
+        <span class="mark">L</span>
+        <div>
+          <h1>liveAct</h1>
+          <p class="sub">Supervisor dashboard</p>
+        </div>
+      </div>
+      <nav class="dash-nav" aria-label="Dashboard sections">
+        <a href="./index.html" data-nav="executions" class="active">Executions</a>
+        <a href="./queue-studio/index.html" data-nav="studio">Queue studio</a>
+        <a href="./assignments/index.html" data-nav="assignments">Assignments</a>
+        <a href="./converter/index.html" data-nav="converter">SOP converter</a>
+      </nav>
+      <div class="meta" id="metaLine">Loading Excel data…</div>
+    </header>
+
+    <section class="filters" aria-label="Filters">
+      <label>
+        <span>From</span>
+        <input type="date" id="filterFrom" />
+      </label>
+      <label>
+        <span>To</span>
+        <input type="date" id="filterTo" />
+      </label>
+      <label>
+        <span>LOB</span>
+        <select id="filterLob">
+          <option value="">All</option>
+        </select>
+      </label>
+      <label>
+        <span>Queue card</span>
+        <select id="filterCard">
+          <option value="">All</option>
+        </select>
+      </label>
+      <label class="grow">
+        <span>User</span>
+        <input type="search" id="filterUser" placeholder="Search operator…" />
+      </label>
+      <button type="button" class="btn-filter" id="btnClearFilters">Clear</button>
+    </section>
+
+    <section class="totals" id="totals" aria-label="Totals"></section>
+
+    <main class="grid">
+      <section class="panel" aria-labelledby="lobTitle">
+        <h2 id="lobTitle">LOB wide</h2>
+        <p class="hint">Executions grouped by line of business</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>LOB</th>
+                <th>Total</th>
+                <th>Auto</th>
+                <th>Manual</th>
+                <th>Mistakes</th>
+              </tr>
+            </thead>
+            <tbody id="lobBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="userTitle">
+        <h2 id="userTitle">User wide</h2>
+        <p class="hint">Executions grouped by operator</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Total</th>
+                <th>Auto</th>
+                <th>Manual</th>
+                <th>Mistakes</th>
+              </tr>
+            </thead>
+            <tbody id="userBody"></tbody>
+          </table>
+        </div>
+        <div class="pager" id="userPager"></div>
+      </section>
+
+      <section class="panel wide" aria-labelledby="cardTitle">
+        <h2 id="cardTitle">Queue card wide</h2>
+        <p class="hint">Executions grouped by queue card</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Queue card</th>
+                <th>LOB</th>
+                <th>Total</th>
+                <th>Auto</th>
+                <th>Manual</th>
+                <th>Mistakes</th>
+              </tr>
+            </thead>
+            <tbody id="cardBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel wide" aria-labelledby="mistakeTitle">
+        <h2 id="mistakeTitle">Wrong fills (tracking)</h2>
+        <p class="hint">One line per execution · mandatory (key) steps only</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>User</th>
+                <th>LOB</th>
+                <th>Queue card</th>
+                <th>Count</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody id="mistakeBody"></tbody>
+          </table>
+        </div>
+        <div class="pager" id="mistakePager"></div>
+      </section>
+
+      <section class="panel wide" aria-labelledby="recentTitle">
+        <h2 id="recentTitle">Recent executions</h2>
+        <p class="hint">Runs in the loaded date window</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>LOB</th>
+                <th>Queue card</th>
+                <th>User</th>
+                <th>Mode</th>
+                <th>Mistakes</th>
+              </tr>
+            </thead>
+            <tbody id="recentBody"></tbody>
+          </table>
+        </div>
+        <div class="pager" id="recentPager"></div>
+      </section>
+    </main>
+
+    <script src="data.js"></script>
+    <script src="nav.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,62 @@
+{
+  "id": "demo-summit-event-rsvp",
+  "name": "Summit Conference — Event RSVP",
+  "description": "Fill the Summit Conference demo form on the current tab.",
+  "formUrl": "http://127.0.0.1:4173/sites/summit-event-rsvp",
+  "steps": [
+    {
+      "id": "attendeeName",
+      "action": "fill",
+      "label": "Attendee name",
+      "selector": "#attendeeName",
+      "valueFrom": "attendeeName",
+      "allowedValues": [
+        "Priya Nair",
+        "Jordan Lee"
+      ]
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "company",
+      "action": "fill",
+      "label": "Company",
+      "selector": "#company",
+      "valueFrom": "company",
+      "mandatory": true
+    },
+    {
+      "id": "ticket",
+      "action": "fill",
+      "label": "Ticket type",
+      "selector": "#ticket",
+      "valueFrom": "ticket"
+    },
+    {
+      "id": "dietary",
+      "action": "fill",
+      "label": "Dietary needs",
+      "selector": "#dietary",
+      "valueFrom": "dietary"
+    },
+    {
+      "id": "sessions",
+      "action": "fill",
+      "label": "Sessions of interest",
+      "selector": "#sessions",
+      "valueFrom": "sessions"
+    },
+    {
+      "id": "highlight-review",
+      "action": "highlight",
+      "label": "Highlight submit for human review",
+      "selector": "#submitBtn"
+    }
+  ]
+}

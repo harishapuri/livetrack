@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pulse Feedback — Demo Form</title>
+    <style>
+      :root {
+        --bg: #f6f4f1;
+        --ink: #1c1917;
+        --line: #d6d0c6;
+        --accent: #4f46e5;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Avenir Next", sans-serif;
+        color: var(--ink);
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 32%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      main { max-width: 640px; margin: 0 auto; padding: 40px 22px 64px; }
+      .site { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+      h1 { margin: 6px 0 8px; font-size: 1.75rem; }
+      .sub { margin: 0 0 24px; color: #57534e; }
+      form { display: grid; gap: 12px; }
+      label { display: grid; gap: 6px; font-size: 0.92rem; }
+      input, textarea {
+        font: inherit; padding: 10px 12px; border: 1px solid var(--line);
+        border-radius: 8px; background: #fff;
+      }
+      button {
+        margin-top: 6px; justify-self: start; font: inherit; padding: 11px 16px;
+        border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer;
+      }
+      .hint {
+        margin-top: 18px; padding: 12px 14px; border-left: 3px solid var(--accent);
+        background: color-mix(in srgb, var(--accent) 10%, #fff); color: #44403c; font-size: 0.88rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="site">Pulse Feedback</div>
+      <h1>Customer feedback survey</h1>
+      <p class="sub">Dummy Coact form — open this tab, then Start the matching queue card.</p>
+      <form id="demoForm" onsubmit="event.preventDefault(); alert('Submitted (demo only)');">
+        <label>
+          Your name
+          <input id="name" name="name" type="text" />
+        </label>
+        <label>
+          Email
+          <input id="email" name="email" type="email" />
+        </label>
+        <label>
+          Product used
+          <input id="product" name="product" type="text" />
+        </label>
+        <label>
+          Satisfaction (1-10)
+          <input id="rating" name="rating" type="text" />
+        </label>
+        <label>
+          What worked well
+          <textarea id="liked" name="liked" rows="3"></textarea>
+        </label>
+        <label>
+          What to improve
+          <textarea id="improve" name="improve" rows="3"></textarea>
+        </label>
+        <button id="submitBtn" type="submit">Submit</button>
+      </form>
+      <p class="hint">URL: http://127.0.0.1:4173/sites/pulse-feedback</p>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,57 @@
+{
+  "id": "demo-greenpath-volunteer",
+  "name": "GreenPath — Volunteer signup",
+  "description": "Fill the GreenPath Nonprofit demo form on the current tab.",
+  "formUrl": "http://127.0.0.1:4173/sites/greenpath-volunteer",
+  "steps": [
+    {
+      "id": "name",
+      "action": "fill",
+      "label": "Full name",
+      "selector": "#name",
+      "valueFrom": "name"
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "phone",
+      "action": "fill",
+      "label": "Phone",
+      "selector": "#phone",
+      "valueFrom": "phone"
+    },
+    {
+      "id": "city",
+      "action": "fill",
+      "label": "City",
+      "selector": "#city",
+      "valueFrom": "city"
+    },
+    {
+      "id": "availability",
+      "action": "fill",
+      "label": "Availability",
+      "selector": "#availability",
+      "valueFrom": "availability"
+    },
+    {
+      "id": "skills",
+      "action": "fill",
+      "label": "Skills",
+      "selector": "#skills",
+      "valueFrom": "skills"
+    },
+    {
+      "id": "highlight-review",
+      "action": "highlight",
+      "label": "Highlight submit for human review",
+      "selector": "#submitBtn"
+    }
+  ]
+}

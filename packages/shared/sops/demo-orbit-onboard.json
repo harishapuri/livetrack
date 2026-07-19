@@ -1,0 +1,71 @@
+{
+  "id": "demo-orbit-onboard",
+  "name": "Orbit Onboard — click-stream wizard",
+  "description": "Multi-page click stream: Continue → fill profile → Continue → review.",
+  "formUrl": "http://127.0.0.1:4173/sites/orbit-onboard/",
+  "formMatch": [
+    "orbit-onboard",
+    "Orbit Onboard",
+    "sites/orbit-onboard"
+  ],
+  "steps": [
+    {
+      "id": "welcome-continue",
+      "action": "click",
+      "label": "Click Continue on welcome",
+      "findByText": [
+        "Continue"
+      ],
+      "selector": "#btnContinue",
+      "navigates": true,
+      "waitAfter": {
+        "urlIncludes": "orbit-onboard/profile",
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "fullName",
+      "action": "fill",
+      "label": "Fill full name",
+      "selector": "#fullName",
+      "valueFrom": "fullName",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Fill work email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "role",
+      "action": "fill",
+      "label": "Fill role",
+      "selector": "#role",
+      "valueFrom": "role"
+    },
+    {
+      "id": "profile-continue",
+      "action": "click",
+      "label": "Click Continue on profile",
+      "findByText": [
+        "Continue"
+      ],
+      "selector": "#btnContinue",
+      "navigates": true,
+      "waitAfter": {
+        "urlIncludes": "orbit-onboard/review",
+        "timeoutMs": 15000
+      }
+    },
+    {
+      "id": "review-submit",
+      "action": "highlight",
+      "label": "Pause for Submit review",
+      "selector": "#btnSubmit",
+      "optional": true
+    }
+  ]
+}
