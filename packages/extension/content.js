@@ -2877,20 +2877,12 @@
     return /^(yes|no|y|n|true|false|on|off)$/i.test(t);
   }
 
-  function captureLooksLikeChoiceValue(text) {
-    const t = captureNormalizeText(text);
-    if (!t || t.length > 64) return false;
-    if (captureLooksLikeOptionOnly(t)) return true;
-    if (/[?]/.test(t)) return false;
-    if (
-      /^(save and continue|submit|next|continue|back|cancel|apply|sign in|search|upload|remove|add|edit|delete)$/i.test(
-        t,
-      )
-    ) {
-      return false;
-    }
-    if (t.length <= 40 && !/\.\s/.test(t) && /^[\w .,'\-+/&()]+$/i.test(t)) return true;
-    return false;
+  function captureLooksLikePlaceholderValue(text) {
+    const t = captureNormalizeText(text).toLowerCase();
+    if (!t) return false;
+    return /^(select one|select an option|select\.\.\.|select…|please select( one)?|choose one|choose an option|-\s*select\s*-|--\s*select\s*--)$/.test(
+      t,
+    );
   }
 
   function captureLooksLikeOpaqueToken(value) {
@@ -2900,6 +2892,24 @@
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) {
       return true;
     }
+    return false;
+  }
+
+  function captureLooksLikeChoiceValue(text) {
+    const t = captureNormalizeText(text);
+    if (!t || t.length > 64) return false;
+    if (captureLooksLikeOptionOnly(t)) return true;
+    if (captureLooksLikeOpaqueToken(t)) return false;
+    if (captureLooksLikePlaceholderValue(t)) return false;
+    if (/[?]/.test(t)) return false;
+    if (
+      /^(save and continue|submit|next|continue|back|cancel|apply|sign in|search|upload|remove|add|edit|delete)$/i.test(
+        t,
+      )
+    ) {
+      return false;
+    }
+    if (t.length <= 40 && !/\.\s/.test(t) && /^[\w .,'\-+/&()]+$/i.test(t)) return true;
     return false;
   }
 
@@ -3384,6 +3394,8 @@
       const opt = el.selectedOptions && el.selectedOptions[0];
       selectedText = opt ? captureNormalizeText(opt.textContent || "") : "";
       value = selectedText || String((opt && opt.value) || value);
+      // Still on the unselected placeholder option — nothing was actually chosen.
+      if (captureLooksLikePlaceholderValue(selectedText || value)) return null;
     } else if (type === "checkbox" || type === "radio" || role === "checkbox" || role === "radio") {
       action = "check";
       const on =
@@ -3423,6 +3435,7 @@
           }
         }
       }
+      if (captureLooksLikeOpaqueToken(selectedText)) selectedText = "";
       if (!selectedText) selectedText = "true";
       value = selectedText;
     }
@@ -3520,16 +3533,24 @@
       captureNormalizeText(el.value || ""),
       captureNormalizeText((el.innerText || el.textContent || "").split("\n")[0]),
     ];
+    // Validate the FULL candidate before truncating — slicing a 65-char opaque
+    // token down to 64 chars first would let it slip past the length check.
     for (const c of candidates) {
-      const t = captureNormalizeText(c).slice(0, 64);
-      if (t && captureLooksLikeChoiceValue(t)) return t;
+      if (c && captureLooksLikeChoiceValue(c)) return c.slice(0, 64);
     }
-    return captureNormalizeText(candidates.find(Boolean) || "").slice(0, 64);
+    // No candidate looked like a real choice — never fall back to a bare
+    // opaque id / placeholder just because it happened to be non-empty.
+    const first = captureNormalizeText(candidates.find(Boolean) || "");
+    if (first && !captureLooksLikeOpaqueToken(first) && !captureLooksLikePlaceholderValue(first)) {
+      return first.slice(0, 64);
+    }
+    return "";
   }
 
   function emitChoiceCapture(el, optionLabel) {
     const opt = captureNormalizeText(optionLabel).slice(0, 80);
     if (!opt) return;
+    if (captureLooksLikeOpaqueToken(opt) || captureLooksLikePlaceholderValue(opt)) return;
     const question =
       resolveFieldQuestion(el, opt) ||
       captureWorkdayQuestion(el, opt) ||
@@ -3645,6 +3666,9 @@
         "",
     );
     if (!label || label.length > 120) return;
+    // A combobox trigger not caught by isComboboxTrigger() still shows its OLD
+    // value ("Select One" etc.) at click time — never record that as an answer.
+    if (captureLooksLikePlaceholderValue(label) || captureLooksLikeOpaqueToken(label)) return;
     if (captureLooksLikeChoiceValue(label) || captureParseOptionAriaQuestion(label, "")) {
       const optionValue = captureLooksLikeChoiceValue(label)
         ? label.split(/\s+/).slice(0, 4).join(" ").slice(0, 64)
