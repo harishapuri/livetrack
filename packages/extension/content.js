@@ -3533,7 +3533,8 @@
     const question =
       resolveFieldQuestion(el, opt) ||
       captureWorkdayQuestion(el, opt) ||
-      captureParseOptionAriaQuestion(el.getAttribute?.("aria-label") || "", opt);
+      captureParseOptionAriaQuestion(el.getAttribute?.("aria-label") || "", opt) ||
+      pendingComboboxQuestion();
     const q =
       question && !captureLooksLikeOptionOnly(question) && !captureLooksLikeJunkFieldKey(question)
         ? question
@@ -3553,6 +3554,40 @@
       selectedText: opt,
     });
     if (q) rememberField(el, q, "choice");
+    pendingCombobox = null;
+  }
+
+  /**
+   * Buttons that just open a Workday-style combobox popup. Clicking one does not
+   * choose a value — the button's displayed text at click time is still the OLD
+   * value — so it must never be captured as if it were the answer. The real
+   * selection is a later click on a popup option, which is often rendered in a
+   * floating panel detached from the field's own DOM subtree and can't resolve
+   * its own question; remember the field here (while ancestry is intact) so that
+   * later option click can fall back to it.
+   */
+  function isComboboxTrigger(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (String(el.getAttribute?.("role") || "").toLowerCase() === "combobox") return true;
+    const auto = String(el.getAttribute?.("data-automation-id") || "");
+    if (/selectOne|dropDown|promptButton|multiselect/i.test(auto)) return true;
+    const haspopup = String(el.getAttribute?.("aria-haspopup") || "").toLowerCase();
+    if ((haspopup === "listbox" || haspopup === "true") && el.hasAttribute?.("aria-expanded")) return true;
+    return false;
+  }
+
+  /** {el, question, ts} for the combobox popup most recently opened. */
+  let pendingCombobox = null;
+
+  function rememberComboboxOpen(el) {
+    const question = resolveFieldQuestion(el, "") || captureWorkdayQuestion(el, "");
+    pendingCombobox = { el, question: question || "", ts: Date.now() };
+  }
+
+  function pendingComboboxQuestion() {
+    if (!pendingCombobox) return "";
+    if (Date.now() - pendingCombobox.ts > 8000) return "";
+    return pendingCombobox.question;
   }
 
   function onCaptureClick(event) {
@@ -3566,6 +3601,11 @@
       if (!climb) return;
       const opt = optionTextFromControl(climb) || captureNormalizeText(raw?.textContent || "").slice(0, 40);
       if (opt && captureLooksLikeChoiceValue(opt)) emitChoiceCapture(climb, opt);
+      return;
+    }
+
+    if (isComboboxTrigger(el)) {
+      rememberComboboxOpen(el);
       return;
     }
 
@@ -3615,32 +3655,6 @@
             : label.slice(0, 64);
       emitChoiceCapture(el, optionValue);
       return;
-    }
-    if (
-      /selectOne|dropDown|promptButton|multiselect/i.test(
-        String(el.getAttribute?.("data-automation-id") || ""),
-      )
-    ) {
-      const question = resolveFieldQuestion(el, "") || captureWorkdayQuestion(el, "");
-      const value = captureNormalizeText(el.innerText || el.getAttribute("aria-label") || "").slice(0, 120);
-      if (question && value && !captureLooksLikeJunkFieldKey(value)) {
-        postCaptureEvent({
-          kind: "extension",
-          source: "human",
-          actor: "user",
-          action: "select",
-          pageUrl: location.href,
-          pageTitle: document.title || "",
-          tag: (el.tagName || "").toLowerCase(),
-          selector: captureSelectorFor(el),
-          fieldName: question,
-          label: question,
-          value,
-          selectedText: value,
-        });
-        rememberField(el, question, "choice");
-        return;
-      }
     }
     postCaptureEvent({
       kind: "extension",
