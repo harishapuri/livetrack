@@ -3393,9 +3393,16 @@
       action = "select";
       const opt = el.selectedOptions && el.selectedOptions[0];
       selectedText = opt ? captureNormalizeText(opt.textContent || "") : "";
-      value = selectedText || String((opt && opt.value) || value);
+      // A chosen option with no visible text is not a real human-facing
+      // selection — often a hidden native <select> Workday syncs behind its
+      // custom combobox purely for form submission, whose placeholder option
+      // has an empty label and a raw sentinel value (e.g. value="0"). Falling
+      // back to that raw value would report the sentinel as if it were the
+      // user's answer, so skip entirely rather than guess from opt.value.
+      if (!selectedText) return null;
+      value = selectedText;
       // Still on the unselected placeholder option — nothing was actually chosen.
-      if (captureLooksLikePlaceholderValue(selectedText || value)) return null;
+      if (captureLooksLikePlaceholderValue(selectedText)) return null;
     } else if (type === "checkbox" || type === "radio" || role === "checkbox" || role === "radio") {
       action = "check";
       const on =
