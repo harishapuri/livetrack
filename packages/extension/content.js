@@ -3593,7 +3593,9 @@
     const auto = String(el.getAttribute?.("data-automation-id") || "");
     if (/selectOne|dropDown|promptButton|multiselect/i.test(auto)) return true;
     const haspopup = String(el.getAttribute?.("aria-haspopup") || "").toLowerCase();
-    if ((haspopup === "listbox" || haspopup === "true") && el.hasAttribute?.("aria-expanded")) return true;
+    // Only "listbox" — aria-haspopup="true"/"menu"/"dialog" cover plain menu
+    // and dialog buttons too, which are not dropdown/select controls.
+    if (haspopup === "listbox" && el.hasAttribute?.("aria-expanded")) return true;
     return false;
   }
 
@@ -3607,7 +3609,7 @@
 
   function pendingComboboxQuestion() {
     if (!pendingCombobox) return "";
-    if (Date.now() - pendingCombobox.ts > 8000) return "";
+    if (Date.now() - pendingCombobox.ts > 15000) return "";
     return pendingCombobox.question;
   }
 
@@ -3619,9 +3621,19 @@
       const raw = event.target;
       const climb =
         raw?.closest?.("[id*='primaryQuestionnaire'], [data-automation-id*='primaryQuestionnaire']") || null;
-      if (!climb) return;
-      const opt = optionTextFromControl(climb) || captureNormalizeText(raw?.textContent || "").slice(0, 40);
-      if (opt && captureLooksLikeChoiceValue(opt)) emitChoiceCapture(climb, opt);
+      if (climb) {
+        const opt = optionTextFromControl(climb) || captureNormalizeText(raw?.textContent || "").slice(0, 40);
+        if (opt && captureLooksLikeChoiceValue(opt)) emitChoiceCapture(climb, opt);
+        return;
+      }
+      // No Workday-shaped markup matched at all. If a combobox popup was just
+      // opened, this click almost certainly lands on that popup's chosen
+      // option — capture it by its visible text rather than dropping it, even
+      // though it doesn't match any automation-id/role pattern we recognize.
+      if (raw && pendingComboboxQuestion()) {
+        const opt = captureNormalizeText((raw.innerText || raw.textContent || "").split("\n")[0]).slice(0, 64);
+        if (opt && captureLooksLikeChoiceValue(opt)) emitChoiceCapture(raw, opt);
+      }
       return;
     }
 
