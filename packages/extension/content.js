@@ -3527,11 +3527,15 @@
     const aria = captureNormalizeText(el.getAttribute?.("aria-label") || "");
     const ariaQ = captureParseOptionAriaQuestion(aria, "");
     const fromAria = ariaQ ? "" : captureLooksLikeChoiceValue(aria) ? aria : "";
+    // Visible text (what the user actually reads and clicked on) ranks above
+    // el.value — a form control's raw value attribute is very often an
+    // internal boolean/index code (e.g. "0"/"1"), not the human answer, and
+    // would otherwise win just because it happens to look choice-shaped.
     const candidates = [
       fromAria,
       captureNormalizeText(el.getAttribute?.("data-automation-label") || ""),
-      captureNormalizeText(el.value || ""),
       captureNormalizeText((el.innerText || el.textContent || "").split("\n")[0]),
+      captureNormalizeText(el.value || ""),
     ];
     // Validate the FULL candidate before truncating — slicing a 65-char opaque
     // token down to 64 chars first would let it slip past the length check.
