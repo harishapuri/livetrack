@@ -23,6 +23,11 @@ function num(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function normalizeLob(value) {
+  const s = String(value || "").trim();
+  return s || "TCOO";
+}
+
 function normalizeGrain(grain) {
   const g = String(grain || "").trim().toLowerCase();
   if (g === "year" || g === "day" || g === "month") return g;
@@ -240,18 +245,19 @@ async function buildAnalytics(opts = {}) {
   let execIncomplete = 0;
 
   for (const run of executions) {
-    const day = dayKey(run.run_date || run.completed_at || "");
+    const outcome = executionOutcome(run);
+    let day = dayKey(run.run_date || run.completed_at || "");
+    if (!day && outcome === "complete") day = dayKey(new Date());
     if (from || to) {
       if (!inRange(day, from, to)) continue;
     }
     const userId = String(run.user_id || "(unknown)");
     if (userFilter && !userId.toLowerCase().includes(userFilter)) continue;
-    const lob = String(run.lob || "TCOO");
+    const lob = normalizeLob(run.lob);
     if (lobFilter && lob !== lobFilter) continue;
     const cardId = String(run.queue_card_id || run.queue_card || "(unknown)");
     if (cardFilter && cardId !== cardFilter && String(run.queue_card || "") !== cardFilter) continue;
 
-    const outcome = executionOutcome(run);
     const statusRow = bumpNamed(execStatusByUser, userId, { complete: 0, incomplete: 0 });
     if (outcome === "incomplete") {
       execIncomplete += 1;

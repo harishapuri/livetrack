@@ -18,10 +18,51 @@ function mimeFor(filePath) {
   if (ext === ".gif") return "image/gif";
   if (ext === ".webp") return "image/webp";
   if (ext === ".pdf") return "application/pdf";
-  if (ext === ".txt" || ext === ".log" || ext === ".json" || ext === ".csv") {
+  if (
+    ext === ".txt" ||
+    ext === ".log" ||
+    ext === ".json" ||
+    ext === ".csv" ||
+    ext === ".md"
+  ) {
     return "text/plain";
   }
   return "application/octet-stream";
+}
+
+function cellDisplayText(value) {
+  if (value == null || value === "") return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+  if (Array.isArray(value.richText)) {
+    return value.richText.map((part) => part.text || "").join("");
+  }
+  if (value.text) return String(value.text);
+  if (value.result != null) return cellDisplayText(value.result);
+  if (value.hyperlink) return String(value.hyperlink);
+  return "";
+}
+
+async function extractSpreadsheetText(filePath, maxChars = 28000) {
+  const ExcelJS = require("exceljs");
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.readFile(filePath);
+  const lines = [];
+  wb.eachSheet((sheet) => {
+    lines.push(`# ${sheet.name}`);
+    sheet.eachRow((row) => {
+      const vals = [];
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        vals.push(cellDisplayText(cell.value));
+      });
+      if (vals.some((item) => String(item).trim())) lines.push(vals.join(" | "));
+    });
+  });
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, maxChars);
 }
 
 function fileToContentParts(filePath) {
@@ -48,6 +89,51 @@ function fileToContentParts(filePath) {
     ];
   }
   return [{ type: "text", text: `Attached file: ${name} (${mime})` }];
+}
+
+async function deskFileToContentParts(filePath) {
+  const file = String(filePath || "").trim();
+  const name = path.basename(file);
+  const ext = path.extname(file).toLowerCase();
+  if (!file || !fs.existsSync(file)) {
+    return [{ type: "text", text: `Missing attachment: ${name || "file"}` }];
+  }
+  if (ext === ".xlsx" || ext === ".xlsm") {
+    try {
+      const text = await extractSpreadsheetText(file);
+      return [
+        {
+          type: "text",
+          text: `Attached spreadsheet (${name}):\n\`\`\`\n${text || "(empty workbook)"}\n\`\`\``,
+        },
+      ];
+    } catch (err) {
+      return [
+        {
+          type: "text",
+          text: `Attached spreadsheet ${name} could not be read (${err?.message || "parse error"}).`,
+        },
+      ];
+    }
+  }
+  if (ext === ".xls") {
+    return [
+      {
+        type: "text",
+        text: `Attached spreadsheet ${name} is .xls. Save as .xlsx or .csv so AI can read the cells.`,
+      },
+    ];
+  }
+  try {
+    return fileToContentParts(file);
+  } catch (err) {
+    return [
+      {
+        type: "text",
+        text: `Could not read attachment ${name}: ${err?.message || "read error"}`,
+      },
+    ];
+  }
 }
 
 const AUDIO_EXT = {
@@ -114,9 +200,9 @@ async function transcribeAudio({
       ? Buffer.from(bytes)
       : Buffer.alloc(0);
   if (!buf.length) return { ok: false, error: "No audio captured." };
-  const { apiKey } = getOpenAiConfig();
+  const { apiKey, transcriptionsUrl } = getOpenAiConfig();
   if (!apiKey) {
-    return { ok: false, error: "Add an OpenAI API key in Settings to convert speech to text." };
+    return { ok: false, error: "Add an API key in Settings to convert speech to text." };
   }
   const mime = String(mimeType || "audio/webm").split(";")[0].trim() || "audio/webm";
   const ext = audioExtensionFor(mime);
@@ -138,7 +224,7 @@ async function transcribeAudio({
     } else {
       form.append("response_format", "json");
     }
-    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    const res = await fetch(transcriptionsUrl || "https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}` },
       body: form,
@@ -199,9 +285,9 @@ function capWords(text, maxWords = 200) {
 async function synthesizeSpeech({ text, voice, speed } = {}) {
   const raw = capWords(String(text || "").trim(), 200).slice(0, 1600);
   if (!raw) return { ok: false, error: "Nothing to speak." };
-  const { apiKey } = getOpenAiConfig();
+  const { apiKey, speechUrl } = getOpenAiConfig();
   if (!apiKey) {
-    return { ok: false, error: "Add an OpenAI API key in Settings to hear spoken replies." };
+    return { ok: false, error: "Add an API key in Settings to hear spoken replies." };
   }
   const voiceId = normalizeTtsVoice(voice);
   const rate = clampSpeechSpeed(speed);
@@ -209,7 +295,7 @@ async function synthesizeSpeech({ text, voice, speed } = {}) {
   const cached = ttsCache.get(cacheKey);
   if (cached) return { ...cached };
   try {
-    const res = await fetch("https://api.openai.com/v1/audio/speech", {
+    const res = await fetch(speechUrl || "https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -360,9 +446,15 @@ const AGENT_TOOLS = [
   },
 ];
 
+function authHeaders(apiKey) {
+  const headers = { "Content-Type": "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  return headers;
+}
+
 async function openaiJson({ body, signal, feature, cardId } = {}) {
-  const { apiKey } = getOpenAiConfig();
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+  const { apiKey, chatCompletionsUrl } = getOpenAiConfig();
+  const res = await fetch(chatCompletionsUrl || "https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -382,7 +474,7 @@ async function openaiJson({ body, signal, feature, cardId } = {}) {
         ok: false,
       });
     }
-    throw new Error(`OpenAI ${res.status}: ${errText.slice(0, 240) || res.statusText}`);
+    throw new Error(`AI ${res.status}: ${errText.slice(0, 240) || res.statusText}`);
   }
   const json = await res.json();
   if (feature) logFromChatResponse({ json, body, feature, cardId, ok: true });
@@ -390,8 +482,8 @@ async function openaiJson({ body, signal, feature, cardId } = {}) {
 }
 
 async function streamCompletion({ body, signal, onDelta, feature, cardId } = {}) {
-  const { apiKey } = getOpenAiConfig();
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+  const { apiKey, chatCompletionsUrl } = getOpenAiConfig();
+  const res = await fetch(chatCompletionsUrl || "https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -411,7 +503,7 @@ async function streamCompletion({ body, signal, onDelta, feature, cardId } = {})
         ok: false,
       });
     }
-    throw new Error(`OpenAI ${res.status}: ${errText.slice(0, 240) || res.statusText}`);
+    throw new Error(`AI ${res.status}: ${errText.slice(0, 240) || res.statusText}`);
   }
 
   const reader = res.body.getReader();
@@ -1083,6 +1175,41 @@ function getDraftJiraFromShotSystem() {
   return getAiPrompt("jiraTicket");
 }
 
+function getDraftJiraFromMaterialsSystem() {
+  return [
+    "You plan Jira work from attached materials (screenshot, spreadsheet, notes, files).",
+    "Decide whether the input is ONE ticket or SEVERAL independent tickets.",
+    "Use multiple only when the materials contain independent work units (different hosts, environments, incidents, customers, change items, or unrelated requests).",
+    "Use one ticket when it is a single issue or a tightly related set. If unsure, stay single — do not invent splits.",
+    "Ignore summary, total, and count rows. Skip items already closed, remediated, or risk-accepted unless the user asked to include them.",
+    "Each summary must name the actual work (what + where + identifier). Never use a generic title like Issue from LiveTrack Desk.",
+    'Return JSON only with keys "mode" ("single" or "multiple"), "reason", and "tickets" (array of objects with summary, description, acceptanceCriteria, groupingHint).',
+    "No markdown fences. Keep each summary under 255 characters.",
+  ].join(" ");
+}
+
+function normalizeTicketDraft(obj) {
+  if (!obj || typeof obj !== "object") return null;
+  const summary = String(obj.summary || obj.title || "").trim();
+  const description = String(obj.description || obj.body || "").trim();
+  const acceptanceCriteria = String(
+    obj.acceptanceCriteria ||
+      obj.acceptance_criteria ||
+      obj.acceptance ||
+      obj.ac ||
+      "",
+  ).trim();
+  const groupingHint = String(obj.groupingHint || obj.group || obj.environment || "").trim();
+  if (!summary && !description && !acceptanceCriteria) return null;
+  if (!summary) return null;
+  return {
+    summary: summary.slice(0, 255),
+    description,
+    acceptanceCriteria,
+    groupingHint,
+  };
+}
+
 function parseTicketDraftJson(text) {
   const raw = String(text || "").trim();
   if (!raw) return null;
@@ -1092,20 +1219,19 @@ function parseTicketDraftJson(text) {
     try {
       const obj = JSON.parse(value);
       if (!obj || typeof obj !== "object") return null;
-      const summary = String(obj.summary || obj.title || "").trim();
-      const description = String(obj.description || obj.body || "").trim();
-      const acceptanceCriteria = String(
-        obj.acceptanceCriteria ||
-          obj.acceptance_criteria ||
-          obj.acceptance ||
-          obj.ac ||
-          "",
-      ).trim();
-      if (!summary && !description && !acceptanceCriteria) return null;
+      const ticketsRaw = Array.isArray(obj.tickets) ? obj.tickets : [];
+      const tickets = ticketsRaw.map(normalizeTicketDraft).filter(Boolean).slice(0, 25);
+      const first = tickets[0] || normalizeTicketDraft(obj);
+      if (!first) return null;
+      const mode = tickets.length >= 2 ? "multiple" : "single";
       return {
-        summary: summary.slice(0, 255),
-        description,
-        acceptanceCriteria,
+        summary: first.summary,
+        description: first.description,
+        acceptanceCriteria: first.acceptanceCriteria,
+        groupingHint: first.groupingHint,
+        mode,
+        reason: String(obj.reason || "").trim(),
+        tickets: mode === "multiple" ? tickets : [first],
       };
     } catch {
       return null;
@@ -1147,6 +1273,130 @@ function fallbackTicketDraft({ pageUrl, pageTitle } = {}) {
   return { summary: summary.slice(0, 255), description, acceptanceCriteria: "" };
 }
 
+async function draftJiraFromDeskMaterials({
+  screenshotPath,
+  files = [],
+  summary,
+  description,
+  acceptanceCriteria,
+  pageUrl,
+  pageTitle,
+  signal,
+} = {}) {
+  const fallback = fallbackTicketDraft({ pageUrl, pageTitle });
+  const { model, hasKey } = getOpenAiConfig();
+  const paths = [];
+  const seen = new Set();
+  const addPath = (value) => {
+    const file = String(value || "").trim();
+    if (!file || seen.has(file) || !fs.existsSync(file)) return;
+    seen.add(file);
+    paths.push(file);
+  };
+  addPath(screenshotPath);
+  const extras = Array.isArray(files) ? files : [];
+  for (const item of extras) {
+    addPath(typeof item === "string" ? item : item?.path);
+  }
+  const currentSummary = String(summary || "").trim();
+  const currentDescription = String(description || "").trim();
+  const currentAcceptance = String(acceptanceCriteria || "").trim();
+  if (!paths.length && !currentSummary && !currentDescription && !currentAcceptance) {
+    return { ok: false, error: "Attach a file or capture a screenshot first." };
+  }
+  if (!hasKey) {
+    return {
+      ok: true,
+      ...fallback,
+      mode: "single",
+      reason: "",
+      tickets: [fallback],
+      usedAi: false,
+      note: "Add an API key in Settings to refine with AI.",
+    };
+  }
+  const content = [
+    {
+      type: "text",
+      text: [
+        "Plan Jira ticket(s) from the attached materials (screenshot, spreadsheet, notes, or files).",
+        "Use file contents as the source of truth. Decide one vs several independent tickets. If unsure, return a single ticket.",
+        "Each summary must reflect the exact work (what, where, identifier) — not a generic Desk title.",
+        pageTitle ? `Page title: ${pageTitle}` : "",
+        pageUrl ? `URL: ${pageUrl}` : "",
+        currentSummary ? `Current summary:\n${currentSummary}` : "",
+        currentDescription ? `Current description:\n${currentDescription}` : "",
+        currentAcceptance ? `Current acceptance criteria:\n${currentAcceptance}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+    },
+  ];
+  for (const file of paths) {
+    const parts = await deskFileToContentParts(file);
+    content.push(...parts);
+  }
+  try {
+    const json = await openaiJson({
+      body: {
+        model,
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: getDraftJiraFromMaterialsSystem() },
+          { role: "user", content },
+        ],
+      },
+      signal,
+      feature: "jira_ticket_refine",
+    });
+    const parsed = parseTicketDraftJson(json.choices?.[0]?.message?.content || "");
+    if (!parsed?.summary) {
+      return {
+        ok: true,
+        ...fallback,
+        mode: "single",
+        reason: "",
+        tickets: [fallback],
+        usedAi: false,
+        note: "AI draft was empty; used a fallback summary.",
+      };
+    }
+    const tickets = Array.isArray(parsed.tickets) && parsed.tickets.length
+      ? parsed.tickets
+      : [
+          {
+            summary: parsed.summary.slice(0, 255),
+            description: parsed.description || fallback.description,
+            acceptanceCriteria: parsed.acceptanceCriteria || "",
+            groupingHint: parsed.groupingHint || "",
+          },
+        ];
+    const mode = tickets.length >= 2 ? "multiple" : "single";
+    const first = tickets[0];
+    return {
+      ok: true,
+      summary: first.summary.slice(0, 255),
+      description: first.description || fallback.description,
+      acceptanceCriteria: first.acceptanceCriteria || "",
+      mode,
+      reason: parsed.reason || "",
+      tickets,
+      usedAi: true,
+      model,
+    };
+  } catch (err) {
+    return {
+      ok: true,
+      ...fallback,
+      mode: "single",
+      reason: "",
+      tickets: [fallback],
+      usedAi: false,
+      note: err?.message || "AI refine failed; used a fallback summary.",
+    };
+  }
+}
+
 async function draftJiraFromScreenshot({
   screenshotPath,
   dataUrl,
@@ -1169,7 +1419,7 @@ async function draftJiraFromScreenshot({
       ok: true,
       ...fallback,
       usedAi: false,
-      note: hasKey ? "No screenshot to send to vision." : "Add an OpenAI API key in Settings to draft from the screenshot.",
+      note: hasKey ? "No screenshot to send to vision." : "Add an API key in Settings to draft from the screenshot.",
     };
   }
   try {
@@ -1334,7 +1584,7 @@ async function draftMailFromScreenshot({ screenshotPath, dataUrl, issueKey, summ
       usedAi: false,
       note: hasKey
         ? "No screenshot to send to vision."
-        : "Add an OpenAI API key in Settings to read the mail screenshot.",
+        : "Add an API key in Settings to read the mail screenshot.",
     };
   }
   try {
@@ -1416,7 +1666,7 @@ async function explainPage({ snippet, screenshotPath, dataUrl, historyBlock, sig
   }
   const { model, hasKey } = getOpenAiConfig();
   if (!hasKey) {
-    return { ok: false, error: "Add an OpenAI API key in Settings to explain this window." };
+    return { ok: false, error: "Add an API key in Settings to explain this window." };
   }
   try {
     const userText = buildExplainPageUserContent(text, Boolean(imageUrl), historyBlock);
@@ -1566,7 +1816,7 @@ async function refineMeetingMinutes({ transcript, meeting } = {}) {
   }
   const { apiKey, model } = getOpenAiConfig();
   if (!apiKey) {
-    return { ok: false, error: "Add an OpenAI API key in Settings to refine meeting minutes." };
+    return { ok: false, error: "Add an API key in Settings to refine meeting minutes." };
   }
   const title = String(meeting?.subject || "Ad-hoc meeting").trim();
   const when = [meeting?.start, meeting?.end].filter(Boolean).join(" → ");
@@ -1600,7 +1850,7 @@ async function refineMeetingMinutes({ transcript, meeting } = {}) {
       feature: "mom_refine",
     });
     const text = String(json.choices?.[0]?.message?.content || "").trim();
-    if (!text) return { ok: false, error: "OpenAI returned an empty MOM." };
+    if (!text) return { ok: false, error: "AI returned an empty MOM." };
     return { ok: true, text, model };
   } catch (err) {
     return { ok: false, error: err?.message || "Could not refine meeting minutes." };
@@ -1611,7 +1861,7 @@ async function readTeamsMeetingFrame({ dataUrl } = {}) {
   const imageUrl = String(dataUrl || "").trim();
   if (!imageUrl) return { ok: false, error: "No meeting window image." };
   const { model, hasKey } = getOpenAiConfig();
-  if (!hasKey) return { ok: false, error: "Add an OpenAI API key in Settings." };
+  if (!hasKey) return { ok: false, error: "Add an API key in Settings." };
   const visionModel = /mini/i.test(String(model || "")) ? "gpt-4o" : model;
   try {
     const json = await openaiJson({
@@ -1678,6 +1928,8 @@ module.exports = {
   buildExplainPageUserContent,
   isUsefulExplainSnippet,
   draftJiraFromScreenshot,
+  draftJiraFromDeskMaterials,
+  getDraftJiraFromMaterialsSystem,
   parseTicketDraftJson,
   fallbackTicketDraft,
   draftMailFromScreenshot,

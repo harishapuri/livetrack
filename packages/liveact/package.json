@@ -29,6 +29,7 @@
     "productName": "LiveTrack",
     "copyright": "Copyright © LiveTrack",
     "electronVersion": "33.4.11",
+    "icon": "build/icon.png",
     "npmRebuild": false,
     "nodeGypRebuild": false,
     "directories": {
@@ -79,6 +80,7 @@
       }
     ],
     "mac": {
+      "icon": "build/icon.icns",
       "category": "public.app-category.productivity",
       "target": [
         {
@@ -118,6 +120,7 @@
       ]
     },
     "win": {
+      "icon": "build/icon.png",
       "target": [
         {
           "target": "nsis",

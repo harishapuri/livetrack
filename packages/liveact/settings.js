@@ -14,6 +14,10 @@ function settingsPath() {
 const DEFAULTS = {
   openaiApiKey: "",
   openaiModel: "gpt-4o-mini",
+  /** OpenAI-compatible chat completions URL (company gateway or Gemini proxy). */
+  openaiChatCompletionsUrl: "https://api.openai.com/v1/chat/completions",
+  openaiSpeechUrl: "https://api.openai.com/v1/audio/speech",
+  openaiTranscriptionsUrl: "https://api.openai.com/v1/audio/transcriptions",
   /** Empty = use defaultProjectRoot()/executions or COACT_EXECUTIONS_ROOT */
   executionsRoot: "",
   /** Jira Cloud (email + API token) */
@@ -118,12 +122,46 @@ function normalizeVoiceName(value) {
   return String(value || "").trim().slice(0, 120);
 }
 
+function normalizeHttpUrl(value, fallback = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return fallback;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return fallback;
+    return u.toString();
+  } catch {
+    return fallback;
+  }
+}
+
+function deriveCompatibleUrls(chatUrl) {
+  const chat = normalizeHttpUrl(chatUrl, DEFAULTS.openaiChatCompletionsUrl);
+  let speech = DEFAULTS.openaiSpeechUrl;
+  let transcriptions = DEFAULTS.openaiTranscriptionsUrl;
+  try {
+    const u = new URL(chat);
+    if (u.pathname.endsWith("/chat/completions")) {
+      u.pathname = u.pathname.replace(/\/chat\/completions\/?$/, "/audio/speech");
+      speech = u.toString();
+      u.pathname = u.pathname.replace(/\/audio\/speech\/?$/, "/audio/transcriptions");
+      transcriptions = u.toString();
+    } else if (u.pathname.endsWith("/v1") || u.pathname.endsWith("/v1/")) {
+      const base = chat.replace(/\/?$/, "/");
+      speech = `${base}audio/speech`;
+      transcriptions = `${base}audio/transcriptions`;
+    }
+  } catch {
+    /* keep defaults */
+  }
+  return { chat, speech, transcriptions };
+}
+
 /** Reject placeholder / invalid model ids (e.g. "openai") */
 function normalizeModel(value) {
   const model = String(value || "").trim();
   if (!model) return DEFAULTS.openaiModel;
   if (/^openai$/i.test(model)) return DEFAULTS.openaiModel;
-  if (!/^[a-zA-Z0-9._-]+$/.test(model)) return DEFAULTS.openaiModel;
+  if (!/^[a-zA-Z0-9._:/-]+$/.test(model)) return DEFAULTS.openaiModel;
   return model;
 }
 
@@ -250,6 +288,18 @@ function loadSettings() {
       ...raw,
       openaiApiKey: String(raw.openaiApiKey || process.env.OPENAI_API_KEY || ""),
       openaiModel: normalizeModel(raw.openaiModel || DEFAULTS.openaiModel),
+      openaiChatCompletionsUrl: normalizeHttpUrl(
+        raw.openaiChatCompletionsUrl || process.env.OPENAI_CHAT_COMPLETIONS_URL || "",
+        DEFAULTS.openaiChatCompletionsUrl,
+      ),
+      openaiSpeechUrl: normalizeHttpUrl(
+        raw.openaiSpeechUrl || process.env.OPENAI_SPEECH_URL || "",
+        DEFAULTS.openaiSpeechUrl,
+      ),
+      openaiTranscriptionsUrl: normalizeHttpUrl(
+        raw.openaiTranscriptionsUrl || process.env.OPENAI_TRANSCRIPTIONS_URL || "",
+        DEFAULTS.openaiTranscriptionsUrl,
+      ),
       executionsRoot: normalizeExecutionsRoot(raw.executionsRoot || ""),
       jiraBaseUrl: normalizeSavedJiraBaseUrl(raw.jiraBaseUrl || ""),
       jiraEmail: sanitizeJiraSecret(raw.jiraEmail || ""),
@@ -320,6 +370,15 @@ function persistableSettings(next, keptToken) {
   return {
     openaiApiKey: next.openaiApiKey || "",
     openaiModel: normalizeModel(next.openaiModel),
+    openaiChatCompletionsUrl: normalizeHttpUrl(
+      next.openaiChatCompletionsUrl,
+      DEFAULTS.openaiChatCompletionsUrl,
+    ),
+    openaiSpeechUrl: normalizeHttpUrl(next.openaiSpeechUrl, DEFAULTS.openaiSpeechUrl),
+    openaiTranscriptionsUrl: normalizeHttpUrl(
+      next.openaiTranscriptionsUrl,
+      DEFAULTS.openaiTranscriptionsUrl,
+    ),
     executionsRoot: next.executionsRoot || "",
     jiraBaseUrl: normalizeSavedJiraBaseUrl(next.jiraBaseUrl || ""),
     jiraEmail: sanitizeJiraSecret(next.jiraEmail || ""),
@@ -422,6 +481,24 @@ function saveSettings(partial) {
   const next = { ...prev, ...clean };
   if (clean.openaiModel != null) {
     next.openaiModel = normalizeModel(clean.openaiModel);
+  }
+  if (clean.openaiChatCompletionsUrl != null) {
+    next.openaiChatCompletionsUrl = normalizeHttpUrl(
+      clean.openaiChatCompletionsUrl,
+      DEFAULTS.openaiChatCompletionsUrl,
+    );
+    const derived = deriveCompatibleUrls(next.openaiChatCompletionsUrl);
+    if (!clean.openaiSpeechUrl) next.openaiSpeechUrl = derived.speech;
+    if (!clean.openaiTranscriptionsUrl) next.openaiTranscriptionsUrl = derived.transcriptions;
+  }
+  if (clean.openaiSpeechUrl != null) {
+    next.openaiSpeechUrl = normalizeHttpUrl(clean.openaiSpeechUrl, DEFAULTS.openaiSpeechUrl);
+  }
+  if (clean.openaiTranscriptionsUrl != null) {
+    next.openaiTranscriptionsUrl = normalizeHttpUrl(
+      clean.openaiTranscriptionsUrl,
+      DEFAULTS.openaiTranscriptionsUrl,
+    );
   }
   if (clean.executionsRoot != null) {
     next.executionsRoot = normalizeExecutionsRoot(clean.executionsRoot);
@@ -558,6 +635,15 @@ function saveSettings(partial) {
   return {
     hasKey: Boolean(next.openaiApiKey),
     model: normalizeModel(next.openaiModel),
+    chatCompletionsUrl: normalizeHttpUrl(
+      next.openaiChatCompletionsUrl,
+      DEFAULTS.openaiChatCompletionsUrl,
+    ),
+    speechUrl: normalizeHttpUrl(next.openaiSpeechUrl, DEFAULTS.openaiSpeechUrl),
+    transcriptionsUrl: normalizeHttpUrl(
+      next.openaiTranscriptionsUrl,
+      DEFAULTS.openaiTranscriptionsUrl,
+    ),
     executionsRoot: resolveExecutionsRoot(next),
     jiraConfigured: Boolean(stored.jiraBaseUrl && stored.jiraEmail && stored.jiraApiToken),
     jiraHasToken: Boolean(stored.jiraApiToken),
@@ -583,10 +669,18 @@ function resolveExecutionsRoot(settings) {
 
 function getOpenAiConfig() {
   const s = loadSettings();
+  const chatCompletionsUrl = normalizeHttpUrl(
+    s.openaiChatCompletionsUrl,
+    DEFAULTS.openaiChatCompletionsUrl,
+  );
+  const derived = deriveCompatibleUrls(chatCompletionsUrl);
   return {
     apiKey: s.openaiApiKey || "",
     model: normalizeModel(s.openaiModel),
     hasKey: Boolean(s.openaiApiKey),
+    chatCompletionsUrl,
+    speechUrl: normalizeHttpUrl(s.openaiSpeechUrl, derived.speech),
+    transcriptionsUrl: normalizeHttpUrl(s.openaiTranscriptionsUrl, derived.transcriptions),
   };
 }
 
@@ -595,6 +689,15 @@ function getAppSettings() {
   return {
     hasKey: Boolean(s.openaiApiKey),
     model: normalizeModel(s.openaiModel),
+    chatCompletionsUrl: normalizeHttpUrl(
+      s.openaiChatCompletionsUrl,
+      DEFAULTS.openaiChatCompletionsUrl,
+    ),
+    speechUrl: normalizeHttpUrl(s.openaiSpeechUrl, DEFAULTS.openaiSpeechUrl),
+    transcriptionsUrl: normalizeHttpUrl(
+      s.openaiTranscriptionsUrl,
+      DEFAULTS.openaiTranscriptionsUrl,
+    ),
     executionsRoot: resolveExecutionsRoot(s),
     executionsRootOverride: s.executionsRoot || "",
     jiraBaseUrl: s.jiraBaseUrl || "",

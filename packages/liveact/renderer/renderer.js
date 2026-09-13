@@ -1,7 +1,6 @@
 const queueList = document.getElementById("queueList");
 const queueCount = document.getElementById("queueCount");
 const queueHeading = document.getElementById("queueHeading");
-const btnBackLob = document.getElementById("btnBackLob");
 const stepList = document.getElementById("stepList");
 const runNote = document.getElementById("runNote");
 const btnRecord = document.getElementById("btnRecord");
@@ -152,6 +151,9 @@ const btnQuit = document.getElementById("btnQuit");
 const settingsModal = document.getElementById("settingsModal");
 const openaiKeyInput = document.getElementById("openaiKeyInput");
 const openaiModelInput = document.getElementById("openaiModelInput");
+const openaiChatUrlInput = document.getElementById("openaiChatUrlInput");
+const openaiSpeechUrlInput = document.getElementById("openaiSpeechUrlInput");
+const openaiSttUrlInput = document.getElementById("openaiSttUrlInput");
 const executionsRootInput = document.getElementById("executionsRootInput");
 const btnPickExecutions = document.getElementById("btnPickExecutions");
 const btnSettingsSave = document.getElementById("btnSettingsSave");
@@ -183,8 +185,6 @@ let generalAttachments = [];
 let pendingAttachments = [];
 let queueSearchQuery = "";
 let queueFilterOpen = false;
-/** null = show LOB folders; string = show cards for that LOB */
-let selectedLob = null;
 let aiRepairAttemptedForRun = false;
 let lastCoachMeta = null; // { stepId, suggestedValue, canApply, canRetry }
 let pendingSnippet = "";
@@ -237,6 +237,8 @@ let deskSnipPath = "";
 let deskCreatedIssueUrl = "";
 /** @type {{ path: string, name: string }[]} */
 let deskExtraFiles = [];
+/** @type {{ summary: string, description: string, acceptanceCriteria: string, groupingHint: string }[]} */
+let deskProposedTickets = [];
 let inboxSnipPath = "";
 
 function deskPageLabel(url, title) {
@@ -918,6 +920,18 @@ function bestMatchedCard() {
 async function syncQueueToActiveTab() {
   if (activeNav !== "live") return;
 
+  const questOpen =
+    Boolean(activeCardId) &&
+    screenQuest &&
+    !screenQuest.classList.contains("hidden");
+
+  // Keep an open card (coach / fill) until the user taps ← Queue.
+  // Tab focus, new tabs, and non-Chrome apps must not bounce back to the list.
+  if (questOpen) {
+    renderQueue();
+    return;
+  }
+
   const card = bestMatchedCard();
 
   if (card) {
@@ -929,11 +943,6 @@ async function syncQueueToActiveTab() {
       return;
     }
 
-    // Already showing this card — do not flicker
-    if (activeCardId === card.id && !screenQuest.classList.contains("hidden")) {
-      return;
-    }
-
     renderQueue();
 
     if (runState !== "idle" && activeCardId && activeCardId !== card.id) return;
@@ -942,22 +951,8 @@ async function syncQueueToActiveTab() {
     return;
   }
 
-  // No focused browser form (other app, new tab, no match) → main task list
   autoPinnedCardId = null;
-  suppressAutoOpen = false;
-
-  // Keep quest open during an active run only
-  if (runState !== "idle" && activeCardId && !screenQuest.classList.contains("hidden")) {
-    renderQueue();
-    return;
-  }
-
-  if (screenQuest.classList.contains("hidden") && !activeCardId) {
-    renderQueue();
-    return;
-  }
-
-  showQueue();
+  renderQueue();
 }
 
 function matchingCardIds() {
@@ -1107,25 +1102,57 @@ async function recordCardAbandoned(cardId) {
   }
 }
 
+const expiringIncompleteUi = new Set();
+
+function expireIncompleteCardUi() {
+  for (const card of cards) {
+    if (!card?.id || card.status !== "incomplete") continue;
+    if (activeCardId === card.id) continue;
+    const abandonedAt = getCardProgressMeta(card.id).abandonedAt || 0;
+    if (abandonedAt && Date.now() - abandonedAt < STALE_PROGRESS_MS) {
+      scheduleStaleProgressReset(card.id);
+      continue;
+    }
+    void clearIncompleteCardStatus(card.id);
+  }
+}
+
 async function resetStaleCardProgress(
   cardId,
-  { markIncomplete = true, recordStats = false } = {},
+  { markIncomplete = false, recordStats = false } = {},
 ) {
   if (!cardId) return;
   cardProgress.delete(cardId);
-  clearCardProgressMeta(cardId);
   if (markIncomplete && recordStats) {
     await recordCardAbandoned(cardId);
-  } else if (markIncomplete) {
-    await setCardStatusLocal(cardId, "incomplete");
   }
+  await clearIncompleteCardStatus(cardId);
+}
+
+async function clearIncompleteCardStatus(cardId) {
+  if (!cardId || expiringIncompleteUi.has(cardId)) return;
+  const card = cards.find((c) => c.id === cardId);
+  if (card && card.status !== "incomplete") {
+    cardProgress.delete(cardId);
+    clearCardProgressMeta(cardId);
+    return;
+  }
+  expiringIncompleteUi.add(cardId);
   try {
-    await window.coact.watchCard?.(cardId, { resetProgress: true });
-    if (activeCardId !== cardId) {
-      await window.coact.watchCard?.(null);
+    if (card) card.status = "queued";
+    await setCardStatusLocal(cardId, "queued");
+    cardProgress.delete(cardId);
+    clearCardProgressMeta(cardId);
+    try {
+      await window.coact.watchCard?.(cardId, { resetProgress: true });
+      if (activeCardId !== cardId) {
+        await window.coact.watchCard?.(null);
+      }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
+  } finally {
+    expiringIncompleteUi.delete(cardId);
   }
 }
 
@@ -1140,8 +1167,8 @@ function scheduleStaleProgressReset(cardId) {
     staleProgressTimers.delete(cardId);
     if (activeCardId === cardId) return;
     if (isCardStepsComplete(cardId)) return;
-    await resetStaleCardProgress(cardId, { markIncomplete: true });
-    if (selectedLob) renderQueue();
+    await clearIncompleteCardStatus(cardId);
+    renderQueue();
   }, wait);
   staleProgressTimers.set(cardId, timer);
 }
@@ -1149,10 +1176,6 @@ function scheduleStaleProgressReset(cardId) {
 async function handleBackToQueueBeforeComplete({ wasRunning = false } = {}) {
   const cardId = activeCardId;
   if (!cardId || isCardStepsComplete(cardId)) return;
-  const prior = getCardProgressMeta(cardId);
-  const alreadyStale =
-    (prior.abandonedAt > 0 && Date.now() - prior.abandonedAt >= STALE_PROGRESS_MS) ||
-    (prior.activityAt > 0 && Date.now() - prior.activityAt >= STALE_PROGRESS_MS);
   // Leaving mid-work → mark incomplete (QueueCards + Executions for Stats) and start 15-min wait
   saveCardProgress(cardId);
   markCardAbandoned(cardId);
@@ -1161,10 +1184,6 @@ async function handleBackToQueueBeforeComplete({ wasRunning = false } = {}) {
     await setCardStatusLocal(cardId, "incomplete");
   } else {
     await recordCardAbandoned(cardId);
-  }
-  if (alreadyStale) {
-    await resetStaleCardProgress(cardId, { markIncomplete: true, recordStats: false });
-    return;
   }
   scheduleStaleProgressReset(cardId);
 }
@@ -1192,12 +1211,13 @@ function applyProgressUpdate(cardId, stepId, status) {
 function applyQueuePayload(data) {
   cards = (data.queue || []).map((card) => ({
     ...card,
-    lob: String(card.lob || "TCOO").trim() || "TCOO",
+    lob: String(card.lob || "").trim(),
     steps:
       card.steps && card.steps.length
         ? card.steps
         : DUMMY_STEPS.map((s) => ({ ...s })),
   }));
+  expireIncompleteCardUi();
 }
 
 function playMissAlert() {
@@ -2284,7 +2304,7 @@ function showQueue(opts = {}) {
   else hideGenAiShell();
   screenQueue.classList.remove("hidden");
   screenQuest.classList.add("hidden");
-  tagline.textContent = selectedLob ? selectedLob : "Pick an LOB";
+  tagline.textContent = "Live steps";
   setRunControls("idle");
   renderQueue();
   syncVoiceGuideButtons();
@@ -2422,23 +2442,6 @@ function cardMatchesSearch(card, query) {
   return fuzzyScore(query, hay) > 0;
 }
 
-function uniqueLobs() {
-  const set = new Set();
-  for (const card of cards) {
-    set.add(card.lob || "TCOO");
-  }
-  return [...set].sort((a, b) => a.localeCompare(b));
-}
-
-function lobMatchesSearch(lob, query) {
-  if (!query || !String(query).trim()) return true;
-  return fuzzyScore(query, lob) > 0;
-}
-
-function cardsForLob(lob) {
-  return cards.filter((c) => (c.lob || "TCOO") === lob);
-}
-
 function setInboxStatus(text, kind = "") {
   const el = document.getElementById("inboxStatus");
   if (!el) return;
@@ -2454,7 +2457,7 @@ function fillInboxContext() {
     cardInput.value = card?.id || "";
   }
   if (lobInput && !lobInput.dataset.touched) {
-    lobInput.value = card?.lob || selectedLob || "";
+    lobInput.value = card?.lob || "";
   }
 }
 
@@ -2727,6 +2730,7 @@ function showNav(id) {
     }
     if (next === "desk") {
       refreshDeskIssues();
+      refreshDeskCollabList();
     }
     if (next === "feedback") {
       fillInboxContext();
@@ -2740,11 +2744,7 @@ function showNav(id) {
   if (tagline) {
     tagline.textContent =
       next === "live"
-        ? screenQuest && !screenQuest.classList.contains("hidden")
-          ? "Live steps"
-          : selectedLob
-            ? selectedLob
-            : "Live steps"
+        ? "Live steps"
         : next === "jira"
           ? "Jira stories"
           : next === "mom"
@@ -2801,7 +2801,13 @@ function openGenAi() {
 /** Form-fill AI on the live card. Separate thread from sidebar Ask LiveTrack. */
 function openCardAi(card) {
   if (!card?.id) return;
-  showNav("live");
+
+  // Keep the selected queue card open; otherwise the AI shell is opened on top of
+  // the queue list and the user is immediately sent back there by the Live nav toggle.
+  if (activeCardId !== card.id || screenQuest.classList.contains("hidden")) {
+    openCard(card.id);
+  }
+
   aiFocusCard = { id: card.id, title: card.title || card.id };
   if (chatInput) {
     chatInput.placeholder = `Help fill ${aiFocusCard.title}…`;
@@ -5593,25 +5599,100 @@ function fillDeskSelectOptions(sel, { emptyLabel, previous, pickOpen } = {}) {
   return pick;
 }
 
+function deskHasTicketMaterial() {
+  return Boolean(deskSnipPath) || deskExtraFiles.length > 0;
+}
+
+function selectedDeskProposedTickets() {
+  const list = document.getElementById("deskProposedList");
+  if (!list || deskProposedTickets.length < 2) return [];
+  const boxes = [...list.querySelectorAll('input[type="checkbox"]')];
+  return deskProposedTickets.filter((_, index) => boxes[index]?.checked);
+}
+
+function clearDeskProposedTickets() {
+  deskProposedTickets = [];
+  const wrap = document.getElementById("deskProposedWrap");
+  const list = document.getElementById("deskProposedList");
+  const reason = document.getElementById("deskProposedReason");
+  if (wrap) wrap.hidden = true;
+  if (list) list.replaceChildren();
+  if (reason) reason.textContent = "";
+}
+
+function renderDeskProposedTickets(tickets, reasonText) {
+  const rows = Array.isArray(tickets)
+    ? tickets.filter((item) => String(item?.summary || "").trim())
+    : [];
+  if (rows.length < 2) {
+    clearDeskProposedTickets();
+    return;
+  }
+  deskProposedTickets = rows.map((item) => ({
+    summary: String(item.summary || "").slice(0, 255),
+    description: String(item.description || ""),
+    acceptanceCriteria: String(item.acceptanceCriteria || ""),
+    groupingHint: String(item.groupingHint || ""),
+  }));
+  const wrap = document.getElementById("deskProposedWrap");
+  const list = document.getElementById("deskProposedList");
+  const reason = document.getElementById("deskProposedReason");
+  if (!wrap || !list) return;
+  wrap.hidden = false;
+  if (reason) {
+    reason.textContent =
+      reasonText ||
+      `Proposed ${deskProposedTickets.length} tickets. Uncheck any you do not want, then Create selected.`;
+  }
+  list.replaceChildren();
+  deskProposedTickets.forEach((ticket) => {
+    const li = document.createElement("li");
+    const label = document.createElement("label");
+    label.className = "desk-proposed-item";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.addEventListener("change", () => {
+      syncDeskTicketButtons();
+    });
+    const body = document.createElement("span");
+    const title = document.createElement("strong");
+    title.textContent = ticket.summary;
+    body.appendChild(title);
+    if (ticket.groupingHint) {
+      const hint = document.createElement("span");
+      hint.className = "muted tiny-copy";
+      hint.textContent = ticket.groupingHint;
+      body.appendChild(hint);
+    }
+    label.append(cb, body);
+    li.appendChild(label);
+    list.appendChild(li);
+  });
+}
+
 function syncDeskTicketButtons() {
   const createBtn = document.getElementById("btnDeskCreateIssue");
-  const cloneBtn = document.getElementById("btnDeskCloneIssue");
+  const refineBtn = document.getElementById("btnDeskRefineAi");
   const clearBtn = document.getElementById("btnDeskClearSnip");
   const source = document.getElementById("deskCloneSelect")?.value || "";
-  if (createBtn) createBtn.disabled = !deskSnipPath;
-  if (cloneBtn) cloneBtn.disabled = !deskSnipPath || !source;
-  if (clearBtn) clearBtn.hidden = !deskSnipPath;
+  const hasMaterial = deskHasTicketMaterial();
+  const selected = selectedDeskProposedTickets();
+  if (createBtn) {
+    createBtn.disabled = !hasMaterial || (deskProposedTickets.length >= 2 && selected.length === 0);
+    if (selected.length > 1 && !source) {
+      createBtn.textContent = `Create selected (${selected.length})`;
+    } else {
+      createBtn.textContent = source ? "Clone ticket" : "Create ticket";
+    }
+  }
+  if (refineBtn) refineBtn.disabled = !hasMaterial;
+  if (clearBtn) clearBtn.hidden = false;
 }
 
 function clearDeskScreenshot() {
-  deskSnipPath = "";
-  const preview = document.getElementById("deskSnipPreview");
-  if (preview) {
-    preview.removeAttribute("src");
-    preview.classList.add("hidden");
-  }
-  syncDeskTicketButtons();
-  setDeskStatus("deskSnipStatus", "Screenshot cleared.");
+  resetDeskTicketForm();
+  setDeskStatus("deskSnipStatus", "Form cleared.");
 }
 
 function fillDeskIssueSelect() {
@@ -5662,6 +5743,11 @@ document
   .getElementById("btnDeskJiraToggle")
   ?.addEventListener("click", () =>
     toggleDeskFold("deskJiraFold", "btnDeskJiraToggle"),
+  );
+document
+  .getElementById("btnDeskCollabToggle")
+  ?.addEventListener("click", () =>
+    toggleDeskFold("deskCollabFold", "btnDeskCollabToggle"),
   );
 document
   .getElementById("btnActionsAddToggle")
@@ -5744,6 +5830,91 @@ document
     }
   });
 
+function resetDeskTicketForm() {
+  deskSnipPath = "";
+  deskExtraFiles = [];
+  deskCreatedIssueUrl = "";
+  clearDeskProposedTickets();
+  const preview = document.getElementById("deskSnipPreview");
+  if (preview) {
+    preview.removeAttribute("src");
+    preview.classList.add("hidden");
+  }
+  const summary = document.getElementById("deskIssueSummary");
+  const description = document.getElementById("deskIssueDescription");
+  const acceptance = document.getElementById("deskIssueAcceptance");
+  const cloneSel = document.getElementById("deskCloneSelect");
+  const openBtn = document.getElementById("btnDeskOpenIssue");
+  if (summary) summary.value = "";
+  if (description) description.value = "";
+  if (acceptance) acceptance.value = "";
+  if (cloneSel) cloneSel.value = "";
+  if (openBtn) openBtn.hidden = true;
+  renderDeskAttachRow();
+  syncDeskTicketButtons();
+}
+
+function formatDeskCollabWhen(iso) {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  try {
+    return new Date(t).toLocaleString();
+  } catch {
+    return String(iso || "");
+  }
+}
+
+function renderDeskCollabList(tickets) {
+  const list = document.getElementById("deskCollabList");
+  if (!list) return;
+  list.replaceChildren();
+  const rows = Array.isArray(tickets) ? tickets : [];
+  if (!rows.length) {
+    const li = document.createElement("li");
+    li.className = "muted tiny-copy";
+    li.textContent = "No tickets created from LiveTrack yet.";
+    list.appendChild(li);
+    return;
+  }
+  for (const ticket of rows) {
+    const li = document.createElement("li");
+    const title = document.createElement("strong");
+    title.textContent = ticket.issueKey || "Ticket";
+    const meta = document.createElement("span");
+    meta.className = "muted tiny-copy";
+    const bits = [
+      ticket.action === "clone"
+        ? `Cloned${ticket.clonedFrom ? ` from ${ticket.clonedFrom}` : ""}`
+        : "Created",
+      ticket.summary && ticket.summary !== ticket.issueKey ? ticket.summary : "",
+      formatDeskCollabWhen(ticket.timestamp),
+    ].filter(Boolean);
+    meta.textContent = bits.join(" · ");
+    li.appendChild(title);
+    li.appendChild(meta);
+    if (ticket.url) {
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "btn ghost tiny desk-collab-open";
+      open.textContent = "Open ticket";
+      open.addEventListener("click", () =>
+        window.coact.jiraOpenIssue?.(ticket.url),
+      );
+      li.appendChild(open);
+    }
+    list.appendChild(li);
+  }
+}
+
+async function refreshDeskCollabList() {
+  try {
+    const res = await window.coact.deskCreatedTickets?.();
+    renderDeskCollabList(res?.ok ? res.tickets : []);
+  } catch {
+    renderDeskCollabList([]);
+  }
+}
+
 function renderDeskAttachRow() {
   const row = document.getElementById("deskAttachRow");
   if (!row) return;
@@ -5758,6 +5929,7 @@ function renderDeskAttachRow() {
     btn.addEventListener("click", () => {
       deskExtraFiles.splice(Number(btn.dataset.file), 1);
       renderDeskAttachRow();
+      syncDeskTicketButtons();
     });
   });
 }
@@ -5793,7 +5965,8 @@ function applyDeskTicketDraft(res, { replace = false } = {}) {
 }
 
 document.getElementById("btnDeskClearSnip")?.addEventListener("click", () => {
-  clearDeskScreenshot();
+  resetDeskTicketForm();
+  setDeskStatus("deskSnipStatus", "Form cleared.");
 });
 
 document.getElementById("btnDeskSnip")?.addEventListener("click", async () => {
@@ -5872,12 +6045,112 @@ document
       });
     }
     renderDeskAttachRow();
+    syncDeskTicketButtons();
+    setDeskStatus(
+      "deskSnipStatus",
+      "Files attached. Click Refine with AI to draft the ticket, then Create.",
+    );
   });
+
+document
+  .getElementById("btnDeskRefineAi")
+  ?.addEventListener("click", async () => {
+    if (!deskHasTicketMaterial()) {
+      setDeskStatus(
+        "deskSnipStatus",
+        "Capture a screenshot or attach a file first.",
+      );
+      return;
+    }
+    const refineBtn = document.getElementById("btnDeskRefineAi");
+    if (refineBtn) refineBtn.disabled = true;
+    setDeskStatus("deskSnipStatus", "Sending materials to AI for refinement…");
+    try {
+      const res = await window.coact.deskRefineTicket?.({
+        screenshotPath: deskSnipPath || "",
+        extraFiles: deskExtraFiles,
+        summary: document.getElementById("deskIssueSummary")?.value || "",
+        description: document.getElementById("deskIssueDescription")?.value || "",
+        acceptanceCriteria:
+          document.getElementById("deskIssueAcceptance")?.value || "",
+        pageUrl: activeTabUrl || "",
+        pageTitle: activeTabTitle || "",
+      });
+      if (!res?.ok) {
+        setDeskStatus(
+          "deskSnipStatus",
+          res?.error || "Could not refine with AI.",
+        );
+        return;
+      }
+      const proposed = Array.isArray(res.tickets) ? res.tickets : [];
+      if (res.mode === "multiple" && proposed.length >= 2) {
+        renderDeskProposedTickets(proposed, res.reason || "");
+        applyDeskTicketDraft(proposed[0], { replace: true });
+        const via = res.usedAi
+          ? res.reason ||
+            `Proposed ${proposed.length} tickets. Review the list, then Create selected.`
+          : res.note || "Could not use AI; fallback draft filled.";
+        setDeskStatus("deskSnipStatus", via);
+      } else {
+        clearDeskProposedTickets();
+        applyDeskTicketDraft(res, { replace: true });
+        const via = res.usedAi
+          ? res.reason
+            ? `One ticket. ${res.reason}`
+            : "AI refined the ticket from your files."
+          : res.note || "Could not use AI; fallback draft filled.";
+        setDeskStatus("deskSnipStatus", via);
+      }
+    } catch (err) {
+      setDeskStatus("deskSnipStatus", err?.message || "Could not refine with AI.");
+    } finally {
+      syncDeskTicketButtons();
+    }
+  });
+
+async function createDeskProposedTickets(tickets) {
+  const createBtn = document.getElementById("btnDeskCreateIssue");
+  const shot = deskSnipPath;
+  const files = deskExtraFiles.slice();
+  if (createBtn) createBtn.disabled = true;
+  const keys = [];
+  const errors = [];
+  setDeskStatus("deskSnipStatus", `Creating ${tickets.length} tickets…`);
+  for (let i = 0; i < tickets.length; i += 1) {
+    const ticket = tickets[i];
+    setDeskStatus(
+      "deskSnipStatus",
+      `Creating ${i + 1} of ${tickets.length}: ${ticket.summary.slice(0, 80)}…`,
+    );
+    try {
+      const res = await window.coact.deskCreateJiraIssue?.({
+        mode: "create",
+        summary: ticket.summary,
+        description: ticket.description,
+        acceptanceCriteria: ticket.acceptanceCriteria,
+        screenshotPath: shot,
+        extraFiles: files,
+        pageUrl: activeTabUrl || "",
+        pageTitle: activeTabTitle || "",
+      });
+      if (res?.ok && res.issueKey) keys.push(res.issueKey);
+      else errors.push(res?.error || ticket.summary.slice(0, 40));
+    } catch (err) {
+      errors.push(err?.message || ticket.summary.slice(0, 40));
+    }
+  }
+  resetDeskTicketForm();
+  fillDeskIssueSelect();
+  await refreshDeskCollabList();
+  const created = keys.length ? `Created ${keys.join(", ")}.` : "No tickets created.";
+  const failed = errors.length ? ` Failed: ${errors.join("; ")}` : "";
+  setDeskStatus("deskSnipStatus", `${created}${failed}`);
+  syncDeskTicketButtons();
+}
 
 async function submitDeskJiraIssue(mode) {
   const createBtn = document.getElementById("btnDeskCreateIssue");
-  const cloneBtn = document.getElementById("btnDeskCloneIssue");
-  const openBtn = document.getElementById("btnDeskOpenIssue");
   const summary =
     document.getElementById("deskIssueSummary")?.value.trim() ||
     "Issue from LiveTrack Desk";
@@ -5886,16 +6159,21 @@ async function submitDeskJiraIssue(mode) {
   const acceptanceCriteria =
     document.getElementById("deskIssueAcceptance")?.value.trim() || "";
   const sourceKey = document.getElementById("deskCloneSelect")?.value || "";
-  if (!deskSnipPath) {
-    setDeskStatus("deskSnipStatus", "Capture a screenshot first.");
+  const selected = selectedDeskProposedTickets();
+  if (!deskHasTicketMaterial()) {
+    setDeskStatus("deskSnipStatus", "Capture a screenshot or attach a file first.");
+    return;
+  }
+  if (mode !== "clone" && selected.length > 1) {
+    await createDeskProposedTickets(selected);
     return;
   }
   if (mode === "clone" && !sourceKey) {
     setDeskStatus("deskSnipStatus", "Pick a ticket to clone.");
     return;
   }
+  const draft = selected.length === 1 ? selected[0] : null;
   if (createBtn) createBtn.disabled = true;
-  if (cloneBtn) cloneBtn.disabled = true;
   setDeskStatus(
     "deskSnipStatus",
     mode === "clone" ? `Cloning ${sourceKey}…` : "Creating ticket…",
@@ -5904,9 +6182,9 @@ async function submitDeskJiraIssue(mode) {
     const res = await window.coact.deskCreateJiraIssue?.({
       mode,
       sourceKey: mode === "clone" ? sourceKey : "",
-      summary,
-      description,
-      acceptanceCriteria,
+      summary: draft?.summary || summary,
+      description: draft?.description || description,
+      acceptanceCriteria: draft?.acceptanceCriteria || acceptanceCriteria,
       screenshotPath: deskSnipPath,
       extraFiles: deskExtraFiles,
       pageUrl: activeTabUrl || "",
@@ -5922,11 +6200,6 @@ async function submitDeskJiraIssue(mode) {
       );
       return;
     }
-    deskCreatedIssueUrl = res.url || "";
-    if (openBtn) {
-      openBtn.hidden = !deskCreatedIssueUrl;
-    }
-    fillDeskIssueSelect();
     const extraOk = (res.attachments || []).filter((a) => a.ok).length;
     const extraNote =
       extraOk > 1
@@ -5939,6 +6212,9 @@ async function submitDeskJiraIssue(mode) {
       mode === "clone"
         ? `Cloned ${sourceKey} → ${res.issueKey}`
         : `Created ${res.issueKey}`;
+    resetDeskTicketForm();
+    fillDeskIssueSelect();
+    await refreshDeskCollabList();
     setDeskStatus(
       "deskSnipStatus",
       res.issueKey ? `${verb}.${extraNote}${attachFail}` : "Ticket created.",
@@ -5962,10 +6238,15 @@ document.getElementById("deskCloneSelect")?.addEventListener("change", () => {
 
 document
   .getElementById("btnDeskCreateIssue")
-  ?.addEventListener("click", () => submitDeskJiraIssue("create"));
-document
-  .getElementById("btnDeskCloneIssue")
-  ?.addEventListener("click", () => submitDeskJiraIssue("clone"));
+  ?.addEventListener("click", () => {
+    const sourceKey = document.getElementById("deskCloneSelect")?.value || "";
+  const selected = selectedDeskProposedTickets();
+  if (selected.length > 1) {
+    submitDeskJiraIssue("create");
+    return;
+  }
+  submitDeskJiraIssue(sourceKey ? "clone" : "create");
+});
 
 document.getElementById("btnDeskOpenIssue")?.addEventListener("click", () => {
   if (deskCreatedIssueUrl) window.coact.jiraOpenIssue?.(deskCreatedIssueUrl);
@@ -6236,7 +6517,16 @@ async function openSettings() {
   const s = await window.coact.getOpenAiSettings();
   openaiModelInput.value = s?.model || "gpt-4o-mini";
   openaiKeyInput.value = "";
-  openaiKeyInput.placeholder = s?.hasKey ? "•••••••• (saved — paste to replace)" : "sk-…";
+  openaiKeyInput.placeholder = s?.hasKey ? "•••••••• (saved — paste to replace)" : "API key / bearer token";
+  if (openaiChatUrlInput) {
+    openaiChatUrlInput.value = s?.chatCompletionsUrl || "https://api.openai.com/v1/chat/completions";
+  }
+  if (openaiSpeechUrlInput) {
+    openaiSpeechUrlInput.value = s?.speechUrl || "https://api.openai.com/v1/audio/speech";
+  }
+  if (openaiSttUrlInput) {
+    openaiSttUrlInput.value = s?.transcriptionsUrl || "https://api.openai.com/v1/audio/transcriptions";
+  }
   if (executionsRootInput) {
     executionsRootInput.value = s?.executionsRootOverride || s?.executionsRoot || "";
     executionsRootInput.placeholder = s?.executionsRoot || "Default: <project>/executions";
@@ -6425,10 +6715,8 @@ window.coact.onExtensionStatus((status) => {
 function renderQueue() {
   const matchedIds = matchingCardIds();
   queueList.innerHTML = "";
-
   if (!cards.length) {
-    queueHeading.textContent = "LOB";
-    btnBackLob?.classList.add("hidden");
+    queueHeading.textContent = "Queue Cards";
     queueCount.textContent = "0";
     const empty = document.createElement("p");
     empty.className = "muted";
@@ -6437,49 +6725,9 @@ function renderQueue() {
     return;
   }
 
-  if (!selectedLob) {
-    queueHeading.textContent = "LOB";
-    btnBackLob?.classList.add("hidden");
-    if (queueSearch) queueSearch.placeholder = "Search LOBs…";
-    const lobs = uniqueLobs().filter((lob) => lobMatchesSearch(lob, queueSearchQuery));
-    queueCount.textContent = String(lobs.length);
-
-    if (queueSearchQuery.trim() && !lobs.length) {
-      const empty = document.createElement("p");
-      empty.className = "muted";
-      empty.textContent = "No LOBs match that search.";
-      queueList.appendChild(empty);
-      return;
-    }
-
-    for (const lob of lobs) {
-      const lobCards = cardsForLob(lob);
-      const btn = document.createElement("button");
-      btn.className = "card lob-folder";
-      btn.type = "button";
-      const hasMatch = lobCards.some((c) => matchedIds.has(c.id));
-      if (hasMatch) btn.classList.add("pinned-match");
-      btn.innerHTML = `
-        <h3>${escapeHtml(lob)}</h3>
-        <div class="meta">
-          <span>${lobCards.length} queue card${lobCards.length === 1 ? "" : "s"}</span>
-        </div>
-      `;
-      btn.addEventListener("click", () => {
-        selectedLob = lob;
-        queueSearchQuery = "";
-        if (queueSearch) queueSearch.value = "";
-        renderQueue();
-      });
-      queueList.appendChild(btn);
-    }
-    return;
-  }
-
-  queueHeading.textContent = selectedLob;
-  btnBackLob?.classList.remove("hidden");
+  queueHeading.textContent = "Queue Cards";
   if (queueSearch) queueSearch.placeholder = "Search tasks…";
-  const shown = cardsForLob(selectedLob)
+  const shown = cards
     .filter((card) => cardMatchesSearch(card, queueSearchQuery))
     .sort((a, b) => {
       const aDone = a.status === "done" ? 1 : 0;
@@ -6500,7 +6748,7 @@ function renderQueue() {
   if (!shown.length) {
     const empty = document.createElement("p");
     empty.className = "muted";
-    empty.textContent = "No queue cards in this LOB.";
+    empty.textContent = "No tasks match that search.";
     queueList.appendChild(empty);
     return;
   }
@@ -6660,7 +6908,6 @@ async function refreshStepTracking() {
 function openCard(cardId) {
   const card = cards.find((c) => c.id === cardId);
   if (!card) return;
-  selectedLob = card.lob || "TCOO";
   // Unlock audio in the same user-gesture turn as the card click (autoplay)
   guideAudioReady = true;
   try {
@@ -6833,13 +7080,6 @@ btnBack.addEventListener("click", async () => {
   stopGuideVoice({ silent: true });
   // skipSave: handleBack already saved or reset progress
   showQueue({ skipSave: true });
-});
-
-btnBackLob?.addEventListener("click", () => {
-  selectedLob = null;
-  queueSearchQuery = "";
-  if (queueSearch) queueSearch.value = "";
-  renderQueue();
 });
 
 btnStart.addEventListener("click", () => {
@@ -7221,6 +7461,9 @@ btnSettingsSave.addEventListener("click", async () => {
   const model = openaiModelInput.value.trim() || "gpt-4o-mini";
   const payload = { model };
   if (apiKey) payload.apiKey = apiKey;
+  if (openaiChatUrlInput) payload.chatCompletionsUrl = openaiChatUrlInput.value.trim();
+  if (openaiSpeechUrlInput) payload.speechUrl = openaiSpeechUrlInput.value.trim();
+  if (openaiSttUrlInput) payload.transcriptionsUrl = openaiSttUrlInput.value.trim();
   if (executionsRootInput) {
     payload.executionsRoot = executionsRootInput.value.trim();
   }
@@ -7720,15 +7963,6 @@ window.coact.onRunFinished(async (result) => {
 window.coact.getBootstrap().then(async (data) => {
   const boot = data || {};
   loadProgressMetaStore();
-  // Resume 15-min reset timers for cards left incomplete
-  for (const [cardId, meta] of cardProgressMeta.entries()) {
-    if (!meta?.abandonedAt) continue;
-    if (Date.now() - meta.abandonedAt >= STALE_PROGRESS_MS) {
-      void resetStaleCardProgress(cardId, { markIncomplete: true });
-    } else {
-      scheduleStaleProgressReset(cardId);
-    }
-  }
   applyQueuePayload(boot);
   captureRecording = false;
   recordStartedManually = false;

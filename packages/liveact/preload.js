@@ -85,6 +85,8 @@ contextBridge.exposeInMainWorld("coact", {
   deskDraftFromScreenshot: (payload) =>
     ipcRenderer.invoke("desk-draft-from-screenshot", payload || {}),
   deskCreateJiraIssue: (payload) => ipcRenderer.invoke("desk-create-jira-issue", payload || {}),
+  deskRefineTicket: (payload) => ipcRenderer.invoke("desk-refine-ticket", payload || {}),
+  deskCreatedTickets: () => ipcRenderer.invoke("desk-created-tickets"),
   pickDeskFiles: () => ipcRenderer.invoke("pick-desk-files"),
   jiraAiComment: (payload) => ipcRenderer.invoke("jira-ai-comment", payload || {}),
   jiraDraftMailScreenshot: (payload) =>

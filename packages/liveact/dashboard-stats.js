@@ -175,14 +175,15 @@ async function generateDashboardData(opts = {}) {
     const mistakes = filterMandatoryMistakes(run.mistakes || [], mandatoryKeys);
     const mc = mistakes.length;
 
-    bump(byLob, run.lob || "TCOO", run.fill_mode, mc);
+    const lob = String(run.lob || "").trim() || "TCOO";
+    bump(byLob, lob, run.fill_mode, mc);
     bump(byUser, run.user_id || "(unknown)", run.fill_mode, mc);
 
     if (!byQueueCard[cardKey]) {
       byQueueCard[cardKey] = {
         name: cardKey,
         title: run.queue_card || cardKey,
-        lob: run.lob || "TCOO",
+        lob,
         count: 0,
         automated: 0,
         manual: 0,
@@ -202,7 +203,7 @@ async function generateDashboardData(opts = {}) {
       wrongFillRows.push({
         run_id: run.run_id,
         at: run.completed_at || run.run_date || mistakes[0]?.at || "",
-        lob: run.lob || "TCOO",
+        lob: String(run.lob || "").trim() || "TCOO",
         queue_card_id: run.queue_card_id || cardKey,
         queue_card: run.queue_card || cardKey,
         user_id: run.user_id || "",
@@ -565,7 +566,7 @@ async function buildAgentDashboard({
 
       return {
         run_id: run.run_id,
-        lob: run.lob || "TCOO",
+        lob: String(run.lob || "").trim() || "TCOO",
         queue_card_id: run.queue_card_id || "",
         queue_card: run.queue_card || run.queue_card_id || "",
         user_id: run.user_id || "",

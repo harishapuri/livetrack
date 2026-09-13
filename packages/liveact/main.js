@@ -49,6 +49,7 @@ const {
   loadQueueFromDocuments,
   seedSampleCases,
   updateQueueCardStatus,
+  normalizeLob,
 } = require("./documents");
 const {
   getOpenAiConfig,
@@ -70,6 +71,7 @@ const {
   collectDeskAttachmentPaths,
   appendJiraAction,
   recentJiraActions,
+  listCreatedDeskTickets,
   isJiraDoneStatus,
   findLinkedCardId,
   ensureLinkedIssues,
@@ -94,6 +96,7 @@ const {
   explainPage,
   isUsefulExplainSnippet,
   draftJiraFromScreenshot,
+  draftJiraFromDeskMaterials,
   draftMailFromScreenshot,
 } = require("./openai-chat");
 const { captureRegionSnip, captureFrontmostWindow, isChromeOwnerName } = require("./snipper");
@@ -326,6 +329,8 @@ const cardRunStartedAt = new Map();
 const cardMistakes = new Map();
 /** Prevent double-save for the same card in a short window */
 const finalizedAt = new Map();
+/** @type {Map<string, string>} last finalize outcome for debounce override */
+const finalizedStatus = new Map();
 /** @type {Map<string, { pageUrl?: string, formReference?: string }>} */
 const cardPageContext = new Map();
 let lastExtensionTabUrl = null;
@@ -694,15 +699,38 @@ async function finalizeExecutionArtifacts(
 
   const now = Date.now();
   const prev = finalizedAt.get(cardId) || 0;
-  if (now - prev < 5000) return null;
+  const prevStatus = String(finalizedStatus.get(cardId) || "");
+  if (now - prev < 5000) {
+    const prevComplete =
+      prevStatus === "complete" ||
+      prevStatus === "completed" ||
+      prevStatus === "done" ||
+      prevStatus === "run_complete";
+    if (!isComplete || prevComplete) return null;
+  }
   finalizedAt.set(cardId, now);
+  finalizedStatus.set(cardId, isComplete ? "complete" : outcome);
 
   await refreshQueue();
-  const card = queue.find((c) => c.id === cardId);
-  if (!card) return null;
+  const found = queue.find((c) => c.id === cardId);
+  const card =
+    found ||
+    ({
+      id: cardId,
+      title: String(cardId || "queue-card").trim() || "queue-card",
+    lob: normalizeLob(),
+      sopId: "",
+      data: {},
+    });
+  if (!found) {
+    console.warn(
+      "[coact] finalize execution without matching queue card; writing fallback record",
+      cardId,
+    );
+  }
 
   let actions = actionsListForCard(cardId);
-  const sop = sops[card.sopId];
+  const sop = found ? sops[found.sopId] : null;
   const mistakes = isComplete
     ? mergeFinalValueMistakes(card, sop, actions, mistakesListForCard(cardId))
     : mistakesListForCard(cardId);
@@ -752,7 +780,7 @@ async function finalizeExecutionArtifacts(
     const pageCtx = cardPageContext.get(cardId) || {};
     const pageUrl = pageCtx.pageUrl || lastExtensionTabUrl || "";
     const result = await saveExecutionArtifacts({
-      lob: card.lob || "TCOO",
+      lob: normalizeLob(card.lob),
       queueCard: card.id,
       cardTitle: card.title,
       actions: isComplete ? actions : [],
@@ -930,6 +958,21 @@ if (typeof app?.setName === "function" && app.isPackaged) {
   app.setName("LiveTrack");
 }
 
+function applyDockIcon() {
+  const iconPath = path.join(__dirname, "build", process.platform === "darwin" ? "icon.icns" : "icon.png");
+  const fallback = path.join(__dirname, "build", "icon.png");
+  const usePath = fs.existsSync(iconPath) ? iconPath : fallback;
+  if (!fs.existsSync(usePath)) return;
+  try {
+    const img = nativeImage.createFromPath(usePath);
+    if (img && !img.isEmpty() && process.platform === "darwin" && app.dock) {
+      app.dock.setIcon(img);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 function defaultMainBounds() {
   const { screen } = require("electron");
   const display = screen.getPrimaryDisplay().workArea;
@@ -1100,8 +1143,17 @@ function quitLiveActApp() {
   app.exit(0);
 }
 
+function appIconPath() {
+  const icns = path.join(__dirname, "build", "icon.icns");
+  const png = path.join(__dirname, "build", "icon.png");
+  if (fs.existsSync(icns)) return icns;
+  if (fs.existsSync(png)) return png;
+  return "";
+}
+
 function createWindow() {
   const bounds = defaultMainBounds();
+  const iconPath = appIconPath();
 
   mainWindow = new BrowserWindow({
     ...bounds,
@@ -1120,6 +1172,7 @@ function createWindow() {
     // Frameless + panel = floating overlay above Chrome / other apps
     frame: false,
     title: "LiveTrack",
+    ...(iconPath ? { icon: iconPath } : {}),
     backgroundColor: "#ffffff",
     alwaysOnTop: true,
     hasShadow: true,
@@ -1549,6 +1602,7 @@ async function startAppHtmlRun(card, sop, options = {}) {
   clearCardStepTiming(card.id);
   clearCardRunStarted(card.id);
   finalizedAt.delete(card.id);
+  finalizedStatus.delete(card.id);
   activeRun = { cardId: card.id, mode: "app" };
   activeWatch = { cardId: card.id, mode: "app" };
   markCardRunStarted(card.id);
@@ -2286,7 +2340,7 @@ function enrichCard(card) {
     id: card.id,
     title: card.title,
     status: card.status || "queued",
-    lob: card.lob || "TCOO",
+    lob: normalizeLob(card.lob),
     sopName: sop ? sop.name : "Form workflow",
     stepCount: steps.length,
     steps,
@@ -2479,6 +2533,7 @@ function allowAskLiveTrackMicrophone() {
 app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return;
   nativeTheme.themeSource = "light";
+  applyDockIcon();
   allowAskLiveTrackMicrophone();
   await reloadSops();
   await refreshQueue();
@@ -2902,6 +2957,7 @@ async function runPdfCard(card, sop, options = {}) {
   clearCardStepTiming(card.id);
   clearCardRunStarted(card.id);
   finalizedAt.delete(card.id);
+  finalizedStatus.delete(card.id);
   markCardRunStarted(card.id);
   activeRun = { cardId: card.id, mode: "pdf" };
   activeWatch = { cardId: card.id, mode: "pdf" };
@@ -2991,7 +3047,7 @@ async function runPdfCard(card, sop, options = {}) {
       activeRun = null;
       sendToRenderer("run-finished", {
         cardId: card.id,
-        status: result.ok ? "completed" : "failed",
+        status: result.ok ? "run_complete" : "run_failed",
         reason: result.ok
           ? "Filled PDF opened in Chrome (same tab on re-run)"
           : "Some PDF fields failed",
@@ -3211,6 +3267,7 @@ ipcMain.handle("run-card", async (_event, cardId, options = {}) => {
   clearCardStepTiming(card.id);
   clearCardRunStarted(card.id);
   finalizedAt.delete(card.id);
+  finalizedStatus.delete(card.id);
   activeRun = { cardId: card.id, clientId: delivery.clientId };
   activeWatch = { cardId: card.id, clientId: delivery.clientId };
   markCardRunStarted(card.id);
@@ -3388,7 +3445,7 @@ function persistCardData(card) {
   try {
     const dir =
       card.sourceDir ||
-      lobCardDir(documentsRoot, card.id, card.lob || "TCOO");
+      lobCardDir(documentsRoot, card.id, normalizeLob(card.lob));
     writeCardFiles(dir, {
       data: card.data,
       meta: {
@@ -3781,6 +3838,11 @@ ipcMain.handle("save-openai-settings", (_event, payload) => {
   const result = saveSettings({
     openaiApiKey: payload?.apiKey != null ? String(payload.apiKey) : undefined,
     openaiModel: payload?.model != null ? String(payload.model) : undefined,
+    openaiChatCompletionsUrl:
+      payload?.chatCompletionsUrl != null ? String(payload.chatCompletionsUrl) : undefined,
+    openaiSpeechUrl: payload?.speechUrl != null ? String(payload.speechUrl) : undefined,
+    openaiTranscriptionsUrl:
+      payload?.transcriptionsUrl != null ? String(payload.transcriptionsUrl) : undefined,
     executionsRoot:
       payload?.executionsRoot != null ? String(payload.executionsRoot) : undefined,
     jiraBaseUrl: payload?.jiraBaseUrl != null ? String(payload.jiraBaseUrl) : undefined,
@@ -4495,11 +4557,26 @@ let pendingDeskDraft = null;
 let lastDeskShotPath = "";
 
 function deskDraftPayload(draft) {
+  const tickets = Array.isArray(draft?.tickets)
+    ? draft.tickets
+        .filter((item) => item && String(item.summary || "").trim())
+        .slice(0, 25)
+        .map((item) => ({
+          summary: String(item.summary || "").slice(0, 255),
+          description: String(item.description || ""),
+          acceptanceCriteria: String(item.acceptanceCriteria || ""),
+          groupingHint: String(item.groupingHint || ""),
+        }))
+    : [];
+  const mode = draft?.mode === "multiple" && tickets.length >= 2 ? "multiple" : "single";
   return {
     ok: true,
-    summary: draft?.summary || "",
-    description: draft?.description || "",
-    acceptanceCriteria: draft?.acceptanceCriteria || "",
+    summary: draft?.summary || tickets[0]?.summary || "",
+    description: draft?.description || tickets[0]?.description || "",
+    acceptanceCriteria: draft?.acceptanceCriteria || tickets[0]?.acceptanceCriteria || "",
+    mode,
+    reason: String(draft?.reason || ""),
+    tickets,
     usedAi: Boolean(draft?.usedAi),
     note: draft?.note || "",
   };
@@ -4600,6 +4677,25 @@ ipcMain.handle("desk-draft-from-screenshot", async (_event, payload) => {
   return deskDraftPayload(draft);
 });
 
+ipcMain.handle("desk-refine-ticket", async (_event, payload) => {
+  const files = Array.isArray(payload?.extraFiles)
+    ? payload.extraFiles
+    : Array.isArray(payload?.files)
+      ? payload.files
+      : [];
+  const draft = await draftJiraFromDeskMaterials({
+    screenshotPath: String(payload?.screenshotPath || payload?.path || "").trim(),
+    files,
+    summary: String(payload?.summary || "").trim(),
+    description: String(payload?.description || "").trim(),
+    acceptanceCriteria: String(payload?.acceptanceCriteria || "").trim(),
+    pageUrl: String(payload?.pageUrl || "").trim(),
+    pageTitle: String(payload?.pageTitle || "").trim(),
+  });
+  if (draft?.ok === false) return draft;
+  return deskDraftPayload(draft);
+});
+
 ipcMain.handle("desk-create-jira-issue", async (_event, payload) => {
   const config = getJiraConfig();
   if (!isJiraConfigured(config)) {
@@ -4679,7 +4775,9 @@ ipcMain.handle("desk-create-jira-issue", async (_event, payload) => {
     issueKey: created.issueKey,
     clonedFrom: created.clonedFrom || (mode === "clone" ? sourceKey : ""),
     ok: true,
-    bodyPreview: (created.issueKey || summary).slice(0, 80),
+    url: created.url || "",
+    summary,
+    bodyPreview: (summary || created.issueKey).slice(0, 80),
   });
   try {
     await refreshJira({ force: true });
@@ -4866,6 +4964,16 @@ ipcMain.handle("jira-apply-mail-screenshot", async (_event, payload) => {
 
 ipcMain.handle("jira-recent-actions", () => {
   return { ok: true, actions: recentJiraActions(5) };
+});
+
+ipcMain.handle("desk-created-tickets", async () => {
+  const config = getJiraConfig();
+  const actor = os.userInfo()?.username || process.env.USER || "";
+  const tickets = await listCreatedDeskTickets(80, {
+    actor,
+    baseUrl: config.jiraBaseUrl || "",
+  });
+  return { ok: true, tickets };
 });
 
 ipcMain.handle("set-capture-recording", async (_event, payload) => {
@@ -5057,7 +5165,21 @@ ipcMain.handle("pick-desk-files", async () => {
     filters: [
       {
         name: "Documents & images",
-        extensions: ["pdf", "xlsx", "xls", "csv", "png", "jpg", "jpeg", "webp"],
+        extensions: [
+          "pdf",
+          "xlsx",
+          "xlsm",
+          "xls",
+          "csv",
+          "txt",
+          "log",
+          "json",
+          "md",
+          "png",
+          "jpg",
+          "jpeg",
+          "webp",
+        ],
       },
       { name: "All files", extensions: ["*"] },
     ],

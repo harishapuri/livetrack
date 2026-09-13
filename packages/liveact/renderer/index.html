@@ -89,9 +89,8 @@
               <main class="screen" id="screenQueue">
                 <section class="panel full queue-panel">
                   <div class="panel-head">
-                    <h2 id="queueHeading">LOB</h2>
+                    <h2 id="queueHeading">Queue Cards</h2>
                     <div class="controls queue-head-controls">
-                      <button id="btnBackLob" class="btn ghost tiny hidden" type="button">← LOBs</button>
                       <button id="btnRefreshQueue" class="btn ghost tiny" type="button">Refresh</button>
                       <button
                         id="btnFilterQueue"
@@ -459,16 +458,18 @@
                     <strong>Screenshot to Jira</strong>
                   </button>
                   <div class="desk-fold-body">
-                    <div class="controls" style="gap:6px;flex-wrap:wrap;align-items:center">
+                    <div class="controls desk-jira-tools">
                       <button id="btnDeskSnip" class="btn primary tiny" type="button">Capture</button>
-                      <button id="btnDeskClearSnip" class="btn ghost tiny" type="button" hidden>Clear</button>
                       <button id="btnDeskAttach" class="btn ghost tiny" type="button">Attach files</button>
-                      <button id="btnDeskCreateIssue" class="btn primary tiny" type="button" disabled>Create ticket</button>
-                      <button id="btnDeskCloneIssue" class="btn ghost tiny" type="button" disabled>Clone ticket</button>
-                      <button id="btnDeskOpenIssue" class="btn ghost tiny" type="button" hidden>Open ticket</button>
+                      <button id="btnDeskRefineAi" class="btn ghost tiny" type="button" disabled>Refine with AI</button>
+                      <button id="btnDeskClearSnip" class="btn ghost tiny" type="button">Clear</button>
                     </div>
                     <img id="deskSnipPreview" class="desk-snip-preview hidden" alt="Desktop screenshot" />
                     <div id="deskAttachRow" class="attach-row"></div>
+                    <div id="deskProposedWrap" class="desk-proposed" hidden>
+                      <p class="muted tiny-copy" id="deskProposedReason"></p>
+                      <ul id="deskProposedList" class="desk-proposed-list"></ul>
+                    </div>
                     <label class="desk-field">
                       <span>Clone from</span>
                       <select id="deskCloneSelect">
@@ -477,17 +478,31 @@
                     </label>
                     <label class="desk-field">
                       <span>Summary</span>
-                      <input id="deskIssueSummary" type="text" placeholder="AI writes this from the screenshot" autocomplete="off" />
+                      <input id="deskIssueSummary" type="text" placeholder="AI writes this from the screenshot or files" autocomplete="off" />
                     </label>
                     <label class="desk-field">
                       <span>Description</span>
-                      <textarea id="deskIssueDescription" rows="4" placeholder="AI writes this from the screenshot"></textarea>
+                      <textarea id="deskIssueDescription" rows="4" placeholder="AI writes this from the screenshot or files"></textarea>
                     </label>
                     <label class="desk-field">
                       <span>Acceptance criteria</span>
                       <textarea id="deskIssueAcceptance" rows="4" placeholder="What must be true for this ticket to be done. AI drafts this; you can edit."></textarea>
                     </label>
+                    <div class="controls desk-jira-submit">
+                      <button id="btnDeskCreateIssue" class="btn primary tiny" type="button" disabled>Create ticket</button>
+                      <button id="btnDeskOpenIssue" class="btn ghost tiny" type="button" hidden>Open ticket</button>
+                    </div>
                     <p class="desk-status muted tiny-copy" id="deskSnipStatus"></p>
+                  </div>
+                </section>
+
+                <section class="desk-card desk-fold" id="deskCollabFold">
+                  <button type="button" class="desk-fold-toggle" id="btnDeskCollabToggle" aria-expanded="true">
+                    <strong>Collaborating</strong>
+                  </button>
+                  <div class="desk-fold-body">
+                    <p class="muted tiny-copy">Tickets you created from LiveTrack Desk.</p>
+                    <ul id="deskCollabList" class="desk-collab-list"></ul>
                   </div>
                 </section>
               </div>
@@ -650,12 +665,24 @@
             </button>
             <div class="settings-fold-body">
               <label class="field">
-                <span>OpenAI API key</span>
-                <input id="openaiKeyInput" type="password" placeholder="sk-…" autocomplete="off" />
+                <span>API key</span>
+                <input id="openaiKeyInput" type="password" placeholder="API key / bearer token" autocomplete="off" />
               </label>
               <label class="field">
                 <span>Model</span>
-                <input id="openaiModelInput" type="text" placeholder="gpt-4o-mini" />
+                <input id="openaiModelInput" type="text" placeholder="gpt-4o-mini or gemini-2.5-pro" />
+              </label>
+              <label class="field">
+                <span>Chat completions URL</span>
+                <input id="openaiChatUrlInput" type="url" placeholder="https://api.openai.com/v1/chat/completions" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span>Speech URL (TTS)</span>
+                <input id="openaiSpeechUrlInput" type="url" placeholder="https://api.openai.com/v1/audio/speech" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span>Transcription URL (STT)</span>
+                <input id="openaiSttUrlInput" type="url" placeholder="https://api.openai.com/v1/audio/transcriptions" autocomplete="off" />
               </label>
               <label class="field">
                 <span>Shared executions folder</span>

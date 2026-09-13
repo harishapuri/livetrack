@@ -1859,7 +1859,7 @@ async function attachFile(config, issueKeyOrId, filePath) {
 
 let jiraActionCache = [];
 
-require("./workbook")
+const jiraActionsReady = require("./workbook")
   .readTables(["JiraActions"])
   .then(({ JiraActions }) => {
     const wb = require("./workbook");
@@ -1904,6 +1904,43 @@ function appendJiraAction(entry) {
 
 function recentJiraActions(limit = 5) {
   return jiraActionCache.slice(-Math.max(1, limit)).reverse();
+}
+
+function createdDeskTickets(limit = 80, { actor, baseUrl } = {}) {
+  const seen = new Set();
+  const out = [];
+  const actorFilter = String(actor || "").trim().toLowerCase();
+  for (let i = jiraActionCache.length - 1; i >= 0; i -= 1) {
+    const row = jiraActionCache[i] || {};
+    const action = String(row.action || "").toLowerCase();
+    if (action !== "create" && action !== "clone") continue;
+    if (row.ok === false || String(row.ok) === "false") continue;
+    const issueKey = String(row.issueKey || "").trim();
+    if (!issueKey || seen.has(issueKey)) continue;
+    if (
+      actorFilter &&
+      String(row.actor || "").trim().toLowerCase() !== actorFilter
+    ) {
+      continue;
+    }
+    seen.add(issueKey);
+    out.push({
+      issueKey,
+      action,
+      actor: row.actor || "",
+      timestamp: row.timestamp || "",
+      clonedFrom: row.clonedFrom || "",
+      summary: String(row.summary || row.bodyPreview || issueKey).trim(),
+      url: row.url || (baseUrl ? issueBrowseUrl(baseUrl, issueKey) : ""),
+    });
+    if (out.length >= Math.max(1, limit)) break;
+  }
+  return out;
+}
+
+async function listCreatedDeskTickets(limit = 80, opts = {}) {
+  await jiraActionsReady.catch(() => {});
+  return createdDeskTickets(limit, opts);
 }
 
 module.exports = {
@@ -1966,6 +2003,8 @@ module.exports = {
   jiraAdfToText,
   appendJiraAction,
   recentJiraActions,
+  createdDeskTickets,
+  listCreatedDeskTickets,
   STATUS_WEIGHTS,
   PRIORITY_WEIGHTS,
 };

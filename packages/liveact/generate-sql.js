@@ -339,7 +339,11 @@ async function loadAllExecutions(opts = {}) {
   for (const row of tables.Executions || []) {
     const runId = row.run_id;
     if (!runId) continue;
-    const runDateVal = row.run_date;
+    const runDateRaw = row.run_date;
+    const runDateVal =
+      runDateRaw instanceof Date && !Number.isNaN(runDateRaw.getTime())
+        ? `${runDateRaw.getFullYear()}-${String(runDateRaw.getMonth() + 1).padStart(2, "0")}-${String(runDateRaw.getDate()).padStart(2, "0")}`
+        : String(runDateRaw || "").slice(0, 10);
     if (dateFilter && runDateVal !== dateFilter) continue;
     if (dateFrom && runDateVal && runDateVal < dateFrom) continue;
     if (dateTo && runDateVal && runDateVal > dateTo) continue;
@@ -353,6 +357,7 @@ async function loadAllExecutions(opts = {}) {
       user_id: row.user_id || "",
       fill_mode: row.fill_mode || "automated",
       completed_at: row.completed_at || "",
+      status: row.status || "",
       excel_path: path.basename(xlsxPath),
       mistake_count: Number(row.mistake_count) || mistakes.length,
       mistakes,

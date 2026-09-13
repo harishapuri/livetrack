@@ -280,6 +280,7 @@ async function saveExecutionArtifacts({
   const outcome = normalizeExecutionStatus(status);
   const isComplete = outcome === "complete";
   const userId = osUserId();
+  const normalizedLob = String(lob || "").trim() || "TCOO";
   const stampAt =
     completedAt instanceof Date && !Number.isNaN(completedAt.getTime())
       ? completedAt
@@ -356,7 +357,7 @@ async function saveExecutionArtifacts({
     {
       run_id: runId,
       run_date: runDate,
-      lob: lob || "TCOO",
+      lob: normalizedLob,
       queue_card_id: queueCard,
       queue_card: cardName,
       user_id: userId,
