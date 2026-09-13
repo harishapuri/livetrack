@@ -1,0 +1,60 @@
+{
+  "id": "demo-riverdale-patient-intake-demo",
+  "name": "Riverdale Clinic — Patient intake",
+  "description": "Fill the Riverdale Clinic demo form on the current tab.",
+  "steps": [
+    {
+      "id": "patientname",
+      "action": "fill",
+      "label": "Patient name",
+      "selector": "#patientName",
+      "valueFrom": "patientName",
+      "mandatory": true
+    },
+    {
+      "id": "dob",
+      "action": "fill",
+      "label": "Date of birth",
+      "selector": "#dob",
+      "valueFrom": "dob",
+      "mandatory": true
+    },
+    {
+      "id": "email",
+      "action": "fill",
+      "label": "Email",
+      "selector": "#email",
+      "valueFrom": "email",
+      "mandatory": true
+    },
+    {
+      "id": "phone",
+      "action": "fill",
+      "label": "Phone",
+      "selector": "#phone",
+      "valueFrom": "phone"
+    },
+    {
+      "id": "reason",
+      "action": "fill",
+      "label": "Reason for visit",
+      "selector": "#reason",
+      "valueFrom": "reason"
+    },
+    {
+      "id": "allergies",
+      "action": "fill",
+      "label": "Allergies",
+      "selector": "#allergies",
+      "valueFrom": "allergies"
+    },
+    {
+      "id": "insurance",
+      "action": "fill",
+      "label": "Insurance provider",
+      "selector": "#insurance",
+      "valueFrom": "insurance"
+    }
+  ],
+  "formUrl": "http://127.0.0.1:4173/sites/riverdale-patient-intake"
+}

@@ -25,6 +25,29 @@ async function api(path, options) {
   return data;
 }
 
+function isAttachImage(name, mime) {
+  return (
+    /^image\//i.test(String(mime || "")) ||
+    /\.(png|jpe?g|gif|webp)$/i.test(String(name || ""))
+  );
+}
+
+function renderAttachments(items) {
+  if (!items.length) {
+    return `<p class="attach-empty">No attachments</p>`;
+  }
+  return items
+    .map((item) => {
+      const href = escapeHtml(item.content || item.url || "");
+      const name = escapeHtml(item.filename || "file");
+      if (isAttachImage(item.filename, item.mimeType) && href) {
+        return `<div class="attach-item"><a href="${href}" target="_blank" rel="noreferrer">${name}</a><img src="${href}" alt="${name}" /></div>`;
+      }
+      return `<div class="attach-item"><a href="${href}" target="_blank" rel="noreferrer">${name}</a></div>`;
+    })
+    .join("");
+}
+
 function escapeHtml(s) {
   return String(s || "")
     .replace(/&/g, "&amp;")
@@ -65,6 +88,8 @@ function renderIssue(issue, comments) {
       <textarea class="description" id="description" aria-label="Description">${escapeHtml(
         issue.description || ""
       )}</textarea>
+      <h2 class="section-title">Attachments</h2>
+      <div class="attach-list" id="attachList">${renderAttachments(issue.attachments || [])}</div>
       <div class="activity">
         <h2 class="section-title">Activity</h2>
         <ul class="comment-list" id="commentList"></ul>

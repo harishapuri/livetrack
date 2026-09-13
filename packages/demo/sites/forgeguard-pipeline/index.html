@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ForgeGuard Pipeline — Scan</title>
+    <style>
+      :root {
+        --bg: #f3f5f8;
+        --ink: #0f172a;
+        --line: #cbd5e1;
+        --accent: #1d4ed8;
+        --muted: #475569;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Avenir Next", sans-serif;
+        color: var(--ink);
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 36%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      main { max-width: 640px; margin: 0 auto; padding: 40px 22px 64px; }
+      .site { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+      h1 { margin: 6px 0 8px; font-size: 1.75rem; }
+      .sub { margin: 0 0 24px; color: var(--muted); line-height: 1.45; }
+      .card { background: transparent; border: 0; padding: 4px 0; display: grid; gap: 14px; }
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin: 0 0 8px;
+      }
+      .metrics div {
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+      }
+      .metrics strong { display: block; font-size: 1.05rem; }
+      .metrics span { font-size: 0.75rem; color: var(--muted); }
+      .stage-options { display: grid; gap: 10px; }
+      .stage-options label {
+        display: flex; gap: 10px; align-items: flex-start;
+        padding: 12px; border: 1px solid var(--line); border-radius: 10px;
+        cursor: pointer; background: #fff;
+      }
+      .stage-options label:has(input:checked) {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 8%, #fff);
+      }
+      button {
+        justify-self: start; font: inherit; padding: 11px 16px; border: 0;
+        border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer;
+      }
+      .hint { margin-top: 18px; color: #64748b; font-size: 0.88rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="site">ForgeGuard Pipeline</div>
+      <div id="app"></div>
+      <p class="hint">URL: http://127.0.0.1:4173/sites/forgeguard-pipeline/</p>
+    </main>
+    <script>
+      const app = document.getElementById("app");
+
+      function showScan() {
+        app.innerHTML =
+          "<h1>AI-augmented CI/CD scan</h1>" +
+          '<p class="sub">Page 1 of 2 — start ML analysis on the commit, then pick a pipeline stage.</p>' +
+          '<div class="card">' +
+          '<div class="metrics">' +
+          "<div><strong>94.6%</strong><span>MTTD reduction</span></div>" +
+          "<div><strong>61.5%</strong><span>MTTR reduction</span></div>" +
+          "<div><strong>80.2%</strong><span>False-positive cut</span></div>" +
+          "</div>" +
+          "<p>CodeBERT + XGBoost static analysis, container risk scoring, and Isolation Forest telemetry — as in the CRC DevSecOps framework.</p>" +
+          '<button id="btnStartScan" type="button">Start scan</button>' +
+          "</div>";
+        document.getElementById("btnStartScan").onclick = showStage;
+      }
+
+      function showStage() {
+        app.innerHTML =
+          "<h1>Select CI/CD stage</h1>" +
+          '<p class="sub">Click 2 — still this page. Choose where the STRIDE control runs.</p>' +
+          '<div class="card">' +
+          "<p>AI controls map to commit, build, and deploy gates independently of model confidence.</p>" +
+          '<div class="stage-options">' +
+          '<label><input type="radio" name="stage" value="commit" /><span><strong>Commit</strong> — ML code classifier (NIST CSF / tampering)</span></label>' +
+          '<label><input type="radio" name="stage" value="build" checked /><span><strong>Build</strong> — container risk scorer (CIS Docker / elevation)</span></label>' +
+          '<label><input type="radio" name="stage" value="deploy" /><span><strong>Deploy</strong> — anomaly detection (SOC 2 / spoofing)</span></label>' +
+          "</div>" +
+          '<button id="btnChooseStage" type="button">Choose stage</button>' +
+          "</div>";
+        document.getElementById("btnChooseStage").onclick = showContinue;
+      }
+
+      function showContinue() {
+        app.innerHTML =
+          "<h1>Open runtime gate</h1>" +
+          '<p class="sub">Click 3 — navigates to the RL agent review (new URL).</p>' +
+          '<div class="card">' +
+          "<p>Stage saved. Continue to STRIDE mapping and the Deep Q-Network remediation policy.</p>" +
+          '<button id="btnOpenGate" type="button">Open runtime gate</button>' +
+          "</div>";
+        document.getElementById("btnOpenGate").onclick = function () {
+          location.href = "/sites/forgeguard-pipeline/review";
+        };
+      }
+
+      showScan();
+    </script>
+  </body>
+</html>

@@ -2,110 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>liveAct — SOP Builder</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap"
-      rel="stylesheet"
-    />
-    <link rel="stylesheet" href="./styles.css" />
-    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
+    <title>LiveTrack — redirect</title>
+    <script>
+      location.replace((location.protocol === "file:" ? "http://127.0.0.1:4175" : "") + "/#/converter");
+    </script>
   </head>
   <body>
-    <nav class="dash-nav sop-top-nav" aria-label="Dashboard sections">
-      <a href="../index.html" data-nav="executions">Executions</a>
-      <a href="../queue-studio/index.html" data-nav="studio">Queue studio</a>
-      <a href="../assignments/index.html" data-nav="assignments">Assignments</a>
-      <a href="./index.html" data-nav="converter" class="active">SOP converter</a>
-    </nav>
-    <div class="wrap">
-      <header class="brand">
-        <div>
-          <h1>liveAct SOP Builder</h1>
-          <p>
-            Upload a PPT / PDF / DOCX that lists your process steps. We convert them into
-            SOP JSON and save into <code>shared/sops/</code> for the desktop tool.
-          </p>
-        </div>
-        <span class="badge">stores → shared/sops</span>
-      </header>
-
-      <div class="grid">
-        <section class="panel">
-          <h2>1. Source document</h2>
-          <label class="drop" id="dropZone">
-            <strong>Drop PPTX, PDF, or DOCX here</strong>
-            or click to choose a file
-            <input id="fileInput" type="file" accept=".pptx,.ppt,.pdf,.docx,.doc,.txt" />
-          </label>
-          <p class="hint" id="fileName">No file selected</p>
-
-          <div class="meta">
-            <label>
-              SOP id
-              <input id="sopId" placeholder="vendor-onboarding" />
-            </label>
-            <label>
-              SOP name
-              <input id="sopName" placeholder="Vendor onboarding form" />
-            </label>
-            <label>
-              Form URL (optional)
-              <input id="formUrl" placeholder="https://…" />
-            </label>
-            <label>
-              Description
-              <input id="sopDesc" placeholder="Short description" />
-            </label>
-          </div>
-
-          <div class="field">
-            <label>
-              Extracted text
-              <textarea
-                id="rawText"
-                placeholder="Text from the document appears here. You can edit before converting."
-              ></textarea>
-            </label>
-          </div>
-
-          <div class="actions">
-            <button type="button" class="primary" id="btnConvert" disabled>Convert to steps</button>
-            <button type="button" class="ghost" id="btnClear">Clear</button>
-          </div>
-          <p class="status" id="extractStatus"></p>
-        </section>
-
-        <section class="panel">
-          <h2>2. SOP steps</h2>
-          <p class="hint">
-            Edit actions, labels, selectors, and valueFrom keys. Fill steps need a
-            <code>valueFrom</code> (or literal value) so the tool can supply data.
-          </p>
-          <div class="steps" id="stepsList"></div>
-          <div class="actions">
-            <button type="button" id="btnAddStep">Add step</button>
-            <button type="button" class="primary" id="btnSave" disabled>Save to shared/sops</button>
-            <button type="button" class="ghost" id="btnDownload" disabled>Download JSON</button>
-          </div>
-          <p class="status" id="saveStatus"></p>
-          <pre class="json-out" id="jsonPreview">{}</pre>
-        </section>
-      </div>
-
-      <section class="panel">
-        <h2>Existing SOPs on disk</h2>
-        <div class="existing" id="existingList"></div>
-        <p class="hint">
-          After saving, liveAct reloads SOPs automatically (or click Refresh in the app).
-          Point a queue card’s <code>sopId</code> at the new id to run it.
-        </p>
-      </section>
-    </div>
-    <script src="../nav.js"></script>
-    <script type="module" src="./app.js"></script>
+    <p>Moved to <a href="/#/converter">SOP converter</a>.</p>
   </body>
 </html>

@@ -71,7 +71,7 @@
       function showStart() {
         app.innerHTML =
           "<h1>Welcome</h1>" +
-          '<p class="sub">Single-page click-stream — three clicks unlock the real form. Open this tab, then Start the Gateform Access card in Coact.</p>' +
+          '<p class="sub">Single-page click-stream — three clicks unlock the real form. Open this tab, then Start the Gateform Access card in LiveTrack.</p>' +
           stepsHtml(0) +
           '<div class="card">' +
           "<p>Begin the access wizard. Each step replaces this panel (SPA — same URL).</p>" +
@@ -86,7 +86,7 @@
           '<p class="sub">Step 2 — accept terms to continue.</p>' +
           stepsHtml(1) +
           '<div class="card">' +
-          "<p>Demo terms: this is a Coact click-stream gate. Accept to proceed.</p>" +
+          "<p>Demo terms: this is a LiveTrack click-stream gate. Accept to proceed.</p>" +
           '<button id="btnAccept" type="button">Accept</button>' +
           "</div>";
         document.getElementById("btnAccept").onclick = showOpen;
@@ -107,7 +107,7 @@
       function showForm() {
         app.innerHTML =
           "<h1>Access request</h1>" +
-          '<p class="sub">Real form — Coact fills these fields after the click stream.</p>' +
+          '<p class="sub">Real form — LiveTrack fills these fields after the click stream.</p>' +
           stepsHtml(3) +
           '<form id="accessForm" onsubmit="event.preventDefault(); alert(\'Submitted (demo only)\');">' +
           "<label>Full name" +

@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>liveAct Extension</title>
+    <title>LiveTrack Extension</title>
     <style>
       body {
         font-family: "Segoe UI", sans-serif;
@@ -10,49 +10,72 @@
         padding: 12px 14px;
         min-width: 300px;
         max-width: 360px;
-        background: #14090a;
-        color: #f7ecee;
+        background: #ffffff;
+        color: #1a1a1a;
+        border-top: 4px solid #d41c2c;
+        box-shadow: inset 0 4px 0 #fccc44;
       }
       h1 {
         margin: 0 0 8px;
         font-size: 14px;
+        color: #d41c2c;
       }
       h2 {
         margin: 12px 0 6px;
         font-size: 12px;
         font-weight: 600;
-        color: #f7ecee;
+        color: #1a1a1a;
       }
       p {
         margin: 0 0 10px;
-        color: #b39aa0;
+        color: #5c5752;
         font-size: 12px;
         line-height: 1.4;
       }
       .ok {
-        color: #d71e28;
+        color: #d41c2c;
+        font-weight: 700;
       }
       .wait {
-        color: #b39aa0;
+        color: #5c5752;
       }
       .bad {
-        color: #ff6b6b;
+        color: #b31e30;
       }
       button {
         width: 100%;
         border: 0;
         border-radius: 8px;
         padding: 8px 10px;
-        background: #d71e28;
+        background: #d41c2c;
         color: #fff;
         font: inherit;
         font-size: 12px;
         cursor: pointer;
+        box-shadow: 0 1px 0 #fccc44;
+      }
+      button:hover {
+        background: #b31e30;
+      }
+      label.profile {
+        display: block;
+        margin: 8px 0 10px;
+        font-size: 11px;
+        color: #5c5752;
+      }
+      label.profile input {
+        width: 100%;
+        margin-top: 4px;
+        box-sizing: border-box;
+        padding: 6px 8px;
+        border: 1px solid #ead9a8;
+        border-radius: 6px;
+        font: inherit;
       }
       #jiraMeta {
         margin: 0 0 6px;
         font-size: 11px;
-        color: #b39aa0;
+        color: #5c5752;
       }
       #jiraList {
         display: flex;
@@ -66,24 +89,24 @@
         display: block;
         width: 100%;
         text-align: left;
-        border: 1px solid #3a2a2d;
+        border: 1px solid #ead9a8;
         border-radius: 8px;
-        background: #1e1214;
-        color: #f7ecee;
+        background: #fff8e8;
+        color: #1a1a1a;
         padding: 8px 9px;
         cursor: pointer;
         font: inherit;
       }
       .jira-issue:hover {
-        border-color: #2684ff;
+        border-color: #d41c2c;
       }
       .jira-issue.urgency-high {
-        border-color: #dc2626;
-        background: #2a1214;
+        border-color: #d41c2c;
+        background: #fde8ea;
       }
       .jira-issue.urgency-med {
-        border-color: #b45309;
-        background: #241810;
+        border-color: #fccc44;
+        background: #fff8e8;
       }
       .jira-top {
         display: flex;
@@ -93,11 +116,11 @@
         margin-bottom: 3px;
       }
       .jira-key {
-        color: #2684ff;
+        color: #d41c2c;
         font-weight: 700;
       }
       .jira-score {
-        color: #b39aa0;
+        color: #5c5752;
       }
       .jira-summary {
         font-size: 12px;
@@ -106,21 +129,26 @@
       }
       .jira-meta-row {
         font-size: 10px;
-        color: #b39aa0;
+        color: #5c5752;
       }
       .empty {
         font-size: 12px;
-        color: #b39aa0;
+        color: #5c5752;
         padding: 8px 0;
       }
     </style>
   </head>
   <body>
-    <h1>liveAct Form Agent</h1>
+    <h1>LiveTrack Form Agent</h1>
     <p id="status">Checking bridge…</p>
-    <button id="reconnect" type="button">Reconnect to liveAct</button>
+    <label class="profile">
+      Profile name (Work, Personal, …)
+      <input id="profileLabel" type="text" placeholder="This Chrome" autocomplete="off" />
+    </label>
+    <p class="empty">Load this unpacked extension in every Chrome/Edge profile you use.</p>
+    <button id="reconnect" type="button">Reconnect to LiveTrack</button>
     <h2>Jira</h2>
-    <p id="jiraMeta">Waiting for liveAct…</p>
+    <p id="jiraMeta">Waiting for LiveTrack…</p>
     <div id="jiraList"></div>
     <script src="popup.js"></script>
   </body>

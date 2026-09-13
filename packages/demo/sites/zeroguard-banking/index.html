@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Meridian Bank — ZeroGuard ICA</title>
+    <style>
+      :root {
+        --bg: #f4f6f8;
+        --ink: #0f172a;
+        --line: #cbd5e1;
+        --accent: #0f4c81;
+        --muted: #475569;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Avenir Next", sans-serif;
+        color: var(--ink);
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 36%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      main { max-width: 640px; margin: 0 auto; padding: 40px 22px 64px; }
+      .site { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+      h1 { margin: 6px 0 8px; font-size: 1.75rem; }
+      .sub { margin: 0 0 24px; color: var(--muted); line-height: 1.45; }
+      .card { background: transparent; border: 0; padding: 4px 0; display: grid; gap: 14px; }
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin: 0 0 8px;
+      }
+      .metrics div {
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+      }
+      .metrics strong { display: block; font-size: 1.05rem; }
+      .metrics span { font-size: 0.75rem; color: var(--muted); }
+      .stage-options { display: grid; gap: 10px; }
+      .stage-options label {
+        display: flex; gap: 10px; align-items: flex-start;
+        padding: 12px; border: 1px solid var(--line); border-radius: 10px;
+        cursor: pointer; background: #fff;
+      }
+      .stage-options label:has(input:checked) {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 8%, #fff);
+      }
+      button {
+        justify-self: start; font: inherit; padding: 11px 16px; border: 0;
+        border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer;
+      }
+      .hint { margin-top: 18px; color: #64748b; font-size: 0.88rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="site">Meridian Bank · ZeroGuard</div>
+      <div id="app"></div>
+      <p class="hint">URL: http://127.0.0.1:4173/sites/zeroguard-banking/</p>
+    </main>
+    <script>
+      const app = document.getElementById("app");
+
+      function showScan() {
+        app.innerHTML =
+          "<h1>Parse PCI landing-zone IaC</h1>" +
+          '<p class="sub">Page 1 of 3 — IaC Context Agent (ICA) on the cardholder VPC pull request.</p>' +
+          '<div class="card">' +
+          '<div class="metrics">' +
+          "<div><strong>0.947</strong><span>Detection F1</span></div>" +
+          "<div><strong>78.4%</strong><span>Critical findings cut</span></div>" +
+          "<div><strong>+0.380</strong><span>ZTA posture ΔΞ</span></div>" +
+          "</div>" +
+          "<p>T-GAT scores each resource against NIST SP 800-207 pillars before GRA patches Terraform for payments-api, KMS, and IAM.</p>" +
+          '<button id="btnStartIca" type="button">Start ICA parse</button>' +
+          "</div>";
+        document.getElementById("btnStartIca").onclick = showDialect;
+      }
+
+      function showDialect() {
+        app.innerHTML =
+          "<h1>Select IaC dialect</h1>" +
+          '<p class="sub">Click 2 — still this page. ICA builds G(f) with IAM binding edges.</p>' +
+          '<div class="card">' +
+          "<p>Meridian cardholder environment is Terraform. Other dialects stay available for mixed-cloud PRs.</p>" +
+          '<div class="stage-options">' +
+          '<label><input type="radio" name="dialect" value="terraform" checked /><span><strong>Terraform</strong> — payments VPC, S3, IAM roles</span></label>' +
+          '<label><input type="radio" name="dialect" value="cloudformation" /><span><strong>CloudFormation</strong> — core banking accounts</span></label>' +
+          '<label><input type="radio" name="dialect" value="k8s" /><span><strong>Kubernetes</strong> — fraud-scoring cluster</span></label>' +
+          "</div>" +
+          '<button id="btnChooseDialect" type="button">Choose dialect</button>' +
+          "</div>";
+        document.getElementById("btnChooseDialect").onclick = showContinue;
+      }
+
+      function showContinue() {
+        app.innerHTML =
+          "<h1>Open ZTPA scoring</h1>" +
+          '<p class="sub">Click 3 — navigates to Zero-Trust posture (new URL).</p>' +
+          '<div class="card">' +
+          "<p>Graph ready. ZTPA will score encryption, network exposure, and privilege excess on the cardholder bucket.</p>" +
+          '<button id="btnOpenPosture" type="button">Open ZTPA scoring</button>' +
+          "</div>";
+        document.getElementById("btnOpenPosture").onclick = function () {
+          location.href = "/sites/zeroguard-banking/posture";
+        };
+      }
+
+      showScan();
+    </script>
+  </body>
+</html>

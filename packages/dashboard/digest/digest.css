@@ -1,0 +1,22 @@
+#digestTotals {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.delta {
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.delta.up {
+  color: var(--ok);
+}
+
+.delta.down {
+  color: var(--accent);
+}
+
+@media (max-width: 1100px) {
+  #digestTotals {
+    grid-template-columns: 1fr 1fr !important;
+  }
+}

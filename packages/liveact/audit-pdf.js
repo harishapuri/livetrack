@@ -1,10 +1,10 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const ExcelJS = require("exceljs");
-const { defaultSqlRoot } = require("./documents");
+const { defaultProjectRoot, defaultSqlRoot } = require("./documents");
 const { resolveExecutionsRoot } = require("./settings");
 const { generatePostgresSql } = require("./generate-sql");
+const workbookStore = require("./workbook");
 
 const SHEET_NAME = "Executions";
 
@@ -44,6 +44,25 @@ function sanitizePart(value) {
     .slice(0, 80) || "unknown";
 }
 
+/**
+ * Normalize run outcome for Executions.status.
+ * complete ← complete|completed|done|run_complete|(blank on write)
+ * failed ← failed|run_failed
+ * cancelled ← cancelled|canceled|run_cancelled
+ * incomplete ← abandoned|started|running|incomplete|other
+ */
+function normalizeExecutionStatus(raw) {
+  const s = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (!s || s === "complete" || s === "completed" || s === "done" || s === "run_complete") {
+    return "complete";
+  }
+  if (s === "failed" || s === "run_failed") return "failed";
+  if (s === "cancelled" || s === "canceled" || s === "run_cancelled") return "cancelled";
+  return "incomplete";
+}
+
 function todayStamp(date = new Date()) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
@@ -67,10 +86,9 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-/** One Excel file per queue card: executions/<LOB>_<queueCard>.xlsx */
-function excelPathForCard(lob, queueCard, executionsRoot = resolveExecutionsRoot()) {
-  const name = `${sanitizePart(lob)}_${sanitizePart(queueCard)}.xlsx`;
-  return path.join(executionsRoot, name);
+/** Mother workbook at project root. */
+function excelPathForCard(_lob, _queueCard, _executionsRoot = resolveExecutionsRoot()) {
+  return workbookStore.workbookPath();
 }
 
 function sleep(ms) {
@@ -238,8 +256,8 @@ function deriveFillMode(actions, hint) {
 }
 
 /**
- * One row per completed execution in a per-queue-card Excel file.
- * Uses shared executions root + file lock for multi-agent writes.
+ * One row per execution attempt in livetrack.xlsx (Answers / Mistakes / Timing tables).
+ * status: complete (finished) | failed | cancelled | incomplete (started, not finished).
  */
 async function saveExecutionArtifacts({
   lob,
@@ -254,20 +272,30 @@ async function saveExecutionArtifacts({
   pageUrl = "",
   executionsRoot = resolveExecutionsRoot(),
   completedAt = new Date(),
+  stepsTiming = [],
+  runStartedAt = "",
+  status = "complete",
 }) {
   void filledPdfSource;
+  const outcome = normalizeExecutionStatus(status);
+  const isComplete = outcome === "complete";
   const userId = osUserId();
-  const runDate = todayStamp(completedAt);
+  const stampAt =
+    completedAt instanceof Date && !Number.isNaN(completedAt.getTime())
+      ? completedAt
+      : new Date();
+  const startedIso = String(runStartedAt || "").trim();
+  const runDate = todayStamp(
+    isComplete ? stampAt : startedIso ? new Date(startedIso) : stampAt,
+  );
   const base = executionBaseName(lob, queueCard, userId);
-  const runId = `${base}_${completedAt.toISOString().replace(/[:.]/g, "-")}`;
+  const runId = `${base}_${stampAt.toISOString().replace(/[:.]/g, "-")}`;
   const cardName = cardTitle || queueCard;
   const fillMode = deriveFillMode(actions, fillModeHint);
   const mistakeList = Array.isArray(mistakes) ? mistakes : [];
   const mistakeCount = mistakeList.length;
-  const mistakesJson = JSON.stringify(mistakeList);
-
-  ensureDir(executionsRoot);
-  ensureDir(defaultSqlRoot());
+  const projectRoot = defaultProjectRoot();
+  const xlsxPath = workbookStore.workbookPath(projectRoot);
 
   const normalized = actions.map((a, i) => ({
     sequence_no: i + 1,
@@ -301,67 +329,86 @@ async function saveExecutionArtifacts({
   });
   fields.formReference = resolvedRef.formReference;
   if (pageUrl) fields.pageUrl = String(pageUrl).slice(0, 500);
-  const xlsxPath = excelPathForCard(lob || "TCOO", queueCard, executionsRoot);
 
-  await withExcelLock(xlsxPath, async () => {
-    const { workbook, sheet } = await loadOrCreateCardWorkbook(xlsxPath);
+  const answerRows = Object.entries(fields)
+    .filter(([, v]) => v != null && String(v) !== "")
+    .map(([field_key, field_value]) => ({
+      run_id: runId,
+      queue_card_id: queueCard,
+      field_key,
+      field_value: String(field_value),
+    }));
+  const mistakeRows = mistakeList.map((m) => ({
+    run_id: runId,
+    queue_card_id: queueCard,
+    payload_json: workbookStore.jsonCell(m),
+  }));
+  const timingSteps = Array.isArray(stepsTiming) ? stepsTiming : [];
+  const started = runStartedAt || timingSteps[0]?.step_start_time || "";
+  let durationMs = "";
+  if (started) {
+    const t0 = Date.parse(started);
+    const t1 = stampAt.getTime();
+    if (Number.isFinite(t0) && Number.isFinite(t1)) durationMs = String(Math.max(0, t1 - t0));
+  }
 
-    let headers = readHeaderList(sheet);
-    if (!isWideHeader(headers)) {
-      headers = [...META_HEADERS];
-      sheet.getRow(1).values = [undefined, ...META_HEADERS];
-      sheet.getRow(1).font = { bold: true };
-    } else {
-      headers = ensureMistakeColumns(sheet, headers);
-    }
-
-    const metaLen = metaColumnCount(headers);
-    const fieldHeaders = headers.slice(metaLen);
-    const newKeys = Object.keys(fields)
-      .filter((k) => !fieldHeaders.includes(k) && !META_HEADERS.includes(k))
-      .sort((a, b) => a.localeCompare(b));
-
-    for (const key of newKeys) {
-      fieldHeaders.push(key);
-      headers.push(key);
-      const col = headers.length;
-      sheet.getRow(1).getCell(col).value = key;
-      sheet.getRow(1).getCell(col).font = { bold: true };
-      sheet.getColumn(col).width = Math.min(36, Math.max(14, key.length + 2));
-    }
-
-    const row = [
-      lob || "TCOO",
-      cardName,
-      userId,
-      fillMode,
-      runDate,
-      completedAt.toISOString(),
-      runId,
-      mistakeCount,
-      mistakesJson,
-    ];
-    for (const key of fieldHeaders) {
-      row.push(fields[key] != null ? fields[key] : "");
-    }
-    sheet.addRow(row);
-
-    await writeWorkbookAtomic(workbook, xlsxPath);
-  });
+  await workbookStore.appendRows("Executions", [
+    {
+      run_id: runId,
+      run_date: runDate,
+      lob: lob || "TCOO",
+      queue_card_id: queueCard,
+      queue_card: cardName,
+      user_id: userId,
+      fill_mode: fillMode,
+      completed_at: isComplete ? stampAt.toISOString() : "",
+      mistake_count: String(mistakeCount),
+      status: outcome,
+    },
+  ], projectRoot);
+  if (isComplete && answerRows.length) {
+    await workbookStore.appendRows("Answers", answerRows, projectRoot);
+  }
+  if (isComplete && mistakeRows.length) {
+    await workbookStore.appendRows("Mistakes", mistakeRows, projectRoot);
+  }
+  if (started || durationMs) {
+    await workbookStore.appendRows(
+      "Timing",
+      [{ run_id: runId, run_started_at: started, run_duration_ms: durationMs }],
+      projectRoot
+    );
+  }
+  if (timingSteps.length) {
+    await workbookStore.appendRows(
+      "TimingSteps",
+      timingSteps.map((s) => ({
+        run_id: runId,
+        step_id: s.step_id || s.stepId || "",
+        label: s.label || "",
+        step_start_time: s.step_start_time || "",
+        step_end_time: s.step_end_time || "",
+      })),
+      projectRoot
+    );
+  }
 
   let sqlResult = null;
-  try {
-    sqlResult = await generatePostgresSql({ quiet: true, executionsRoot });
-  } catch (err) {
-    console.error("[coact] postgres sql regenerate failed", err.message);
+  if (isComplete) {
+    try {
+      sqlResult = await generatePostgresSql({ quiet: true, executionsRoot });
+    } catch (err) {
+      console.error("[livetrack] postgres sql regenerate failed", err.message);
+    }
   }
 
   return {
     ok: true,
     runId,
+    status: outcome,
     jiraKey: fields.jiraStoryKey || "",
     formReference: fields.formReference || "",
-    outDir: executionsRoot,
+    outDir: projectRoot,
     excelPath: xlsxPath,
     fillMode,
     mistakeCount,
@@ -381,6 +428,7 @@ module.exports = {
   executionBaseName,
   excelPathForCard,
   deriveFillMode,
+  normalizeExecutionStatus,
   metaColumnCount,
   withExcelLock,
   saveExecutionArtifacts,

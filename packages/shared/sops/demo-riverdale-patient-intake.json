@@ -8,8 +8,7 @@
       "action": "fill",
       "label": "Patient name",
       "selector": "#patientName",
-      "valueFrom": "patientName",
-      "mandatory": true
+      "valueFrom": "patientName"
     },
     {
       "id": "dob",

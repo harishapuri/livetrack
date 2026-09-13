@@ -2,11 +2,14 @@
   "id": "new-hire-information-form-filled",
   "name": "New Hire Information Form",
   "description": "Fill the New Hire AcroForm PDF (also works with the web mirror at /new-hire.html).",
-  "targetType": "pdf",
-  "formUrl": "http://127.0.0.1:17322/pdf/new-hire-information.pdf",
+  "targetType": "web",
+  "formUrl": "http://127.0.0.1:17322/demo/new-hire.html",
   "formMatch": [
     "new-hire-information",
     "17322/pdf/new-hire",
+    "17322/demo/new-hire",
+    "4173/new-hire",
+    "new-hire.html",
     "New Hire Information Form"
   ],
   "steps": [

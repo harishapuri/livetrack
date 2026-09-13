@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>liveAct Snip</title>
+    <title>LiveTrack Snip</title>
     <style>
       html,
       body {
@@ -45,8 +45,8 @@
       }
       #sel {
         position: absolute;
-        border: 1.5px solid #ffb4b4;
-        box-shadow: 0 0 0 9999px rgba(10, 6, 8, 0.45);
+        border: 1.5px solid #fccc44;
+        box-shadow: 0 0 0 9999px rgba(26, 18, 20, 0.45);
         background: transparent;
         display: none;
         z-index: 2;
@@ -127,6 +127,12 @@
           return;
         }
         window.snipper.complete({ displayId, x, y, width: w, height: h });
+      });
+      window.addEventListener("blur", () => {
+        if (dragging) {
+          dragging = false;
+          resetSel();
+        }
       });
     </script>
   </body>

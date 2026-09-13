@@ -1,7 +1,7 @@
 /**
  * Build dashboard/data.json from Excel execution rows.
  * Supervisor view: LOB / user / queue-card aggregates; mandatory mistakes only.
- * Default load window: last 7 days (override with dateFrom/dateTo).
+ * Default: all executions. Pass defaultLastDays / dateFrom / dateTo to window.
  */
 const fs = require("fs");
 const path = require("path");
@@ -133,8 +133,10 @@ async function generateDashboardData(opts = {}) {
     const range =
       dateFrom || dateTo || dateFilter
         ? null
-        : defaultDateRangeDays(opts.defaultLastDays != null ? opts.defaultLastDays : 7);
-    const loaded = await loadAllExecutions({
+        : opts.defaultLastDays != null
+          ? defaultDateRangeDays(opts.defaultLastDays)
+          : null;
+    let loaded = await loadAllExecutions({
       dateFilter,
       dateFrom: dateFrom || range?.dateFrom || null,
       dateTo: dateTo || range?.dateTo || null,
@@ -142,6 +144,19 @@ async function generateDashboardData(opts = {}) {
       includeAnswers: false,
       executionsRoot: opts.executionsRoot,
     });
+    if (
+      !(loaded.runs || []).length &&
+      (dateFrom || dateTo || dateFilter || range)
+    ) {
+      loaded = await loadAllExecutions({
+        dateFilter: null,
+        dateFrom: null,
+        dateTo: null,
+        defaultLastDays: undefined,
+        includeAnswers: false,
+        executionsRoot: opts.executionsRoot,
+      });
+    }
     runs = loaded.runs;
     fileCount = loaded.files.length;
     dateFrom = loaded.dateFrom || dateFrom;
@@ -252,21 +267,24 @@ async function generateDashboardData(opts = {}) {
     recentMistakes: wrongFillRows,
   };
 
+  const writeFiles = Boolean(opts.writeFiles);
   const outPath = path.join(dashDir, "data.json");
   const jsPath = path.join(dashDir, "data.js");
-  const json = JSON.stringify(payload, null, 2);
-  fs.writeFileSync(outPath, `${json}\n`, "utf8");
-  fs.writeFileSync(
-    jsPath,
-    `window.DASHBOARD_DATA = ${JSON.stringify(payload)};\n`,
-    "utf8"
-  );
+  if (writeFiles) {
+    const json = JSON.stringify(payload, null, 2);
+    fs.writeFileSync(outPath, `${json}\n`, "utf8");
+    fs.writeFileSync(
+      jsPath,
+      `window.DASHBOARD_DATA = ${JSON.stringify(payload)};\n`,
+      "utf8"
+    );
+  }
 
   if (!quiet) {
     console.log(
       `[dashboard] ${payload.totalExecutions} executions (${dateFrom || "…"} → ${
         dateTo || "…"
-      }), ${executionsWithMistakes} with mistakes → ${outPath}`
+      }), ${executionsWithMistakes} with mistakes${writeFiles ? ` → ${outPath}` : ""}`
     );
   }
 
@@ -472,18 +490,25 @@ function mandatoryMetaForCard(stepIndex, queueCardId) {
 
 async function buildAgentDashboard({
   queueCards = [],
-  days = 14,
+  days = 365,
   jiraBaseUrl = "",
   jiraCardKeyField = "jiraKey",
   executionsRoot,
+  captureDashRows = [],
 } = {}) {
   const range = defaultDateRangeDays(days);
-  const { runs } = await loadAllExecutions({
+  let { runs } = await loadAllExecutions({
     includeAnswers: true,
     dateFrom: range.dateFrom,
     dateTo: range.dateTo,
     executionsRoot,
   });
+  if (!runs.length) {
+    ({ runs } = await loadAllExecutions({
+      includeAnswers: true,
+      executionsRoot,
+    }));
+  }
   const stepIndex = loadMandatoryStepIndex();
   const field = String(jiraCardKeyField || "jiraKey").trim() || "jiraKey";
   const cardById = new Map();
@@ -562,13 +587,44 @@ async function buildAgentDashboard({
       };
     });
 
+  const byRef = new Map();
+  for (const row of rows) {
+    const key = String(row.formReference || "").toUpperCase();
+    if (key) byRef.set(key, row);
+  }
+  const extra = [];
+  for (const capture of captureDashRows || []) {
+    const key = String(capture.formReference || "").toUpperCase();
+    if (!key) {
+      extra.push(capture);
+      continue;
+    }
+    const existing = byRef.get(key);
+    if (existing) {
+      if (!existing.user_id && capture.user_id) existing.user_id = capture.user_id;
+      if ((!existing.mandatory || !existing.mandatory.length) && capture.mandatory?.length) {
+        existing.mandatory = capture.mandatory;
+        existing.mandatoryFilled = capture.mandatoryFilled;
+        existing.mandatoryTotal = capture.mandatoryTotal;
+        existing.fill_mode = existing.fill_mode || "capture";
+      }
+      continue;
+    }
+    extra.push(capture);
+    byRef.set(key, capture);
+  }
+
+  const merged = [...extra, ...rows].sort((a, b) =>
+    String(b.completed_at || b.run_date).localeCompare(String(a.completed_at || a.run_date))
+  );
+
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
     dateFrom: range.dateFrom,
     dateTo: range.dateTo,
-    total: rows.length,
-    rows,
+    total: merged.length,
+    rows: merged.slice(0, 80),
   };
 }
 
@@ -586,7 +642,10 @@ function mandatorySummaryForCard(queueCardId, answers = {}, queueCards = []) {
     const label = meta.labels.get(key) || key;
     if (seen.has(label)) continue;
     seen.add(label);
-    const val = merged[key];
+    const val =
+      merged[key] ??
+      merged[label] ??
+      Object.entries(merged).find(([k]) => k.toLowerCase() === String(key).toLowerCase() || k.toLowerCase() === String(label).toLowerCase())?.[1];
     const filled = val != null && String(val).trim() !== "";
     items.push({ label, key, value: filled ? String(val) : "", filled });
   }
@@ -600,6 +659,62 @@ function mandatorySummaryForCard(queueCardId, answers = {}, queueCards = []) {
       : "All mandatory fields present.",
   ].filter(Boolean);
   return { text: lines.join(" "), items };
+}
+
+function humanizeActivityLabel(name) {
+  const raw = String(name || "").trim();
+  if (!raw) return "Field";
+  if (/[ _]/.test(raw)) return raw.replace(/[_]+/g, " ").replace(/\s+/g, " ");
+  return raw.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase());
+}
+
+function formatJiraActivityText({ items = [], extraValues = {}, clicks = [] } = {}) {
+  const fields = [];
+  const seen = new Set();
+  const remember = (key) => {
+    const k = String(key || "").trim().toLowerCase();
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  };
+  for (const item of items || []) {
+    if (!item?.filled || !String(item.value || "").trim()) continue;
+    const id = item.key || item.label;
+    if (!remember(id)) continue;
+    remember(item.label);
+    fields.push({ label: item.label || item.key, value: String(item.value).trim() });
+  }
+  for (const [key, value] of Object.entries(extraValues || {})) {
+    const val = String(value || "").trim();
+    if (!val) continue;
+    if (!remember(key)) continue;
+    fields.push({ label: humanizeActivityLabel(key), value: val });
+  }
+  const clickLabels = (clicks || [])
+    .map((click) => (typeof click === "string" ? click : click?.label || ""))
+    .map((label) => String(label || "").trim())
+    .filter(Boolean);
+  const uniqueClicks = [];
+  for (const label of clickLabels) {
+    if (uniqueClicks[uniqueClicks.length - 1] !== label) uniqueClicks.push(label);
+  }
+  const lines = [];
+  if (fields.length) {
+    lines.push("Field values entered:");
+    for (const field of fields) lines.push(`- ${field.label}: ${field.value}`);
+  }
+  if (uniqueClicks.length) {
+    lines.push("Clicks:");
+    for (const label of uniqueClicks) lines.push(`- ${label}`);
+  }
+  const filled = (items || []).filter((i) => i.filled).length;
+  const total = (items || []).length;
+  if (total) {
+    lines.push(`Mandatory fields: ${filled}/${total} filled.`);
+    const missing = (items || []).filter((i) => !i.filled);
+    if (missing.length) lines.push(`Missing: ${missing.map((i) => i.label).join(", ")}`);
+  }
+  return { text: lines.join("\n"), fields, clicks: uniqueClicks };
 }
 
 /**
@@ -627,6 +742,7 @@ function findLatestExecutionForTicket(runs, { cardId = "", issueKey = "", queueC
       [
         answers.jiraKey,
         answers.JiraKey,
+        answers.formReference,
         card?.data?.jiraKey,
         run.queue_card,
         card?.title,
@@ -636,6 +752,7 @@ function findLatestExecutionForTicket(runs, { cardId = "", issueKey = "", queueC
     );
     let score = 0;
     if (key && String(resolved.jiraKey || "").toUpperCase() === key) score += 5;
+    if (key && String(answers.formReference || "").toUpperCase() === key) score += 5;
     if (key && generateFallbackJiraKey(run.run_id).toUpperCase() === key) score += 5;
     if (wantCard && runCard === wantCard) score += 3;
     if (!score) continue;
@@ -681,13 +798,43 @@ async function loadMandatorySummaryForTicket({
   }
 
   const summary = mandatorySummaryForCard(resolvedCardId, mergedAnswers, queueCards);
-  return { cardId: resolvedCardId, issueKey, ...summary };
+  let capture = null;
+  try {
+    const { findLatestCaptureActivity } = require("./capture-forward");
+    const card = (queueCards || []).find((c) => c.id === resolvedCardId);
+    capture = await findLatestCaptureActivity({
+      cardId: resolvedCardId,
+      issueKey,
+      queueCard: card?.title || "",
+    });
+  } catch (err) {
+    console.warn("[jira] capture activity", err?.message || err);
+  }
+  if (capture?.values && Object.keys(capture.values).length) {
+    mergedAnswers = { ...capture.values, ...mergedAnswers };
+  }
+  const withCapture = mandatorySummaryForCard(resolvedCardId, mergedAnswers, queueCards);
+  const activity = formatJiraActivityText({
+    items: withCapture.items,
+    extraValues: capture?.values || {},
+    clicks: capture?.clicks || [],
+  });
+  return {
+    cardId: resolvedCardId,
+    issueKey,
+    ...withCapture,
+    text: activity.text || withCapture.text || summary.text,
+    fields: activity.fields,
+    clicks: activity.clicks,
+    captureTicket: capture?.ticket || "",
+  };
 }
 
 module.exports = {
   generateDashboardData,
   defaultDashboardDir,
   buildAgentDashboard,
+  formatJiraActivityText,
   mandatorySummaryForCard,
   loadMandatorySummaryForTicket,
   findLatestExecutionForTicket,
@@ -700,4 +847,7 @@ module.exports = {
   resolveFormReference,
   loadMandatoryFieldIndex,
   mandatoryKeysForCard,
+  loadMandatoryStepIndex,
+  mandatoryMetaForCard,
+  filterMandatoryMistakes,
 };

@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>liveAct</title>
-    <link rel="stylesheet" href="styles.css" />
+    <title>LiveTrack</title>
+    <link rel="stylesheet" href="styles.css?v=wf28" />
   </head>
   <body>
     <div class="app chat-app" id="appRoot">
@@ -21,11 +21,33 @@
             <span class="side-nav-label">Jira</span>
             <span class="jira-badge side-badge hidden" id="jiraBadge">0</span>
           </button>
-          <button type="button" class="side-nav-btn" data-nav="ai" id="navAi" title="Ask liveAct" aria-expanded="false">
+          <button type="button" class="side-nav-btn" data-nav="mom" id="navMom" title="Minutes of Meeting" aria-expanded="false">
+            <span class="side-nav-ico" aria-hidden="true">M</span>
+            <span class="side-nav-label">MOM</span>
+            <span class="jira-badge side-badge hidden" id="momBadge">●</span>
+          </button>
+          <button type="button" class="side-nav-btn" data-nav="actions" id="navActions" title="Action items" aria-expanded="false">
+            <span class="side-nav-ico" aria-hidden="true">✓</span>
+            <span class="side-nav-label">Actions</span>
+            <span class="jira-badge side-badge hidden" id="actionsBadge">0</span>
+          </button>
+          <button type="button" class="side-nav-btn" data-nav="ai" id="navAi" title="Ask LiveTrack" aria-expanded="false">
             <span class="side-nav-ico" aria-hidden="true">AI</span>
             <span class="side-nav-label">AI</span>
           </button>
-          <button type="button" class="side-nav-btn" data-nav="dashboard" id="navDashboard" title="Executions dashboard">
+          <button type="button" class="side-nav-btn" data-nav="desk" id="navDesk" title="Desk" aria-expanded="false">
+            <span class="side-nav-ico" aria-hidden="true">D</span>
+            <span class="side-nav-label">Desk</span>
+          </button>
+          <button type="button" class="side-nav-btn" data-nav="feedback" id="navFeedback" title="Feedback to SMEs" aria-expanded="false">
+            <span class="side-nav-ico" aria-hidden="true">F</span>
+            <span class="side-nav-label">Feedback</span>
+          </button>
+          <button type="button" class="side-nav-btn" data-nav="analytics" id="navAnalytics" title="Analytics" aria-expanded="false">
+            <span class="side-nav-ico" aria-hidden="true">A</span>
+            <span class="side-nav-label">Stats</span>
+          </button>
+          <button type="button" class="side-nav-btn" data-nav="dashboard" id="navDashboard" title="Dash">
             <span class="side-nav-ico" aria-hidden="true">☰</span>
             <span class="side-nav-label">Dash</span>
           </button>
@@ -40,19 +62,27 @@
             <div class="brand">
               <span class="brand-mark">L</span>
               <div>
-                <h1>liveAct</h1>
+                <h1>LiveTrack</h1>
                 <p class="tagline" id="tagline">Live steps</p>
               </div>
             </div>
             <div class="header-actions">
-              <button id="btnMinimize" class="win-btn win-min" type="button" title="Minimize to tail">−</button>
-              <button id="btnQuit" class="win-btn win-close" type="button" title="Quit liveAct">×</button>
-              <div class="status-pill" id="extStatus">
+              <button type="button" class="status-pill rec-toggle" id="btnRecord" aria-pressed="false" title="Start recording">
                 <span class="dot"></span>
-                <span id="extStatusText">Offline</span>
-              </div>
+                <span id="recToggleText">Record</span>
+              </button>
+              <button id="btnMinimize" class="win-btn win-min" type="button" title="Minimize to tail">−</button>
+              <button id="btnQuit" class="win-btn win-close" type="button" title="Quit LiveTrack">×</button>
             </div>
           </header>
+          <div id="momRecBar" class="mom-rec-bar hidden" hidden>
+            <span class="dot rec" aria-hidden="true"></span>
+            <span id="momRecBarText">MOM recording</span>
+            <div class="mom-rec-bar-actions">
+              <button id="btnMomStopBar" class="btn danger tiny" type="button">Stop &amp; refine</button>
+              <button id="btnMomCancelBar" class="btn ghost tiny" type="button">Cancel</button>
+            </div>
+          </div>
 
           <div class="main-pane" id="mainPane">
             <div class="nav-pane" id="paneLive" data-pane="live">
@@ -98,6 +128,14 @@
                         <strong id="questTitle">—</strong>
                         <span class="quest-meta" id="questMeta"></span>
                       </div>
+                      <button
+                        id="btnVoiceGuide"
+                        class="btn ghost tiny js-voice-guide"
+                        type="button"
+                        title="Coaching starts when you open a card — tap Stop to mute"
+                      >
+                        Stop
+                      </button>
                     </div>
                     <ol id="stepList" class="step-list compact-fit" aria-live="polite"></ol>
                   </div>
@@ -143,8 +181,8 @@
                           id="btnGenAi"
                           class="genai-circle"
                           type="button"
-                          title="Ask liveAct about this card"
-                          aria-label="Ask AI about this card"
+                          title="Form fill for this card"
+                          aria-label="Form fill AI for this card"
                           aria-expanded="false"
                         >
                           AI
@@ -191,37 +229,346 @@
                 <div class="genai-shell-head">
                   <strong>Jira</strong>
                   <div class="controls" style="gap:6px">
+                    <select
+                      id="jiraMailIssueSelect"
+                      class="jira-mail-select"
+                      title="Story for the mail screenshot"
+                      aria-label="Story for mail screenshot"
+                    >
+                      <option value="">Pick a story</option>
+                    </select>
+                    <button
+                      id="btnJiraMailShot"
+                      class="btn primary tiny"
+                      type="button"
+                      title="Snip an email, send it to AI, then add the mail into this story and a comment"
+                    >
+                      Mail screenshot
+                    </button>
                     <button id="btnJiraRefresh" class="btn ghost tiny" type="button">Refresh</button>
                   </div>
                 </div>
                 <p class="muted tiny-copy jira-meta" id="jiraMeta">Not configured</p>
                 <div class="jira-list" id="jiraList" aria-live="polite"></div>
-                <div class="jira-recent" id="jiraRecent">
-                  <strong class="jira-recent-title">Recent actions</strong>
+                <section class="jira-recent collapsed" id="jiraRecent">
+                  <button type="button" class="jira-recent-toggle" id="btnJiraRecentToggle" aria-expanded="false">
+                    <strong>Recent actions</strong>
+                  </button>
                   <ul class="jira-recent-list" id="jiraRecentList"></ul>
+                </section>
+              </div>
+            </div>
+
+            <div class="nav-pane hidden" id="paneMom" data-pane="mom" aria-hidden="true">
+              <div class="mom-panel pane-fill">
+                <div class="mom-toolbar">
+                  <strong>Minutes of Meeting</strong>
+                  <div class="mom-actions">
+                    <button id="btnMomSpeakTest" class="btn ghost tiny js-speak-btn" type="button" title="Test meeting alert voice">Speak</button>
+                    <button id="btnMomStart" class="btn primary tiny" type="button" title="Start MOM for the selected meeting, or an ad-hoc session if none is in progress">Start MOM</button>
+                    <button id="btnMomStop" class="btn danger tiny" type="button" disabled>Stop &amp; refine</button>
+                    <button id="btnMomCancel" class="btn ghost tiny" type="button" disabled>Cancel</button>
+                  </div>
+                </div>
+                <div id="momDeviceHint" class="mom-device hidden" hidden>
+                  <p id="momDeviceMessage" class="muted tiny-copy"></p>
+                  <strong id="momDeviceCode"></strong>
+                </div>
+                <p class="muted tiny-copy mom-status" id="momStatus"></p>
+                <div class="mom-folds-stack" id="momFoldsStack">
+                  <section class="mom-fold collapsed" id="momMeetingsCard" data-mom-fold="meetings">
+                    <button type="button" class="mom-fold-toggle" id="btnMomMeetingsToggle" aria-expanded="false">
+                      <strong>Outlook meetings <span id="momMeetingsCount"></span></strong>
+                    </button>
+                    <div class="mom-fold-body">
+                      <div class="mom-list" id="momList" aria-live="polite"></div>
+                    </div>
+                  </section>
+                  <section class="mom-fold collapsed mom-live-card" id="momLiveCard" data-mom-fold="live">
+                    <button type="button" class="mom-fold-toggle" id="btnMomLiveToggle" aria-expanded="false">
+                      <strong>Live transcript</strong>
+                    </button>
+                    <div class="mom-fold-body">
+                      <p class="muted tiny-copy mom-speaker-hint">People in the call show as a conversation. Your lines sit on the right; everyone else is on the left.</p>
+                      <div id="momTranscript" class="mom-transcript mom-turns" aria-live="polite">Not recording.</div>
+                    </div>
+                  </section>
+                  <section class="mom-fold mom-minutes-card collapsed hidden" id="momMinutesCard" data-mom-fold="minutes" hidden>
+                    <button type="button" class="mom-fold-toggle" id="btnMomMinutesToggle" aria-expanded="false">
+                      <strong id="momMinutesTitle">Refined minutes</strong>
+                    </button>
+                    <div class="mom-fold-body">
+                      <div id="momMinutesToolbar" class="mom-minutes-toolbar">
+                        <button id="btnMomCopy" class="btn ghost tiny" type="button">Copy</button>
+                      </div>
+                      <div id="momMinutesApproveBar" class="mom-approve-bar hidden" hidden>
+                        <p class="muted tiny-copy" id="momApproveHint">Review the minutes. Approve to save them for today, or edit and refine again.</p>
+                        <div class="mom-actions">
+                          <button id="btnMomApprove" class="btn primary tiny" type="button">Approve minutes</button>
+                          <button id="btnMomEditRefine" class="btn ghost tiny" type="button">Edit &amp; refine</button>
+                          <button id="btnMomReRefine" class="btn ghost tiny hidden" type="button" hidden>Refine again</button>
+                        </div>
+                      </div>
+                      <textarea id="momMinutes" class="mom-transcript mom-minutes-editor" readonly rows="12" spellcheck="true" aria-label="Meeting minutes"></textarea>
+                    </div>
+                  </section>
+                  <section class="mom-fold collapsed" id="momPastCard" data-mom-fold="past">
+                    <button type="button" class="mom-fold-toggle" id="btnMomPastToggle" aria-expanded="false">
+                      <strong>Past MOMs <span id="momPastCount"></span></strong>
+                    </button>
+                    <div class="mom-fold-body">
+                      <p class="muted tiny-copy mom-past-hint">Saved minutes on this Mac. Tap a row to expand.</p>
+                      <div class="mom-list" id="momPastList" aria-live="polite"></div>
+                    </div>
+                  </section>
                 </div>
               </div>
             </div>
 
-            <div class="nav-pane hidden" id="paneAi" data-pane="ai" aria-hidden="true"></div>
-
-            <div class="genai-shell hidden" id="genaiShell" aria-hidden="true">
-              <div class="genai-panel" id="genaiPanel">
+            <div class="nav-pane hidden" id="paneActions" data-pane="actions" aria-hidden="true">
+              <div class="desk-panel pane-fill">
                 <div class="genai-shell-head">
-                  <strong>Ask liveAct</strong>
-                  <button id="btnCloseGenAi" class="btn ghost tiny" type="button">Close</button>
+                  <strong>Actions</strong>
                 </div>
-                <div class="chat-log empty" id="chatLog" aria-live="polite"></div>
+                <section class="desk-card desk-fold collapsed" id="actionsAddFold">
+                  <button type="button" class="desk-fold-toggle" id="btnActionsAddToggle" aria-expanded="false">
+                    <strong>Add note</strong>
+                  </button>
+                  <div class="desk-fold-body">
+                    <label class="desk-field">
+                      <span>Task</span>
+                      <input id="actionsTitle" type="text" placeholder="What do you need to finish?" autocomplete="off" />
+                    </label>
+                    <label class="desk-field">
+                      <span>Owner</span>
+                      <input id="actionsOwner" type="text" placeholder="Optional — you or someone else" autocomplete="off" />
+                    </label>
+                    <label class="desk-field">
+                      <span>Due</span>
+                      <select id="actionsDueKind">
+                        <option value="today">End of day</option>
+                        <option value="week" selected>End of week</option>
+                        <option value="none">No deadline</option>
+                      </select>
+                    </label>
+                    <div class="controls" style="gap:6px;flex-wrap:wrap;align-items:center">
+                      <button id="btnActionsAdd" class="btn primary tiny" type="button">Add</button>
+                    </div>
+                    <p class="desk-status muted tiny-copy" id="actionsStatus"></p>
+                  </div>
+                </section>
+                <section class="desk-card">
+                  <div class="actions-list-head">
+                    <h3>Open items</h3>
+                    <label class="actions-show-done">
+                      <input id="actionsShowDone" type="checkbox" />
+                      <span>Show done</span>
+                    </label>
+                  </div>
+                  <p class="muted tiny-copy hidden" id="actionsOverdueHint" hidden></p>
+                  <ul class="actions-list" id="actionsList"></ul>
+                </section>
+              </div>
+            </div>
+
+            <div class="nav-pane hidden" id="paneAi" data-pane="ai" aria-hidden="true">
+              <div class="genai-panel pane-fill" data-ai-mode="general">
+                <div id="voicePanel" class="voice-panel hidden" hidden>
+                  <label class="voice-field voice-check">
+                    <input id="voiceAutoSpeak" type="checkbox" />
+                    <span>Speak replies</span>
+                  </label>
+                  <label class="voice-field">
+                    <span>Voice</span>
+                    <select id="voiceSelect"></select>
+                  </label>
+                  <label class="voice-field">
+                    <span>Rate <em id="voiceRateValue">0.85</em></span>
+                    <input id="voiceRate" type="range" min="0.5" max="1.4" step="0.05" value="0.85" />
+                  </label>
+                  <label class="voice-field">
+                    <span>Pitch <em id="voicePitchValue">1.00</em></span>
+                    <input id="voicePitch" type="range" min="0.5" max="2" step="0.05" value="1" />
+                  </label>
+                  <p class="muted tiny-copy" id="voiceStatus">Tap Preview voice to hear LiveTrack speak from the app.</p>
+                  <button id="btnVoicePreview" class="btn ghost tiny" type="button">Preview voice</button>
+                </div>
+                <div class="chat-log empty" id="generalChatLog" aria-live="polite"></div>
                 <div class="prompt-composer">
-                  <div class="attach-row" id="attachRow"></div>
+                  <div class="attach-row" id="generalAttachRow"></div>
                   <div class="prompt-shell">
                     <textarea
-                      id="chatInput"
+                      id="generalChatInput"
                       class="chat-input"
                       rows="2"
-                      placeholder="Ask liveAct…"
+                      placeholder="Ask anything…"
                     ></textarea>
-                    <div class="prompt-corner">
+                    <div class="prompt-actions">
+                      <button
+                        class="mic-btn js-mic"
+                        type="button"
+                        title="Speak your prompt"
+                        aria-label="Microphone"
+                        aria-pressed="false"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path
+                            fill="currentColor"
+                            d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21H9v2h6v-2h-2v-2.08A7 7 0 0 0 19 11h-2z"
+                          />
+                        </svg>
+                      </button>
+                      <button
+                        id="generalBtnSnippet"
+                        class="icon-btn"
+                        type="button"
+                        title="Snip screenshot (select region)"
+                      >
+                        ✂
+                      </button>
+                      <button id="generalBtnAttach" class="icon-btn" type="button" title="Attach a file">
+                        📎
+                      </button>
+                      <button id="generalBtnSend" class="send-arrow" type="button" title="Send">➤</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="nav-pane hidden" id="paneDesk" data-pane="desk" aria-hidden="true">
+              <div class="desk-panel pane-fill">
+                <div class="genai-shell-head">
+                  <strong>Desk</strong>
+                </div>
+
+                <section class="desk-card desk-fold" id="deskExplainFold">
+                  <button type="button" class="desk-fold-toggle" id="btnDeskExplainToggle" aria-expanded="true">
+                    <strong>Explain this window</strong>
+                  </button>
+                  <div class="desk-fold-body">
+                    <button id="btnDeskExplain" class="btn primary tiny" type="button">Explain this window</button>
+                    <p class="desk-status muted tiny-copy" id="deskExplainStatus"></p>
+                    <div class="desk-explain-confidence" id="deskExplainConfidence" hidden></div>
+                    <div class="desk-briefing" id="deskBriefing" hidden></div>
+                  </div>
+                </section>
+
+                <section class="desk-card desk-fold" id="deskJiraFold">
+                  <button type="button" class="desk-fold-toggle" id="btnDeskJiraToggle" aria-expanded="true">
+                    <strong>Screenshot to Jira</strong>
+                  </button>
+                  <div class="desk-fold-body">
+                    <div class="controls" style="gap:6px;flex-wrap:wrap;align-items:center">
+                      <button id="btnDeskSnip" class="btn primary tiny" type="button">Capture</button>
+                      <button id="btnDeskClearSnip" class="btn ghost tiny" type="button" hidden>Clear</button>
+                      <button id="btnDeskAttach" class="btn ghost tiny" type="button">Attach files</button>
+                      <button id="btnDeskCreateIssue" class="btn primary tiny" type="button" disabled>Create ticket</button>
+                      <button id="btnDeskCloneIssue" class="btn ghost tiny" type="button" disabled>Clone ticket</button>
+                      <button id="btnDeskOpenIssue" class="btn ghost tiny" type="button" hidden>Open ticket</button>
+                    </div>
+                    <img id="deskSnipPreview" class="desk-snip-preview hidden" alt="Desktop screenshot" />
+                    <div id="deskAttachRow" class="attach-row"></div>
+                    <label class="desk-field">
+                      <span>Clone from</span>
+                      <select id="deskCloneSelect">
+                        <option value="">Pick a ticket to clone</option>
+                      </select>
+                    </label>
+                    <label class="desk-field">
+                      <span>Summary</span>
+                      <input id="deskIssueSummary" type="text" placeholder="AI writes this from the screenshot" autocomplete="off" />
+                    </label>
+                    <label class="desk-field">
+                      <span>Description</span>
+                      <textarea id="deskIssueDescription" rows="4" placeholder="AI writes this from the screenshot"></textarea>
+                    </label>
+                    <label class="desk-field">
+                      <span>Acceptance criteria</span>
+                      <textarea id="deskIssueAcceptance" rows="4" placeholder="What must be true for this ticket to be done. AI drafts this; you can edit."></textarea>
+                    </label>
+                    <p class="desk-status muted tiny-copy" id="deskSnipStatus"></p>
+                  </div>
+                </section>
+              </div>
+            </div>
+
+            <div class="nav-pane hidden" id="paneFeedback" data-pane="feedback" aria-hidden="true">
+              <div class="desk-panel pane-fill">
+                <div class="genai-shell-head">
+                  <strong>Feedback</strong>
+                </div>
+                <p class="muted tiny-copy">Send a note to SMEs and product owners. It shows up on Reviews.</p>
+                <section class="desk-card">
+                  <h3>New note</h3>
+                  <label class="desk-field">
+                    <span>Category</span>
+                    <select id="inboxCategory">
+                      <option value="process">Process</option>
+                      <option value="product">Product</option>
+                      <option value="bug">Bug</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </label>
+                  <label class="desk-field">
+                    <span>Title</span>
+                    <input id="inboxTitle" type="text" placeholder="What should they look at?" autocomplete="off" />
+                  </label>
+                  <label class="desk-field">
+                    <span>Details</span>
+                    <textarea id="inboxBody" rows="4" placeholder="Context, what you expected, what happened"></textarea>
+                  </label>
+                  <label class="desk-field">
+                    <span>Queue card</span>
+                    <input id="inboxCard" type="text" placeholder="Optional — filled if a card is open" autocomplete="off" />
+                  </label>
+                  <label class="desk-field">
+                    <span>LOB</span>
+                    <input id="inboxLob" type="text" placeholder="Optional" autocomplete="off" />
+                  </label>
+                  <div class="controls" style="gap:6px;flex-wrap:wrap;align-items:center">
+                    <button id="btnInboxSnip" class="btn ghost tiny" type="button">Capture screenshot</button>
+                    <button id="btnInboxClearSnip" class="btn ghost tiny" type="button" hidden>Clear</button>
+                    <button id="btnInboxSubmit" class="btn primary tiny" type="button">Send</button>
+                  </div>
+                  <img id="inboxSnipPreview" class="desk-snip-preview hidden" alt="Feedback screenshot" />
+                  <p class="desk-status muted tiny-copy" id="inboxStatus"></p>
+                </section>
+                <section class="desk-card">
+                  <h3>Your recent notes</h3>
+                  <ul class="jira-recent-list" id="inboxRecentList"></ul>
+                </section>
+              </div>
+            </div>
+
+            <div class="genai-shell hidden" id="genaiShell" aria-hidden="true">
+              <div class="genai-panel" id="genaiPanel" data-ai-mode="form">
+                <button id="btnCloseGenAi" class="genai-dismiss" type="button" aria-label="Close form AI">×</button>
+                <div class="chat-log empty" id="formChatLog" aria-live="polite"></div>
+                <div class="prompt-composer">
+                  <div class="attach-row" id="formAttachRow"></div>
+                  <div class="prompt-shell">
+                    <textarea
+                      id="formChatInput"
+                      class="chat-input"
+                      rows="2"
+                      placeholder="Ask how to fill this form…"
+                    ></textarea>
+                    <div class="prompt-actions">
+                      <button
+                        class="mic-btn js-mic"
+                        type="button"
+                        title="Speak your prompt"
+                        aria-label="Microphone"
+                        aria-pressed="false"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path
+                            fill="currentColor"
+                            d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21H9v2h6v-2h-2v-2.08A7 7 0 0 0 19 11h-2z"
+                          />
+                        </svg>
+                      </button>
                       <button
                         id="btnSnippet"
                         class="icon-btn"
@@ -240,14 +587,52 @@
               </div>
             </div>
 
+            <div class="nav-pane hidden" id="paneAnalytics" data-pane="analytics" aria-hidden="true">
+              <div class="analytics-panel pane-fill">
+                <div class="genai-shell-head">
+                  <strong>Analytics</strong>
+                  <div class="controls" style="gap:6px">
+                    <button id="btnAnRefresh" class="btn ghost tiny" type="button">Refresh</button>
+                  </div>
+                </div>
+                <div class="an-grain" role="tablist" aria-label="Time grain">
+                  <button type="button" class="an-grain-btn" data-grain="day">Day</button>
+                  <button type="button" class="an-grain-btn active" data-grain="month">Month</button>
+                  <button type="button" class="an-grain-btn" data-grain="year">Year</button>
+                </div>
+                <p class="muted tiny-copy" id="anMeta">Loading…</p>
+                <div class="an-kpis" id="anKpis"></div>
+                <div class="an-body" id="anBody"></div>
+              </div>
+            </div>
+
             <div class="nav-pane hidden" id="paneDashboard" data-pane="dashboard" aria-hidden="true">
               <div class="dash-panel pane-fill">
                 <div class="genai-shell-head">
-                  <strong>Executions</strong>
+                  <strong id="dashHeading">Dash</strong>
                   <div class="controls" style="gap:6px">
                     <button id="btnDashRefresh" class="btn ghost tiny" type="button">Refresh</button>
                   </div>
                 </div>
+                <section class="capture-live hidden" id="captureLivePanel" aria-live="polite">
+                  <div class="capture-live-head">
+                    <strong>Live recording</strong>
+                    <button type="button" class="dash-ticket" id="captureLiveTicket" hidden title="Click to copy REF">—</button>
+                    <span class="muted tiny-copy" id="captureLiveMeta">Waiting for field values…</span>
+                    <button
+                      type="button"
+                      class="win-btn win-min"
+                      id="btnCaptureLiveMin"
+                      title="Minimize live recording"
+                    >
+                      −
+                    </button>
+                  </div>
+                  <div id="captureLiveBody">
+                    <p class="capture-live-page" id="captureLivePage"></p>
+                    <dl class="capture-live-fields" id="captureLiveFields"></dl>
+                  </div>
+                </section>
                 <p class="muted tiny-copy" id="dashMeta">Loading…</p>
                 <div class="dash-list" id="dashList" aria-live="polite"></div>
               </div>
@@ -259,98 +644,162 @@
       <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true">
         <div class="modal-card">
           <h3>Settings</h3>
-          <p class="muted tiny-copy">Stored in Projects/coact/settings.json</p>
-          <label class="field">
-            <span>OpenAI API key</span>
-            <input id="openaiKeyInput" type="password" placeholder="sk-…" autocomplete="off" />
-          </label>
-          <label class="field">
-            <span>Model</span>
-            <input id="openaiModelInput" type="text" placeholder="gpt-4o-mini" />
-          </label>
-          <label class="field">
-            <span>Shared executions folder</span>
-            <div class="controls" style="gap:6px;align-items:center">
-              <input
-                id="executionsRootInput"
-                type="text"
-                placeholder="Default: &lt;project&gt;/executions"
-                style="flex:1;min-width:0"
-              />
-              <button id="btnPickExecutions" class="btn ghost tiny" type="button">Browse…</button>
+          <div class="settings-general settings-fold" id="settingsGeneral">
+            <button type="button" class="settings-fold-toggle" id="btnSettingsGeneralToggle" aria-expanded="true">
+              <strong>General</strong>
+            </button>
+            <div class="settings-fold-body">
+              <label class="field">
+                <span>OpenAI API key</span>
+                <input id="openaiKeyInput" type="password" placeholder="sk-…" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span>Model</span>
+                <input id="openaiModelInput" type="text" placeholder="gpt-4o-mini" />
+              </label>
+              <label class="field">
+                <span>Shared executions folder</span>
+                <div class="controls" style="gap:6px;align-items:center">
+                  <input
+                    id="executionsRootInput"
+                    type="text"
+                    placeholder="Default: &lt;project&gt;/executions"
+                    style="flex:1;min-width:0"
+                  />
+                  <button id="btnPickExecutions" class="btn ghost tiny" type="button">Browse…</button>
+                </div>
+              </label>
+              <div class="field">
+                <span>Browser extension</span>
+                <div class="controls" style="gap:6px;flex-wrap:wrap">
+                  <button id="btnInstallExtChrome" class="btn ghost tiny" type="button">Add to Chrome…</button>
+                  <button id="btnInstallExtEdge" class="btn ghost tiny" type="button">Add to Edge…</button>
+                </div>
+                <p class="muted tiny-copy" id="extInstallPath" style="margin-top:8px"></p>
+              </div>
             </div>
-            <p class="muted tiny-copy" style="margin-top:6px">
-              All agents should point at the same network/sync folder so supervisors can aggregate Excel.
-              Env override: <code>COACT_EXECUTIONS_ROOT</code>
-            </p>
-          </label>
-          <div class="field">
-            <span>Browser extension (Chrome / Edge)</span>
-            <p class="muted tiny-copy" id="extInstallHint" style="margin:6px 0 8px">
-              An .exe cannot auto-install browser extensions. Copy the bundled extension, then Load unpacked.
-            </p>
-            <div class="controls" style="gap:6px;flex-wrap:wrap">
-              <button id="btnInstallExtChrome" class="btn ghost tiny" type="button">Add to Chrome…</button>
-              <button id="btnInstallExtEdge" class="btn ghost tiny" type="button">Add to Edge…</button>
-            </div>
-            <p class="muted tiny-copy" id="extInstallPath" style="margin-top:8px"></p>
           </div>
-          <label class="field">
-            <span>Jira site URL</span>
-            <input
-              id="jiraBaseUrlInput"
-              type="url"
-              placeholder="https://your-domain.atlassian.net"
-              autocomplete="off"
-            />
-          </label>
-          <label class="field">
-            <span>Jira email</span>
-            <input id="jiraEmailInput" type="email" placeholder="you@company.com" autocomplete="off" />
-          </label>
-          <label class="field">
-            <span>Jira API token</span>
-            <input id="jiraTokenInput" type="password" placeholder="Atlassian API token" autocomplete="off" />
-            <p class="muted tiny-copy" style="margin-top:6px">
-              Create at id.atlassian.com → Security → API tokens
-            </p>
-          </label>
-          <label class="field">
-            <span>JQL filter</span>
-            <input
-              id="jiraJqlInput"
-              type="text"
-              placeholder="assignee = currentUser() ORDER BY updated ASC"
-              autocomplete="off"
-            />
-            <p class="muted tiny-copy" style="margin-top:6px">
-              Always limited to tickets assigned to you (<code>assignee = currentUser()</code>).
-              Include Done/Closed so liveAct can sync finished stories (open-only status filters are stripped).
-            </p>
-          </label>
-          <label class="field">
-            <span>Stale after (days)</span>
-            <input id="jiraStaleDaysInput" type="number" min="0.5" max="90" step="0.5" placeholder="2" />
-          </label>
-          <label class="field">
-            <span>Jira status → SOP stage map (JSON)</span>
-            <textarea
-              id="jiraStatusMapInput"
-              rows="5"
-              placeholder='{"To Do":"Step 1 – Intake","In Progress":"Step 2 – Working"}'
-              spellcheck="false"
-            ></textarea>
-          </label>
-          <label class="field">
-            <span>Queue card Jira key field</span>
-            <input id="jiraCardKeyFieldInput" type="text" placeholder="jiraKey" autocomplete="off" />
-            <p class="muted tiny-copy" style="margin-top:6px">
-              Matches card <code>data.&lt;field&gt;</code> or KEY-123 in the card title.
-            </p>
-          </label>
+          <div class="settings-voice settings-fold collapsed" id="settingsVoice">
+            <button type="button" class="settings-fold-toggle" id="btnSettingsVoiceToggle" aria-expanded="false">
+              <strong>Voice</strong>
+            </button>
+            <div class="settings-fold-body">
+              <label class="field">
+                <span>Voice</span>
+                <select id="settingsVoiceSelect">
+                  <option value="alloy">Alloy</option>
+                  <option value="echo">Echo</option>
+                  <option value="fable">Fable</option>
+                  <option value="onyx">Onyx</option>
+                  <option value="nova">Nova</option>
+                  <option value="shimmer">Shimmer</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Rate <em id="settingsVoiceRateValue">0.85</em></span>
+                <input id="settingsVoiceRate" type="range" min="0.5" max="1.4" step="0.05" value="0.85" />
+              </label>
+              <label class="field">
+                <span>Pitch <em id="settingsVoicePitchValue">1.00</em></span>
+                <input id="settingsVoicePitch" type="range" min="0.5" max="2" step="0.05" value="1" />
+              </label>
+              <div class="jira-test-row">
+                <button id="btnSettingsVoicePreview" class="btn ghost tiny" type="button">Preview voice</button>
+                <p class="muted tiny-copy jira-test-status" id="settingsVoiceStatus" aria-live="polite"></p>
+              </div>
+            </div>
+          </div>
+          <div class="settings-jira settings-fold collapsed" id="settingsJira">
+            <button type="button" class="settings-fold-toggle" id="btnSettingsJiraToggle" aria-expanded="false">
+              <strong>Jira</strong>
+            </button>
+            <div class="settings-fold-body">
+              <label class="field">
+                <span>Site URL</span>
+                <input
+                  id="jiraBaseUrlInput"
+                  type="url"
+                  placeholder="https://xxx.atlassian.net"
+                  autocomplete="off"
+                />
+              </label>
+              <label class="field">
+                <span>Email</span>
+                <input id="jiraEmailInput" type="email" placeholder="you@company.com" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span>API token</span>
+                <input
+                  id="jiraTokenInput"
+                  type="text"
+                  placeholder="ATATT… paste API token, not your password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  autocapitalize="off"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                />
+              </label>
+              <label class="field">
+                <span>Project key or name</span>
+                <input id="jiraProjectKeyInput" type="text" placeholder="MBA" autocomplete="off" />
+              </label>
+              <div class="jira-test-row">
+                <button id="btnJiraTestConnection" class="btn ghost" type="button">Test Jira connection</button>
+                <p class="muted tiny-copy jira-test-status" id="jiraTestStatus" aria-live="polite"></p>
+              </div>
+            </div>
+          </div>
+          <div class="settings-jira settings-fold collapsed" id="settingsOutlook">
+            <button type="button" class="settings-fold-toggle" id="btnSettingsOutlookToggle" aria-expanded="false">
+              <strong>Outlook (MOM)</strong>
+            </button>
+            <div class="settings-fold-body">
+              <label class="field">
+                <span>Your email</span>
+                <input
+                  id="outlookEmailInput"
+                  type="email"
+                  placeholder="you@outlook.com"
+                  autocomplete="username"
+                />
+              </label>
+              <label class="field">
+                <span>Greeting name</span>
+                <input id="momGreetingInput" type="text" placeholder="Harish" autocomplete="off" />
+              </label>
+              <div class="jira-test-row">
+                <div class="controls" style="gap:6px;flex-wrap:wrap">
+                  <button id="btnOutlookConnect" class="btn primary tiny" type="button">Connect Outlook</button>
+                  <button id="btnOutlookDisconnect" class="btn ghost tiny" type="button">Disconnect</button>
+                </div>
+                <p class="muted tiny-copy jira-test-status" id="outlookConnectStatus" aria-live="polite"></p>
+              </div>
+              <details class="outlook-advanced" id="outlookAdvanced">
+                <summary class="muted tiny-copy">Advanced (Azure IDs)</summary>
+                <label class="field">
+                  <span>Account type</span>
+                  <select id="outlookAccountKind">
+                    <option value="work">Work / school (company)</option>
+                    <option value="personal">Personal Outlook.com / Hotmail</option>
+                    <option value="custom">Custom tenant ID</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Azure tenant ID</span>
+                  <input id="outlookTenantInput" type="text" autocomplete="off" />
+                  <p class="muted tiny-copy" id="outlookTenantHint" style="margin-top:6px"></p>
+                </label>
+                <label class="field">
+                  <span>Application (client) ID</span>
+                  <input id="outlookClientIdInput" type="text" autocomplete="off" />
+                </label>
+              </details>
+            </div>
+          </div>
           <div class="controls">
             <button id="btnSettingsCancel" class="btn ghost" type="button">Close</button>
-            <button id="btnSettingsSave" class="btn primary" type="button">Save</button>
+            <button id="btnSettingsSave" class="btn primary" type="button">Save and close</button>
           </div>
         </div>
       </div>
@@ -372,7 +821,57 @@
           </div>
         </div>
       </div>
+
+      <div
+        id="voiceWaveViz"
+        class="voice-wave-viz hidden"
+        hidden
+        aria-hidden="true"
+        role="status"
+        aria-live="polite"
+      >
+        <div class="voice-wave-core" aria-hidden="true">
+          <span class="voice-wave-ripple" style="--i: 0"></span>
+          <span class="voice-wave-ripple" style="--i: 1"></span>
+          <span class="voice-wave-ripple" style="--i: 2"></span>
+          <span class="voice-wave-ripple" style="--i: 3"></span>
+          <div class="voice-wave-badge">
+            <svg class="voice-wave-icon" viewBox="0 0 48 48" width="32" height="32" focusable="false">
+              <circle cx="19.5" cy="15" r="7" fill="#fff" />
+              <path d="M8 36.5c2.2-7.2 6.6-11 11.5-11s9.3 3.8 11.5 11" fill="#fff" />
+              <path
+                d="M29 12.2c1.6 1.3 2.6 3.1 2.6 5.2s-1 3.9-2.6 5.2"
+                fill="none"
+                stroke="#fff"
+                stroke-width="2.3"
+                stroke-linecap="round"
+              />
+              <path
+                d="M32.4 9.6c2.4 1.9 3.8 4.6 3.8 7.8s-1.4 5.9-3.8 7.8"
+                fill="none"
+                stroke="#fff"
+                stroke-width="2.3"
+                stroke-linecap="round"
+                opacity="0.9"
+              />
+              <path
+                d="M35.8 7c3.1 2.5 5 6 5 10.4s-1.9 7.9-5 10.4"
+                fill="none"
+                stroke="#fff"
+                stroke-width="2.3"
+                stroke-linecap="round"
+                opacity="0.7"
+              />
+            </svg>
+          </div>
+        </div>
+        <p class="voice-wave-label">Speaking</p>
+        <button id="btnVoiceWaveStop" class="btn ghost tiny" type="button">Stop</button>
+      </div>
     </div>
+    <script src="voice.js"></script>
+    <script src="mom-speakers.js"></script>
+    <script src="mom-record.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
-    <title>liveAct — Supervisor dashboard</title>
+    <title>LiveTrack — Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -13,161 +13,731 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="./queue-studio/styles.css" />
+    <link rel="stylesheet" href="./assignments/styles.css" />
+    <link rel="stylesheet" href="./reviews/reviews.css" />
+    <link rel="stylesheet" href="./digest/digest.css" />
+    <link rel="stylesheet" href="./analytics/analytics.css" />
+    <link rel="stylesheet" href="./converter/styles.css" />
   </head>
-  <body>
+  <body id="dashShell">
     <div class="bg"></div>
     <header class="top">
       <div class="brand">
         <span class="mark">L</span>
         <div>
-          <h1>liveAct</h1>
-          <p class="sub">Supervisor dashboard</p>
+          <h1>LiveTrack</h1>
+          <p class="sub" id="pageSub">Supervisor dashboard</p>
         </div>
       </div>
       <nav class="dash-nav" aria-label="Dashboard sections">
-        <a href="./index.html" data-nav="executions" class="active">Executions</a>
-        <a href="./queue-studio/index.html" data-nav="studio">Queue studio</a>
-        <a href="./assignments/index.html" data-nav="assignments">Assignments</a>
-        <a href="./converter/index.html" data-nav="converter">SOP converter</a>
+        <a href="#/executions" data-nav="executions">Executions</a>
+        <a href="#/analytics" data-nav="analytics">Analytics</a>
+        <a href="#/digest" data-nav="digest">Weekly digest</a>
+        <a href="#/assignments" data-nav="assignments">Assignments</a>
+        <a href="#/reviews" data-nav="reviews">Reviews</a>
+        <a href="#/converter" data-nav="converter">SOP converter</a>
       </nav>
-      <div class="meta" id="metaLine">Loading Excel data…</div>
+      <div class="meta" id="metaLine">Loading…</div>
     </header>
 
-    <section class="filters" aria-label="Filters">
-      <label>
-        <span>From</span>
-        <input type="date" id="filterFrom" />
-      </label>
-      <label>
-        <span>To</span>
-        <input type="date" id="filterTo" />
-      </label>
-      <label>
-        <span>LOB</span>
-        <select id="filterLob">
-          <option value="">All</option>
-        </select>
-      </label>
-      <label>
-        <span>Queue card</span>
-        <select id="filterCard">
-          <option value="">All</option>
-        </select>
-      </label>
-      <label class="grow">
-        <span>User</span>
-        <input type="search" id="filterUser" placeholder="Search operator…" />
-      </label>
-      <button type="button" class="btn-filter" id="btnClearFilters">Clear</button>
-    </section>
-
-    <section class="totals" id="totals" aria-label="Totals"></section>
-
-    <main class="grid">
-      <section class="panel" aria-labelledby="lobTitle">
-        <h2 id="lobTitle">LOB wide</h2>
-        <p class="hint">Executions grouped by line of business</p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>LOB</th>
-                <th>Total</th>
-                <th>Auto</th>
-                <th>Manual</th>
-                <th>Mistakes</th>
-              </tr>
-            </thead>
-            <tbody id="lobBody"></tbody>
-          </table>
-        </div>
+    <div id="pane-executions" class="dash-pane" data-pane="executions">
+      <section class="filters" aria-label="Filters">
+        <label>
+          <span>From</span>
+          <input type="date" id="filterFrom" />
+        </label>
+        <label>
+          <span>To</span>
+          <input type="date" id="filterTo" />
+        </label>
+        <label>
+          <span>LOB</span>
+          <select id="filterLob">
+            <option value="">All</option>
+          </select>
+        </label>
+        <label>
+          <span>Queue card</span>
+          <select id="filterCard">
+            <option value="">All</option>
+          </select>
+        </label>
+        <label class="grow">
+          <span>User</span>
+          <input type="search" id="filterUser" placeholder="Search operator…" />
+        </label>
+        <button type="button" class="btn-filter" id="btnClearFilters">Clear</button>
       </section>
 
-      <section class="panel" aria-labelledby="userTitle">
-        <h2 id="userTitle">User wide</h2>
-        <p class="hint">Executions grouped by operator</p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>User</th>
-                <th>Total</th>
-                <th>Auto</th>
-                <th>Manual</th>
-                <th>Mistakes</th>
-              </tr>
-            </thead>
-            <tbody id="userBody"></tbody>
-          </table>
+      <section class="totals" id="totals" aria-label="Totals"></section>
+
+      <main class="grid">
+        <section class="panel" aria-labelledby="lobTitle">
+          <h2 id="lobTitle">LOB wide</h2>
+          <p class="hint">Executions grouped by line of business</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>LOB</th>
+                  <th>Total</th>
+                  <th>Auto</th>
+                  <th>Manual</th>
+                  <th>Mistakes</th>
+                </tr>
+              </thead>
+              <tbody id="lobBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="userTitle">
+          <h2 id="userTitle">User wide</h2>
+          <p class="hint">Executions grouped by operator</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Total</th>
+                  <th>Auto</th>
+                  <th>Manual</th>
+                  <th>Mistakes</th>
+                </tr>
+              </thead>
+              <tbody id="userBody"></tbody>
+            </table>
+          </div>
+          <div class="pager" id="userPager"></div>
+        </section>
+
+        <section class="panel wide capture-live-panel">
+          <button
+            type="button"
+            class="capture-live-toggle"
+            id="captureLiveToggle"
+            aria-expanded="false"
+            aria-controls="captureLiveBody"
+          >
+            <span class="capture-live-toggle-label">Live tracking values</span>
+            <span class="capture-live-toggle-meta" id="captureLiveMeta">Click to open</span>
+          </button>
+          <div id="captureLiveBody" hidden>
+            <p class="hint" id="captureLiveHint">One JSON object per capture-agent transaction</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>User</th>
+                    <th>Ticket</th>
+                    <th>JSON</th>
+                  </tr>
+                </thead>
+                <tbody id="captureTxnBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel wide" aria-labelledby="cardTitle">
+          <h2 id="cardTitle">Queue card wide</h2>
+          <p class="hint">Executions grouped by queue card</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Queue card</th>
+                  <th>LOB</th>
+                  <th>Total</th>
+                  <th>Auto</th>
+                  <th>Manual</th>
+                  <th>Mistakes</th>
+                </tr>
+              </thead>
+              <tbody id="cardBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel wide" aria-labelledby="mistakeTitle">
+          <h2 id="mistakeTitle">Wrong fills (tracking)</h2>
+          <p class="hint">One line per execution · mandatory (key) steps only</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>User</th>
+                  <th>LOB</th>
+                  <th>Queue card</th>
+                  <th>Count</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody id="mistakeBody"></tbody>
+            </table>
+          </div>
+          <div class="pager" id="mistakePager"></div>
+        </section>
+
+        <section class="panel wide" aria-labelledby="recentTitle">
+          <h2 id="recentTitle">Recent executions</h2>
+          <p class="hint">Runs in the loaded date window</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>LOB</th>
+                  <th>Queue card</th>
+                  <th>User</th>
+                  <th>Mode</th>
+                  <th>Mistakes</th>
+                </tr>
+              </thead>
+              <tbody id="recentBody"></tbody>
+            </table>
+          </div>
+          <div class="pager" id="recentPager"></div>
+        </section>
+      </main>
+    </div>
+
+    <div id="pane-analytics" class="dash-pane" data-pane="analytics" hidden>
+      <section class="filters" aria-label="Analytics filters">
+        <div class="grain-tabs" role="tablist" aria-label="Time grain">
+          <button type="button" class="grain-btn" data-grain="day">Day</button>
+          <button type="button" class="grain-btn active" data-grain="month">Month</button>
+          <button type="button" class="grain-btn" data-grain="year">Year</button>
         </div>
-        <div class="pager" id="userPager"></div>
+        <label>
+          <span>From</span>
+          <input type="date" id="anFrom" />
+        </label>
+        <label>
+          <span>To</span>
+          <input type="date" id="anTo" />
+        </label>
+        <label>
+          <span>LOB</span>
+          <select id="anLob">
+            <option value="">All</option>
+          </select>
+        </label>
+        <label>
+          <span>Queue card</span>
+          <select id="anCard">
+            <option value="">All</option>
+          </select>
+        </label>
+        <label class="grow">
+          <span>User</span>
+          <input type="search" id="anUser" placeholder="Search operator…" />
+        </label>
+        <button type="button" class="btn-filter" id="anRefresh">Apply</button>
+      </section>
+      <section class="totals" id="anTotals" aria-label="Analytics totals"></section>
+      <main class="grid analytics-grid" id="anRoot">
+        <p class="hint" style="grid-column:1/-1">Loading analytics…</p>
+      </main>
+    </div>
+
+    <div id="pane-digest" class="dash-pane" data-pane="digest" hidden>
+      <section class="filters" aria-label="Digest period">
+        <label>
+          <span>Week</span>
+          <select id="digestSelect">
+            <option value="">Loading…</option>
+          </select>
+        </label>
+      </section>
+      <section class="totals" id="digestTotals" aria-label="Digest totals"></section>
+      <main class="grid">
+        <section class="panel wide">
+          <h2>Cards this week</h2>
+          <p class="hint" id="digestPeriodHint">Weekly process digest</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Queue card</th>
+                  <th>Executions</th>
+                  <th>Avg time</th>
+                  <th>Adherent</th>
+                  <th>Jira done</th>
+                  <th>Last run</th>
+                </tr>
+              </thead>
+              <tbody id="digestCardsBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="pane-studio" class="dash-pane" data-pane="studio" hidden>
+      <p class="studio-lead">
+        <strong>Edit</strong> any existing queue card, or
+        <strong>create / clone</strong> a new one. Recorded processes from LiveTrack
+        open here so you can edit SOP steps and <strong>Create &amp; publish</strong>
+        into the queue.
+      </p>
+
+      <div class="mode-bar" role="tablist" aria-label="Studio mode">
+        <button type="button" class="mode-btn active" data-mode="edit" id="modeEdit">Edit existing</button>
+        <button type="button" class="mode-btn" data-mode="create" id="modeCreate">Create / clone</button>
+      </div>
+
+      <main class="studio-grid">
+        <section class="panel">
+          <h2>1. Pick card</h2>
+          <p class="hint" id="pickHint">Load a card to edit every field below</p>
+          <label>
+            <span>Queue cards</span>
+            <select id="sourceCard">
+              <option value="">Loading…</option>
+            </select>
+          </label>
+          <div class="actions-row">
+            <button type="button" class="btn-filter" id="btnLoadSource">Load card</button>
+            <button type="button" class="btn-ghost" id="btnRefreshCards">Refresh list</button>
+          </div>
+          <p class="status" id="sourceStatus"></p>
+          <div class="source-meta" id="sourceMeta" hidden></div>
+          <p class="edit-banner" id="editBanner" hidden></p>
+        </section>
+
+        <section class="panel">
+          <h2>2. Card settings</h2>
+          <p class="hint">LOB, id, title, SOP, status, URLs, assignees</p>
+          <div class="form-grid">
+            <label>
+              <span>LOB</span>
+              <input id="cardLob" placeholder="TCOO" />
+            </label>
+            <label>
+              <span>Card id</span>
+              <input id="cardId" placeholder="acme-supplies" />
+            </label>
+            <label class="span-2">
+              <span>Title</span>
+              <input id="cardTitle" placeholder="Acme Supplies — vendor onboarding" />
+            </label>
+            <label>
+              <span>SOP</span>
+              <select id="cardSopId">
+                <option value="">Loading SOPs…</option>
+              </select>
+            </label>
+            <label>
+              <span>Status</span>
+              <select id="cardStatus">
+                <option value="queued">queued</option>
+                <option value="in_progress">in_progress</option>
+                <option value="done">done</option>
+              </select>
+            </label>
+            <label class="span-2">
+              <span>Form URL</span>
+              <input id="cardFormUrl" placeholder="http://127.0.0.1:4173/sites/…" />
+            </label>
+            <label class="span-2">
+              <span>PDF path (optional)</span>
+              <input id="cardPdfPath" placeholder="/path/to/form.pdf" />
+            </label>
+            <label class="span-2">
+              <span>Form match (comma URL bits)</span>
+              <input id="cardFormMatch" placeholder="planstream, apply" />
+            </label>
+            <label class="span-2">
+              <span>Assignees (OS usernames, comma)</span>
+              <input id="cardAssignees" placeholder="alice, bob" />
+            </label>
+          </div>
+        </section>
+
+        <section class="panel wide">
+          <h2>3. SOP steps</h2>
+          <p class="hint">
+            Edit clicks / fills / checks. Choose how to save the SOP when you save the card.
+          </p>
+          <div class="form-grid sop-meta-grid">
+            <label>
+              <span>SOP id (for new copy)</span>
+              <input id="newSopId" placeholder="auto from card id" />
+            </label>
+            <label>
+              <span>SOP name</span>
+              <input id="newSopName" placeholder="Optional display name" />
+            </label>
+            <label class="span-2">
+              <span>When saving card</span>
+              <select id="sopSaveMode">
+                <option value="update">Update this SOP in place (steps + mandatory)</option>
+                <option value="new">Save as a new SOP copy</option>
+                <option value="none">Leave SOP file unchanged</option>
+              </select>
+            </label>
+          </div>
+          <div class="data-toolbar">
+            <button type="button" class="btn-ghost" id="btnLoadSop">Reload SOP steps</button>
+            <button type="button" class="btn-ghost" id="btnAddClick">+ Click</button>
+            <button type="button" class="btn-ghost" id="btnAddFill">+ Fill</button>
+            <button type="button" class="btn-ghost" id="btnAddCheck">+ Check</button>
+          </div>
+          <div class="steps-list" id="stepsList"></div>
+          <p class="status" id="sopStatus"></p>
+        </section>
+
+        <section class="panel wide">
+          <h2>4. Case data (<code>data.json</code>)</h2>
+          <p class="hint">Keys should match SOP <code>valueFrom</code> fields</p>
+          <div class="data-toolbar">
+            <button type="button" class="btn-ghost" id="btnPrettyJson">Format JSON</button>
+            <button type="button" class="btn-ghost" id="btnAddDataField">+ Field</button>
+            <button type="button" class="btn-ghost" id="btnClearData">Clear</button>
+          </div>
+          <textarea id="dataJson" spellcheck="false" placeholder='{"fullName": "…", "email": "…"}'></textarea>
+          <div class="field-editor" id="fieldEditor" aria-label="Field editors"></div>
+          <div class="actions-row save-row">
+            <button type="button" class="btn-primary" id="btnSavePublish" hidden>Save &amp; publish</button>
+            <button type="button" class="btn-primary" id="btnCreatePublish">Create &amp; publish</button>
+            <button type="button" class="btn-ghost" id="btnSave" hidden>Save only</button>
+            <button type="button" class="btn-ghost" id="btnCreate" hidden>Create only</button>
+            <button type="button" class="btn-ghost" id="btnSaveAsCopy" hidden>Save as new copy</button>
+            <button type="button" class="btn-danger" id="btnDelete" hidden>Delete card</button>
+          </div>
+          <p class="status" id="createStatus"></p>
+        </section>
+
+        <section class="panel wide">
+          <h2>Cards on disk</h2>
+          <p class="hint" id="queueRootHint">Loading…</p>
+          <div class="actions-row" id="cardsFilterBar" hidden>
+            <button type="button" class="btn-ghost" id="btnShowAllCards">Show all cards</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>LOB</th>
+                  <th>Id</th>
+                  <th>Title</th>
+                  <th>SOP</th>
+                  <th>Status</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="cardsBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="pane-assignments" class="dash-pane" data-pane="assignments" hidden>
+      <p class="studio-lead">
+        Assign OS usernames to a <strong>LOB</strong> and/or a <strong>queue card</strong>.
+        If you are listed on any card, LiveTrack shows <strong>only those cards</strong>.
+        Users with no card assignments still see unassigned cards (empty list = open).
+      </p>
+
+      <main class="studio-grid">
+        <section class="panel">
+          <h2>1. Assign LOB</h2>
+          <p class="hint">Users who can open this line of business</p>
+          <label>
+            <span>LOB</span>
+            <select id="lobSelect">
+              <option value="">Loading…</option>
+            </select>
+          </label>
+          <label>
+            <span>Users (comma-separated OS usernames)</span>
+            <input id="lobUsers" placeholder="alice, bob" list="userSuggestions" />
+          </label>
+          <div class="chip-row" id="knownUsersLob"></div>
+          <div class="actions-row">
+            <button type="button" class="btn-primary" id="btnSaveLobPublish">Save &amp; publish</button>
+            <button type="button" class="btn-ghost" id="btnSaveLob">Save only</button>
+            <button type="button" class="btn-ghost" id="btnClearLob">Clear (everyone)</button>
+          </div>
+          <p class="status" id="lobStatus"></p>
+        </section>
+
+        <section class="panel">
+          <h2>2. Assign queue card</h2>
+          <p class="hint">Users who can see this specific card (within LOB access)</p>
+          <label>
+            <span>Queue card</span>
+            <select id="cardSelect">
+              <option value="">Loading…</option>
+            </select>
+          </label>
+          <label>
+            <span>Users (comma-separated OS usernames)</span>
+            <input id="cardUsers" placeholder="alice" list="userSuggestions" />
+          </label>
+          <div class="chip-row" id="knownUsersCard"></div>
+          <div class="actions-row">
+            <button type="button" class="btn-primary" id="btnSaveCardPublish">Save &amp; publish</button>
+            <button type="button" class="btn-ghost" id="btnSaveCard">Save only</button>
+            <button type="button" class="btn-ghost" id="btnClearCard">Clear (everyone)</button>
+          </div>
+          <p class="status" id="assignCardStatus"></p>
+        </section>
+
+        <section class="panel wide">
+          <h2>Current assignments</h2>
+          <p class="hint" id="assignHint">Loading…</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Scope</th>
+                  <th>Name</th>
+                  <th>Assignees</th>
+                </tr>
+              </thead>
+              <tbody id="assignBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+      <datalist id="userSuggestions"></datalist>
+    </div>
+
+    <div id="pane-approvals" class="dash-pane" data-pane="approvals" hidden>
+      <section class="filters" aria-label="Acting as SME">
+        <label>
+          <span>Acting as (SME)</span>
+          <input id="approvalSme" type="text" placeholder="your OS username" />
+        </label>
+        <button type="button" class="btn-filter" id="btnRefreshApprovals">Refresh</button>
+      </section>
+      <p class="hint" style="margin: 0 24px 12px">
+        Recorded processes with no matching queue card wait here. Edit in Queue studio, then approve to publish the SOP and add the card to LiveTrack.
+      </p>
+      <main class="grid">
+        <div class="panel wide">
+          <h2>Queue cards waiting for SME approval</h2>
+          <p class="hint" id="approvalsHint">Drafts stay hidden from operators until you approve.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Proposed card</th>
+                  <th>Source URL</th>
+                  <th>Steps</th>
+                  <th>Recorded</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="approvalsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div id="pane-reviews" class="dash-pane" data-pane="reviews" hidden>
+      <section class="filters" aria-label="Acting as">
+        <label>
+          <span>Acting as (SME)</span>
+          <input id="actingUser" type="text" placeholder="your OS username" />
+        </label>
+        <button type="button" class="btn-filter" id="btnRunIntel">Re-run Process Intelligence</button>
+        <button type="button" class="btn-filter" id="btnBuildDataset">Build dataset from last 30 days</button>
       </section>
 
-      <section class="panel wide" aria-labelledby="cardTitle">
-        <h2 id="cardTitle">Queue card wide</h2>
-        <p class="hint">Executions grouped by queue card</p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Queue card</th>
-                <th>LOB</th>
-                <th>Total</th>
-                <th>Auto</th>
-                <th>Manual</th>
-                <th>Mistakes</th>
-              </tr>
-            </thead>
-            <tbody id="cardBody"></tbody>
-          </table>
-        </div>
-      </section>
+      <section class="totals" id="aiTotals" aria-label="AI acceptance"></section>
 
-      <section class="panel wide" aria-labelledby="mistakeTitle">
-        <h2 id="mistakeTitle">Wrong fills (tracking)</h2>
-        <p class="hint">One line per execution · mandatory (key) steps only</p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>User</th>
-                <th>LOB</th>
-                <th>Queue card</th>
-                <th>Count</th>
-                <th>Details</th>
-              </tr>
-            </thead>
-            <tbody id="mistakeBody"></tbody>
-          </table>
+      <main class="grid">
+        <div class="panel wide">
+          <h2>Operator feedback</h2>
+          <p class="hint">Notes from the LiveTrack sidebar. Acknowledge or mark done; optional reply is stored with your SME name.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>User</th>
+                  <th>Category</th>
+                  <th>Title</th>
+                  <th>Card</th>
+                  <th>Status</th>
+                  <th>Reply</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="inboxBody"></tbody>
+            </table>
+          </div>
         </div>
-        <div class="pager" id="mistakePager"></div>
-      </section>
 
-      <section class="panel wide" aria-labelledby="recentTitle">
-        <h2 id="recentTitle">Recent executions</h2>
-        <p class="hint">Runs in the loaded date window</p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>LOB</th>
-                <th>Queue card</th>
-                <th>User</th>
-                <th>Mode</th>
-                <th>Mistakes</th>
-              </tr>
-            </thead>
-            <tbody id="recentBody"></tbody>
-          </table>
+        <div class="panel wide">
+          <h2>Pending SOP drafts</h2>
+          <p class="hint">Queue cards waiting for SME review show up as draft SOP proposals until published.</p>
         </div>
-        <div class="pager" id="recentPager"></div>
-      </section>
-    </main>
+
+        <div class="panel wide">
+          <h2>Datasets (Learning Pipeline)</h2>
+          <p class="hint">Versioned snapshots of mistake-free executions + accepted/rejected agent proposals. A version isn't usable until approved.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Version</th>
+                  <th>Created</th>
+                  <th>Examples</th>
+                  <th>Positive / Negative</th>
+                  <th>Status</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="datasetsBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel wide">
+          <h2>Failure Prediction — at-risk cards</h2>
+          <p class="hint">Historical mistake rate per queue card, over the last 30 days.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Card</th>
+                  <th>Risk</th>
+                  <th>Mistake rate</th>
+                  <th>Sample</th>
+                  <th>Frequent mistakes</th>
+                </tr>
+              </thead>
+              <tbody id="riskBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel wide">
+          <h2>Process Optimization suggestions</h2>
+          <p class="hint">Drift + pattern findings turned into SOP-edit ideas. Review in Queue studio — nothing is auto-applied.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Card</th>
+                  <th>Kind</th>
+                  <th>Suggestion</th>
+                </tr>
+              </thead>
+              <tbody id="suggestionsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div id="pane-converter" class="dash-pane" data-pane="converter" hidden>
+      <div class="cv-wrap">
+        <header class="cv-brand">
+          <div>
+            <h2>SOP Builder</h2>
+            <p>
+              Upload a PPT / PDF / DOCX that lists your process steps. We convert them into
+              SOP JSON and save into <code>shared/sops/</code> for the desktop tool.
+            </p>
+          </div>
+          <span class="cv-badge">stores → shared/sops</span>
+        </header>
+
+        <div class="cv-grid">
+          <section class="panel">
+            <h2>1. Source document</h2>
+            <label class="drop" id="dropZone">
+              <strong>Drop PPTX, PDF, or DOCX here</strong>
+              or click to choose a file
+              <input id="fileInput" type="file" accept=".pptx,.ppt,.pdf,.docx,.doc,.txt" />
+            </label>
+            <p class="hint" id="fileName">No file selected</p>
+
+            <div class="cv-meta">
+              <label>
+                SOP id
+                <input id="sopId" placeholder="vendor-onboarding" />
+              </label>
+              <label>
+                SOP name
+                <input id="sopName" placeholder="Vendor onboarding form" />
+              </label>
+              <label>
+                Form URL (optional)
+                <input id="formUrl" placeholder="https://…" />
+              </label>
+              <label>
+                Description
+                <input id="sopDesc" placeholder="Short description" />
+              </label>
+            </div>
+
+            <div class="field">
+              <label>
+                Extracted text
+                <textarea
+                  id="rawText"
+                  placeholder="Text from the document appears here. You can edit before converting."
+                ></textarea>
+              </label>
+            </div>
+
+            <div class="actions">
+              <button type="button" class="primary" id="btnConvert" disabled>Convert to steps</button>
+              <button type="button" class="ghost" id="btnClear">Clear</button>
+            </div>
+            <p class="status" id="extractStatus"></p>
+          </section>
+
+          <section class="panel">
+            <h2>2. SOP steps</h2>
+            <p class="hint">
+              Edit actions, labels, selectors, and valueFrom keys. Fill steps need a
+              <code>valueFrom</code> (or literal value) so the tool can supply data.
+            </p>
+            <div class="steps" id="converterStepsList"></div>
+            <div class="actions">
+              <button type="button" id="btnAddStep">Add step</button>
+              <button type="button" class="primary" id="converterBtnSave" disabled>Save to shared/sops</button>
+              <button type="button" class="ghost" id="btnDownload" disabled>Download JSON</button>
+            </div>
+            <p class="status" id="saveStatus"></p>
+            <pre class="json-out" id="jsonPreview">{}</pre>
+          </section>
+        </div>
+
+        <section class="panel">
+          <h2>Existing SOPs on disk</h2>
+          <div class="existing" id="existingList"></div>
+          <p class="hint">
+            After saving, LiveTrack reloads SOPs automatically (or click Refresh in the app).
+            Point a queue card’s <code>sopId</code> at the new id to run it.
+          </p>
+        </section>
+      </div>
+    </div>
 
     <script src="data.js"></script>
     <script src="nav.js"></script>
     <script src="app.js"></script>
+    <script src="./analytics/app.js"></script>
+    <script src="./digest/app.js"></script>
+    <script src="./queue-studio/app.js"></script>
+    <script src="./approvals/app.js"></script>
+    <script src="./assignments/app.js"></script>
+    <script src="./reviews/app.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
+    <script src="./converter/app.js"></script>
   </body>
 </html>

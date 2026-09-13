@@ -12,16 +12,16 @@ function renderStatus(res) {
     return;
   }
   if (res?.connected) {
-    el.textContent = "Connected to liveAct.";
+    el.textContent = "Connected to LiveTrack.";
     el.className = "ok";
   } else if (res?.connecting || res?.waitingForApp) {
-    el.textContent = "Waiting for liveAct… will connect automatically when the app opens.";
+    el.textContent = "Waiting for LiveTrack… will connect automatically when the app opens.";
     el.className = "wait";
   } else if (res?.lastError) {
     el.textContent = res.lastError;
     el.className = "bad";
   } else {
-    el.textContent = "Waiting for liveAct… will connect automatically when the app opens.";
+    el.textContent = "Waiting for LiveTrack… will connect automatically when the app opens.";
     el.className = "wait";
   }
   renderJira(res?.jira, Boolean(res?.connected));
@@ -33,12 +33,12 @@ function renderJira(snapshot, connected) {
   if (!meta || !list) return;
 
   if (!connected) {
-    meta.textContent = "Connect to liveAct to see Jira stories.";
+    meta.textContent = "Connect to LiveTrack to see Jira stories.";
     list.innerHTML = "";
     return;
   }
   if (!snapshot) {
-    meta.textContent = "No Jira data yet — open liveAct Settings to configure Jira.";
+    meta.textContent = "No Jira data yet — open LiveTrack Settings to configure Jira.";
     list.innerHTML = "";
     return;
   }
@@ -115,6 +115,16 @@ document.getElementById("reconnect").addEventListener("click", () => {
     setTimeout(refresh, 700);
   });
 });
+
+const profileInput = document.getElementById("profileLabel");
+if (profileInput) {
+  chrome.storage.local.get(["profileLabel"], (stored) => {
+    profileInput.value = stored?.profileLabel || "";
+  });
+  profileInput.addEventListener("change", () => {
+    chrome.storage.local.set({ profileLabel: profileInput.value.trim() });
+  });
+}
 
 refresh();
 setInterval(refresh, 2000);

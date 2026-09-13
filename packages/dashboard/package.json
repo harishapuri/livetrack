@@ -2,7 +2,7 @@
   "name": "@coact/dashboard",
   "version": "0.1.0",
   "private": true,
-  "description": "Supervisor dashboard, queue studio, assignments, and SOP converter",
+  "description": "Unified LiveTrack supervisor dashboard",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

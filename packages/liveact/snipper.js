@@ -3,7 +3,7 @@
  * macOS uses native screencapture -i; other platforms use an Electron overlay.
  */
 
-const { BrowserWindow, desktopCapturer, screen, ipcMain } = require("electron");
+const { app, BrowserWindow, desktopCapturer, nativeImage, screen, ipcMain, systemPreferences, shell } = require("electron");
 const { execFile } = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -38,14 +38,78 @@ function cleanupTempFrames() {
   tempFrameFiles.length = 0;
 }
 
+function isUnpackagedElectron() {
+  try {
+    return !app.isPackaged;
+  } catch {
+    return true;
+  }
+}
+
+const SCREEN_RECORDING_SETTINGS_URL =
+  "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+
+// npm start → Electron.app (no LiveTrack row in Screen Recording). Packaged → LiveTrack.app.
+const SCREEN_RECORDING_HELP = isUnpackagedElectron()
+  ? "macOS is hiding other apps behind your wallpaper. Open System Settings → Privacy & Security → Screen Recording, turn on Electron (npm start does not create a LiveTrack row). If Electron is not listed, also enable Terminal. Then fully quit Electron and run npm start again."
+  : "macOS is hiding other apps behind your wallpaper. Open System Settings → Privacy & Security → Screen Recording, turn on LiveTrack, then fully quit this app and open it again.";
+
+async function openMacScreenRecordingSettings() {
+  try {
+    await shell.openExternal(SCREEN_RECORDING_SETTINGS_URL);
+  } catch {
+    /* ignore */
+  }
+}
+
+async function macScreenRecordingStatus() {
+  try {
+    return systemPreferences.getMediaAccessStatus("screen") || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function ensureMacScreenRecording() {
+  if (process.platform !== "darwin") return { ok: true };
+  let status = await macScreenRecordingStatus();
+  if (status === "granted") return { ok: true, status };
+
+  // Triggers the system prompt. Other apps look like wallpaper until this is granted
+  // and the app is restarted.
+  try {
+    await desktopCapturer.getSources({
+      types: ["screen"],
+      thumbnailSize: { width: 2, height: 2 },
+    });
+  } catch {
+    /* prompt may still have been shown */
+  }
+  await delay(200);
+  status = await macScreenRecordingStatus();
+  if (status === "granted") return { ok: true, status };
+  if (status === "denied" || status === "restricted") {
+    await openMacScreenRecordingSettings();
+    return { ok: false, error: SCREEN_RECORDING_HELP };
+  }
+  // not-determined / unknown: do not snip — that PNG is wallpaper, not Chrome/Jira.
+  await openMacScreenRecordingSettings();
+  return { ok: false, error: SCREEN_RECORDING_HELP };
+}
+
+function screencaptureBin() {
+  return fs.existsSync("/usr/sbin/screencapture") ? "/usr/sbin/screencapture" : "screencapture";
+}
+
 async function snipNativeMac() {
   const outPath = snipOutPath();
   try {
-    await execFileAsync("screencapture", ["-i", "-x", outPath], {
+    // Same crosshair as ⌘⇧4 (`screencapture -i -s`). Do not fake the hotkey
+    // with System Events — that often "succeeds" with no UI, then hangs 120s.
+    await execFileAsync(screencaptureBin(), ["-i", "-s", "-x", outPath], {
       timeout: 120000,
     });
   } catch (err) {
-    // Exit code 1 = user cancelled (Esc) or no selection
     if (err?.code === 1 || err?.killed) {
       return { ok: false, cancelled: true };
     }
@@ -53,7 +117,7 @@ async function snipNativeMac() {
       ok: false,
       error:
         err?.message ||
-        "Screenshot failed. Grant Screen Recording permission to liveAct in System Settings.",
+        "Screenshot failed. Grant Screen Recording to LiveTrack, then quit and reopen this app.",
     };
   }
 
@@ -115,7 +179,8 @@ function createOverlayWindow(display, framePath) {
     width,
     height,
     frame: false,
-    transparent: true,
+    // Transparent Mac windows swallow clicks; keep the snipper opaque.
+    transparent: false,
     resizable: false,
     movable: false,
     maximizable: false,
@@ -126,17 +191,16 @@ function createOverlayWindow(display, framePath) {
     hasShadow: false,
     focusable: true,
     show: false,
-    backgroundColor: "#00000000",
+    backgroundColor: "#111111",
     webPreferences: {
       preload: path.join(__dirname, "snipper-preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      // Allow loading the frozen frame from a temp file path
       webSecurity: false,
     },
   });
 
-  win.setAlwaysOnTop(true, "screen-saver");
+  win.setAlwaysOnTop(true, "screen-saver", 1);
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   win.setIgnoreMouseEvents(false);
 
@@ -146,6 +210,13 @@ function createOverlayWindow(display, framePath) {
       displayId: String(display.id),
       frame: encodeURIComponent(pathToFileURL(framePath).href),
     },
+  });
+  win.webContents.once("did-finish-load", () => {
+    if (!win.isDestroyed()) {
+      win.show();
+      win.moveTop();
+      win.focus();
+    }
   });
 
   return win;
@@ -218,10 +289,6 @@ function snipWithOverlay() {
         tempFrameFiles.push(framePath);
         const win = createOverlayWindow(display, framePath);
         overlayWindows.push(win);
-        win.once("ready-to-show", () => {
-          win.show();
-          win.focus();
-        });
       }
     } catch (err) {
       finish({ ok: false, error: err?.message || String(err) });
@@ -229,25 +296,141 @@ function snipWithOverlay() {
   });
 }
 
+function joinNativeImages(images) {
+  const usable = (images || []).filter((img) => img && !img.isEmpty());
+  if (!usable.length) return null;
+  if (usable.length === 1) return usable[0];
+  const sizes = usable.map((img) => img.getSize());
+  const width = sizes.reduce((sum, s) => sum + s.width, 0);
+  const height = Math.max(...sizes.map((s) => s.height));
+  if (!width || !height) return usable[0];
+  const out = Buffer.alloc(width * height * 4, 0);
+  let xOff = 0;
+  for (let i = 0; i < usable.length; i++) {
+    const bmp = usable[i].toBitmap();
+    const { width: w, height: h } = sizes[i];
+    for (let y = 0; y < h; y++) {
+      const srcStart = y * w * 4;
+      bmp.copy(out, (y * width + xOff) * 4, srcStart, srcStart + w * 4);
+    }
+    xOff += w;
+  }
+  return nativeImage.createFromBitmap(out, { width, height });
+}
+
+async function captureMacFullScreen() {
+  const outPath = snipOutPath();
+  try {
+    await execFileAsync("screencapture", ["-x", outPath], { timeout: 30000 });
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err?.message ||
+        SCREEN_RECORDING_HELP,
+    };
+  }
+  if (!fs.existsSync(outPath) || fs.statSync(outPath).size === 0) {
+    try {
+      if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+    } catch {
+      /* ignore */
+    }
+    return { ok: false, error: "Desktop screenshot was empty." };
+  }
+  return { ok: true, path: outPath, name: path.basename(outPath) };
+}
+
+async function captureDesktopViaCapturer() {
+  const displays = screen.getAllDisplays();
+  const primary = screen.getPrimaryDisplay();
+  const ordered = [
+    ...displays.filter((d) => d.id === primary.id),
+    ...displays.filter((d) => d.id !== primary.id),
+  ];
+  const images = [];
+  for (const display of ordered) {
+    try {
+      images.push(await captureDisplayImage(display));
+    } catch {
+      /* skip a display that failed */
+    }
+  }
+  const joined = joinNativeImages(images);
+  if (!joined || joined.isEmpty()) {
+    throw new Error(
+      SCREEN_RECORDING_HELP,
+    );
+  }
+  const outPath = snipOutPath();
+  fs.writeFileSync(outPath, joined.toPNG());
+  return { ok: true, path: outPath, name: path.basename(outPath) };
+}
+
 /**
+ * Full-desktop PNG of whatever is on screen (any app), not a Chrome tab.
  * @param {{ hide: () => void | Promise<void>, restore: () => void | Promise<void> }} hooks
  */
-async function captureRegionSnip(hooks = {}) {
+async function captureFullDesktop(hooks = {}) {
   if (snipBusy) {
-    return { ok: false, error: "Snip already in progress" };
+    return { ok: false, error: "Capture already in progress" };
   }
   snipBusy = true;
+  let hiddenApp = false;
   try {
     if (typeof hooks.hide === "function") await hooks.hide();
-    // Let windows disappear before capture
-    await delay(180);
+    if (process.platform === "darwin") {
+      try {
+        app.hide();
+        hiddenApp = true;
+      } catch {
+        /* ignore */
+      }
+    }
+    await delay(280);
 
-    const result =
-      process.platform === "darwin" ? await snipNativeMac() : await snipWithOverlay();
+    let result;
+    if (process.platform === "darwin") {
+      result = await captureMacFullScreen();
+      if (!result?.ok) {
+        try {
+          result = await captureDesktopViaCapturer();
+        } catch (err) {
+          result = {
+            ok: false,
+            error:
+              result?.error ||
+              err?.message ||
+              SCREEN_RECORDING_HELP,
+          };
+        }
+      }
+    } else {
+      try {
+        result = await captureDesktopViaCapturer();
+      } catch (err) {
+        result = { ok: false, error: err?.message || String(err) };
+      }
+    }
 
+    if (hiddenApp) {
+      try {
+        app.show();
+      } catch {
+        /* ignore */
+      }
+      hiddenApp = false;
+    }
     if (typeof hooks.restore === "function") await hooks.restore();
     return result;
   } catch (err) {
+    if (hiddenApp) {
+      try {
+        app.show();
+      } catch {
+        /* ignore */
+      }
+    }
     if (typeof hooks.restore === "function") {
       try {
         await hooks.restore();
@@ -262,4 +445,287 @@ async function captureRegionSnip(hooks = {}) {
   }
 }
 
-module.exports = { captureRegionSnip };
+/**
+ * @param {{ hide: () => void | Promise<void>, restore: () => void | Promise<void> }} hooks
+ */
+async function captureRegionSnip(hooks = {}) {
+  if (snipBusy) {
+    return { ok: false, error: "Snip already in progress" };
+  }
+  snipBusy = true;
+  let hidden = false;
+  try {
+    // ⌘⇧4 is the system Screenshot tool (has Screen Recording). Do not gate
+    // on Electron's TCC — that is why Capture used to save wallpaper.
+    if (process.platform !== "darwin") {
+      const access = await ensureMacScreenRecording();
+      if (!access.ok) return access;
+    }
+
+    if (typeof hooks.hide === "function") {
+      hidden = true;
+      await hooks.hide();
+    }
+    await delay(400);
+
+    let result;
+    if (process.platform === "darwin") {
+      result = await snipNativeMac();
+    } else {
+      result = await snipWithOverlay();
+    }
+    return result;
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  } finally {
+    if (hidden && typeof hooks.restore === "function") {
+      try {
+        await hooks.restore();
+      } catch {
+        /* ignore */
+      }
+    }
+    snipBusy = false;
+    closeOverlays();
+  }
+}
+
+const SKIP_FRONTMOST_OWNER =
+  /^(LiveTrack|Electron|Window Server|Dock|Control Center|Notification Center|NotificationCenter|Screenshot|SystemUIServer|loginwindow|Spotlight|Wallpaper|Item-0)$/i;
+
+function isChromeOwnerName(owner) {
+  return /\b(Google Chrome|Chromium|Chrome Canary|Chrome Dev)\b/i.test(String(owner || ""));
+}
+
+function frontmostSkipOwners() {
+  const names = [
+    "LiveTrack",
+    "Electron",
+    "Window Server",
+    "Dock",
+    "Control Center",
+    "Notification Center",
+    "Notification Centre",
+    "SystemUIServer",
+    "Screenshot",
+    "screencaptureui",
+    "loginwindow",
+    "Spotlight",
+    "CoreServicesUIAgent",
+    "UserNotificationCenter",
+  ];
+  try {
+    const n = app.getName();
+    if (n && !names.includes(n)) names.push(n);
+  } catch {
+    /* ignore */
+  }
+  return names;
+}
+
+/**
+ * Frontmost on-screen window that is not LiveTrack/Electron (CGWindowList z-order).
+ * `screencapture -l` needs this Quartz CGWindowID, not System Events' AX id.
+ * ObjC.deepUnwrap fails on this CG list; ObjC.castRefToObject works.
+ */
+async function frontmostMacWindowMeta(skipPid) {
+  const jxa = `
+ObjC.import("CoreGraphics");
+ObjC.import("Foundation");
+function run(argv) {
+  var skipPid = parseInt(argv[0] || "0", 10);
+  var skip = {};
+  var names = ${JSON.stringify(frontmostSkipOwners())};
+  for (var s = 0; s < names.length; s++) skip[names[s]] = 1;
+  var arr = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, $.kCGNullWindowID));
+  var n = Number(arr.count);
+  for (var i = 0; i < n; i++) {
+    var w = arr.objectAtIndex(i);
+    var layer = Number(ObjC.unwrap(w.objectForKey("kCGWindowLayer")));
+    if (layer !== 0) continue;
+    var alpha = Number(ObjC.unwrap(w.objectForKey("kCGWindowAlpha")));
+    if (!(alpha >= 0.1)) continue;
+    var pid = Number(ObjC.unwrap(w.objectForKey("kCGWindowOwnerPID")));
+    if (skipPid && pid === skipPid) continue;
+    var owner = String(ObjC.unwrap(w.objectForKey("kCGWindowOwnerName")) || "");
+    if (!owner || skip[owner]) continue;
+    var bounds = w.objectForKey("kCGWindowBounds");
+    var width = Number(ObjC.unwrap(bounds.objectForKey("Width")));
+    var height = Number(ObjC.unwrap(bounds.objectForKey("Height")));
+    if (width < 64 || height < 64) continue;
+    var id = Number(ObjC.unwrap(w.objectForKey("kCGWindowNumber")));
+    if (!id) continue;
+    var name = String(ObjC.unwrap(w.objectForKey("kCGWindowName")) || "");
+    return JSON.stringify({ id: id, owner: owner, name: name, pid: pid });
+  }
+  return "";
+}
+`.trim();
+  const { stdout } = await execFileAsync(
+    "/usr/bin/osascript",
+    ["-l", "JavaScript", "-e", jxa, String(skipPid || process.pid)],
+    { timeout: 8000 },
+  );
+  const raw = String(stdout || "").trim();
+  if (!raw) return null;
+  try {
+    const meta = JSON.parse(raw);
+    return meta?.id ? meta : null;
+  } catch {
+    return null;
+  }
+}
+
+async function captureMacWindowById(windowId, outPath) {
+  await execFileAsync(
+    screencaptureBin(),
+    ["-x", "-o", `-l${windowId}`, outPath],
+    { timeout: 20000 },
+  );
+}
+
+async function captureMacMainDisplay(outPath) {
+  await execFileAsync(screencaptureBin(), ["-x", "-m", outPath], { timeout: 20000 });
+}
+
+async function captureMacFrontmostWindow() {
+  const outPath = snipOutPath();
+  let meta;
+  try {
+    meta = await frontmostMacWindowMeta(process.pid);
+  } catch (err) {
+    return { ok: false, error: err?.message || "Could not find the frontmost window." };
+  }
+  if (!meta?.id) {
+    return { ok: false, error: "No frontmost window found." };
+  }
+  try {
+    await captureMacWindowById(meta.id, outPath);
+  } catch (err) {
+    return {
+      ok: false,
+      error: err?.message || SCREEN_RECORDING_HELP,
+    };
+  }
+  if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 80) {
+    try {
+      if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+    } catch {
+      /* ignore */
+    }
+    return { ok: false, error: "Frontmost window screenshot was empty." };
+  }
+  return {
+    ok: true,
+    path: outPath,
+    name: path.basename(outPath),
+    owner: String(meta.owner || ""),
+    windowName: String(meta.name || ""),
+  };
+}
+
+async function captureMacMainDisplayShot() {
+  const outPath = snipOutPath();
+  try {
+    await captureMacMainDisplay(outPath);
+  } catch (err) {
+    return { ok: false, error: err?.message || SCREEN_RECORDING_HELP };
+  }
+  if (!fs.existsSync(outPath) || fs.statSync(outPath).size === 0) {
+    try {
+      if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+    } catch {
+      /* ignore */
+    }
+    return { ok: false, error: "Desktop screenshot was empty." };
+  }
+  return { ok: true, path: outPath, name: path.basename(outPath) };
+}
+
+async function captureFrontmostViaCapturer() {
+  const sources = await desktopCapturer.getSources({
+    types: ["window"],
+    thumbnailSize: { width: 2560, height: 1600 },
+  });
+  for (const src of sources || []) {
+    const label = String(src?.name || "");
+    if (!label || SKIP_FRONTMOST_OWNER.test(label)) continue;
+    if (/^LiveTrack|^Electron\b/i.test(label)) continue;
+    const img = src.thumbnail;
+    if (!img || img.isEmpty()) continue;
+    const { width, height } = img.getSize();
+    if (width < 80 || height < 80) continue;
+    const outPath = snipOutPath();
+    fs.writeFileSync(outPath, img.toPNG());
+    return {
+      ok: true,
+      path: outPath,
+      name: path.basename(outPath),
+      owner: label,
+      windowName: label,
+    };
+  }
+  return { ok: false, error: "No frontmost window found." };
+}
+
+/**
+ * Capture the previously focused / frontmost window that is not LiveTrack.
+ * Uses Quartz CGWindowID (`screencapture -l`) so LiveTrack can stay visible.
+ * Never hide the Electron app — Desk must not disappear. Hooks may drop always-on-top only.
+ * Does not ask the user to drag a box or click a window.
+ * @param {{ hide: () => void | Promise<void>, restore: () => void | Promise<void> }} hooks
+ */
+async function captureFrontmostWindow(hooks = {}) {
+  if (snipBusy) {
+    return { ok: false, error: "Capture already in progress" };
+  }
+  snipBusy = true;
+  try {
+    const access = await ensureMacScreenRecording();
+    if (!access.ok) return access;
+    // Do not hide the Electron app or BrowserWindows. Optional hook drops always-on-top.
+    if (typeof hooks.hide === "function") await hooks.hide();
+    await delay(120);
+
+    let result;
+    if (process.platform === "darwin") {
+      result = await captureMacFrontmostWindow();
+      if (!result?.ok) {
+        try {
+          result = await captureFrontmostViaCapturer();
+        } catch (err) {
+          result = {
+            ok: false,
+            error: result?.error || err?.message || SCREEN_RECORDING_HELP,
+          };
+        }
+      }
+    } else {
+      try {
+        result = await captureFrontmostViaCapturer();
+      } catch (err) {
+        result = { ok: false, error: err?.message || String(err) };
+      }
+    }
+    return result;
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  } finally {
+    if (typeof hooks.restore === "function") {
+      try {
+        await hooks.restore();
+      } catch {
+        /* ignore */
+      }
+    }
+    snipBusy = false;
+  }
+}
+
+module.exports = {
+  captureRegionSnip,
+  captureFullDesktop,
+  captureFrontmostWindow,
+  isChromeOwnerName,
+  joinNativeImages,
+};

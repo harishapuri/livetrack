@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Meridian Bank — ZeroGuard ZTPA</title>
+    <style>
+      :root {
+        --bg: #f4f6f8;
+        --ink: #0f172a;
+        --line: #cbd5e1;
+        --accent: #0f4c81;
+        --muted: #475569;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Avenir Next", sans-serif;
+        color: var(--ink);
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 36%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      main { max-width: 640px; margin: 0 auto; padding: 40px 22px 64px; }
+      .site { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+      h1 { margin: 6px 0 8px; font-size: 1.75rem; }
+      .sub { margin: 0 0 24px; color: var(--muted); line-height: 1.45; }
+      .card { background: transparent; border: 0; padding: 4px 0; display: grid; gap: 14px; }
+      .findings {
+        margin: 0;
+        padding: 12px 14px 12px 1.4rem;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .action-options { display: grid; gap: 10px; }
+      .action-options label {
+        display: flex; gap: 10px; align-items: flex-start;
+        padding: 12px; border: 1px solid var(--line); border-radius: 10px;
+        cursor: pointer; background: #fff;
+      }
+      .action-options label:has(input:checked) {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 8%, #fff);
+      }
+      button {
+        justify-self: start; font: inherit; padding: 11px 16px; border: 0;
+        border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer;
+      }
+      .hint { margin-top: 18px; color: #64748b; font-size: 0.88rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="site">Meridian Bank · ZeroGuard</div>
+      <div id="app"></div>
+      <p class="hint">URL: http://127.0.0.1:4173/sites/zeroguard-banking/posture</p>
+    </main>
+    <script>
+      const app = document.getElementById("app");
+
+      function showPillars() {
+        app.innerHTML =
+          "<h1>Confirm ZTA pillar scores</h1>" +
+          '<p class="sub">Page 2 of 3 — ZTPA flags PCI cardholder resources before GRA remediates.</p>' +
+          '<div class="card">' +
+          "<p>Baseline Ξ = 0.532. After GRA + IAEA, expected Ξ = 0.912. Autonomy stays at α2 (block high/critical).</p>" +
+          '<ul class="findings">' +
+          "<li>S3 cardholder-archive — missing encrypt_at_rest (P2 / PCI-DSS)</li>" +
+          "<li>IAM payments-batch-role — Action * / Resource * (Γ = 0.73)</li>" +
+          "<li>SG sg-core-banking — 0.0.0.0/0 on 443 (P3 session access)</li>" +
+          "<li>CloudTrail payments-vpc — telemetry gap (P7)</li>" +
+          "</ul>" +
+          '<button id="btnConfirmPillars" type="button">Confirm ZTA pillars</button>' +
+          "</div>";
+        document.getElementById("btnConfirmPillars").onclick = showRemediation;
+      }
+
+      function showRemediation() {
+        app.innerHTML =
+          "<h1>Select GRA remediation</h1>" +
+          '<p class="sub">Click 2 — Code-LLM patch plus IAEA least-privilege set-cover.</p>' +
+          '<div class="card">' +
+          "<p>GRA Mode 1 patches attributes; Mode 3 coordinates VPC + S3 + IAM as one commit. IAEA shrinks unused actions over 30 days.</p>" +
+          '<div class="action-options">' +
+          '<label><input type="radio" name="gra" value="patch-only" /><span><strong>Patch only</strong> — encrypt_at_rest + TLS</span></label>' +
+          '<label><input type="radio" name="gra" value="patch-iam" checked /><span><strong>Patch + IAEA</strong> — encryption and least-privilege IAM</span></label>' +
+          '<label><input type="radio" name="gra" value="rego" /><span><strong>OPA Rego</strong> — ZTA policy synthesis only</span></label>' +
+          "</div>" +
+          '<button id="btnSelectGra" type="button">Select GRA mode</button>' +
+          "</div>";
+        document.getElementById("btnSelectGra").onclick = showTicket;
+      }
+
+      function showTicket() {
+        app.innerHTML =
+          "<h1>Open CCO review ticket</h1>" +
+          '<p class="sub">Click 3 — navigates to the attended enforcement form.</p>' +
+          '<div class="card">' +
+          "<p>CCO will open an annotated PR at α2. Coact fills analyst, repo, commit, finding, and autonomy next.</p>" +
+          '<button id="btnOpenTicket" type="button">Open CCO ticket</button>' +
+          "</div>";
+        document.getElementById("btnOpenTicket").onclick = function () {
+          location.href = "/sites/zeroguard-banking/ticket";
+        };
+      }
+
+      showPillars();
+    </script>
+  </body>
+</html>

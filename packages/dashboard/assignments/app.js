@@ -1,3 +1,4 @@
+(function () {
 function esc(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -20,6 +21,7 @@ function apiBase() {
 
 /** file:// cannot reliably call localhost APIs — bounce to the server URL */
 function preferHttpServer(pathSuffix) {
+  if (document.getElementById("dashShell")) return false;
   if (location.protocol !== "file:") return false;
   const target = `http://127.0.0.1:4175${pathSuffix}`;
   location.replace(target);
@@ -192,11 +194,11 @@ async function publishLiveAct() {
   try {
     const res = await api("/api/publish-liveact", { method: "POST", body: "{}" });
     if (!res.ok && res.liveAct === false) {
-      return { ok: false, message: res.error || "liveAct not updated" };
+      return { ok: false, message: res.error || "LiveTrack not updated" };
     }
     const n = res.cardCount != null ? Number(res.cardCount) : null;
     const all = res.allCardCount != null ? Number(res.allCardCount) : null;
-    let message = "Published to liveAct";
+    let message = "Published to LiveTrack";
     if (n != null) message += ` · ${n} card${n === 1 ? "" : "s"} visible`;
     if (all != null && n != null && all > n) {
       message += ` (${all} on disk — assignees filter hides the rest)`;
@@ -240,7 +242,7 @@ async function saveLob(clear, publish = false) {
 }
 
 async function saveCard(clear, publish = false) {
-  const status = document.getElementById("cardStatus");
+  const status = document.getElementById("assignCardStatus");
   const key = document.getElementById("cardSelect").value;
   if (!key) {
     setStatus(status, "Pick a queue card", "err");
@@ -299,3 +301,4 @@ async function boot() {
 }
 
 boot();
+})();

@@ -27,22 +27,40 @@ function legacyDocumentsCoactRoot() {
   return path.join(os.homedir(), "Documents", "Coact");
 }
 
+function liveActSharedRoot() {
+  return path.join(os.homedir(), "Projects", "coact");
+}
+
 /**
- * Sole project home: code + queue + settings + executions.
- * Dev: monorepo root (packages/liveact → ../..). Packaged: ~/Projects/coact when present.
+ * Runtime data home. Mother workbook is <root>/livetrack.xlsx.
+ *
+ * Packaged LiveTrack and `npm run dashboard` must share one root — otherwise
+ * Record drafts land in ~/Projects/coact while the dashboard looks in the
+ * repo and operators see "SOP not found". COACT_PROJECT_ROOT overrides (tests).
  */
-function defaultProjectRoot() {
-  const fromPackage = path.resolve(__dirname, "..", "..");
-  const inAsar = fromPackage.includes(`${path.sep}app.asar`) || __dirname.includes(`${path.sep}app.asar`);
-  if (!inAsar) {
-    if (fs.existsSync(path.join(fromPackage, "packages", "liveact"))) return fromPackage;
-    const siblingRoot = path.resolve(__dirname, "..");
-    if (fs.existsSync(path.join(siblingRoot, "package.json"))) return siblingRoot;
-    return fromPackage;
+function isPackagedRuntime() {
+  const dir = String(__dirname || "");
+  if (dir.includes(`${path.sep}app.asar`)) return true;
+  if (dir.includes(`${path.sep}app.asar.unpacked`)) return true;
+  if (/\.app[\\/]Contents[\\/]/i.test(dir)) return true;
+  try {
+    const electron = require("electron");
+    if (electron && typeof electron === "object") {
+      return Boolean(electron.app && electron.app.isPackaged);
+    }
+  } catch {
+    /* node tests / unpackaged `npm start` */
   }
-  const preferred = path.join(os.homedir(), "Projects", "coact");
-  ensureDir(preferred);
-  return preferred;
+  return false;
+}
+
+function defaultProjectRoot() {
+  const envRoot = String(process.env.COACT_PROJECT_ROOT || "").trim();
+  if (envRoot) return path.resolve(envRoot);
+  // Shared runtime for packaged app + dashboard + unpackaged electron.
+  const shared = liveActSharedRoot();
+  ensureDir(shared);
+  return shared;
 }
 
 /** Queue cards: <project>/queue/<LOB>/<case-id>/ */
@@ -111,31 +129,25 @@ function copyDirMissingLeaves(src, dest) {
  * into Projects/coact when the project-side path is missing.
  */
 function migrateLegacyDocumentsCoact() {
+  // Test suite sets COACT_PROJECT_ROOT to a throwaway tmp dir — never copy
+  // the real ~/Documents/Coact (queue data, settings, Jira tokens) into it.
+  if (process.env.COACT_PROJECT_ROOT) return { migrated: false, reason: "test_isolated_root" };
   const legacy = legacyDocumentsCoactRoot();
   if (!fs.existsSync(legacy)) return { migrated: false, reason: "no_legacy" };
   const root = defaultProjectRoot();
   const report = { migrated: true, root, copied: {} };
 
-  report.copied.queue = copyDirMissingLeaves(
-    path.join(legacy, "queue"),
-    path.join(root, "queue")
-  );
+  report.copied.queue = 0;
   report.copied.settings = copyFileIfMissing(
     path.join(legacy, "settings.json"),
     defaultSettingsPath()
   );
-  report.copied.jiraActions = copyFileIfMissing(
-    path.join(legacy, "jira-actions.jsonl"),
-    defaultJiraActionsPath()
-  );
+  report.copied.jiraActions = false;
   report.copied.extension = copyDirMissingLeaves(
     path.join(legacy, "extension"),
     defaultExtensionDir()
   );
-  report.copied.sops = copyDirMissingLeaves(
-    path.join(legacy, "sops"),
-    defaultUserSopsDir()
-  );
+  report.copied.sops = 0;
 
   if (report.copied.queue || report.copied.settings || report.copied.jiraActions) {
     console.log("[coact] migrated Documents/Coact →", root, report.copied);
@@ -224,45 +236,55 @@ function loadCardFromDir(caseDir, folderName, lob) {
 }
 
 /**
- * Update queue card meta.status (queued | done) on disk.
- * Returns { ok, changed, cardId, status } or { ok: false, error }.
+ * Update queue card status in livetrack.xlsx (QueueCards).
  */
-function updateQueueCardStatus(cardId, status, queueCards = []) {
-  const next = String(status || "").trim().toLowerCase() === "done" ? "done" : "queued";
+async function updateQueueCardStatus(cardId, status, queueCards = []) {
+  const raw = String(status || "")
+    .trim()
+    .toLowerCase();
+  const next = raw === "done" ? "done" : raw === "incomplete" ? "incomplete" : "queued";
   const id = String(cardId || "").trim();
   if (!id) return { ok: false, error: "missing_card" };
 
-  const card =
-    (queueCards || []).find((c) => c.id === id) ||
-    null;
-  let caseDir = card?.sourceDir || null;
-  if (!caseDir) {
-    // Fallback: search under <project>/queue/<LOB>/<id>
-    const queueRoot = defaultDocumentsRoot();
-    if (fs.existsSync(queueRoot)) {
-      for (const lob of fs.readdirSync(queueRoot)) {
-        const candidate = path.join(queueRoot, lob, id);
-        if (fs.existsSync(path.join(candidate, "meta.json"))) {
-          caseDir = candidate;
-          break;
-        }
-      }
-    }
-  }
-  if (!caseDir || !fs.existsSync(caseDir)) {
-    return { ok: false, error: "card_dir_not_found", cardId: id };
-  }
+  const workbookStore = require("./workbook");
+  const { QueueCards } = await workbookStore.readTables(["QueueCards"]);
+  const rows = QueueCards || [];
+  const idx = rows.findIndex((r) => String(r.card_id) === id);
+  const mem = (queueCards || []).find((c) => c.id === id) || null;
+  if (idx < 0 && !mem) return { ok: false, error: "card_not_found", cardId: id };
 
-  const metaPath = path.join(caseDir, "meta.json");
-  const meta = readJsonSafe(metaPath) || {};
-  const prev = String(meta.status || "queued").toLowerCase() === "done" ? "done" : "queued";
+  const normalize = (value) => {
+    const s = String(value || "queued").toLowerCase();
+    if (s === "done") return "done";
+    if (s === "incomplete") return "incomplete";
+    return "queued";
+  };
+  const prev = normalize(idx >= 0 ? rows[idx].status : mem.status);
   if (prev === next) {
-    return { ok: true, changed: false, cardId: id, status: next, sourceDir: caseDir };
+    return { ok: true, changed: false, cardId: id, status: next, sourceDir: mem?.sourceDir };
   }
-  meta.status = next;
-  if (!meta.id) meta.id = id;
-  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n", "utf8");
-  return { ok: true, changed: true, cardId: id, status: next, sourceDir: caseDir, previous: prev };
+  if (idx >= 0) {
+    rows[idx].status = next;
+    rows[idx].updated_at = new Date().toISOString();
+    await workbookStore.replaceRows("QueueCards", rows);
+  } else {
+    await writeCardFiles(mem.sourceDir || lobCardDir(defaultDocumentsRoot(), id, mem.lob), {
+      data: mem.data || {},
+      meta: {
+        id,
+        title: mem.title,
+        sopId: mem.sopId,
+        status: next,
+        lob: mem.lob,
+        formUrl: mem.formUrl,
+        pdfPath: mem.pdfPath,
+        formMatch: mem.formMatch,
+        assignees: mem.assignees,
+      },
+    });
+  }
+  if (mem) mem.status = next;
+  return { ok: true, changed: true, cardId: id, status: next, sourceDir: mem?.sourceDir, previous: prev };
 }
 
 function normalizeAssignees(value) {
@@ -288,15 +310,22 @@ function loadLobConfig(lobDir) {
   };
 }
 
-function saveLobConfig(lobDir, partial) {
+async function saveLobConfig(lobDir, partial) {
+  const lob = path.basename(lobDir);
   ensureDir(lobDir);
-  const prev = loadLobConfig(lobDir);
-  const next = {
-    assignees:
-      partial.assignees != null ? normalizeAssignees(partial.assignees) : prev.assignees,
-  };
-  fs.writeFileSync(lobConfigPath(lobDir), JSON.stringify(next, null, 2) + "\n", "utf8");
-  return next;
+  const workbookStore = require("./workbook");
+  const { QueueLobs } = await workbookStore.readTables(["QueueLobs"]);
+  const rows = QueueLobs || [];
+  const prev = rows.find((r) => r.lob === lob);
+  const assignees =
+    partial.assignees != null
+      ? normalizeAssignees(partial.assignees)
+      : normalizeAssignees(String(prev?.assignees || "").split(","));
+  await workbookStore.replaceRows("QueueLobs", [
+    ...rows.filter((r) => r.lob !== lob),
+    { lob, assignees: assignees.join(",") },
+  ]);
+  return { assignees };
 }
 
 function userAllowed(userId, assignees) {
@@ -332,6 +361,80 @@ function filterCardsForUser(cards, lobAssigneeMap, userId) {
   }
 
   return afterLob.filter((c) => userAllowed(userId, c.assignees));
+}
+
+function normalizeLob(lob) {
+  const s = String(lob || "").trim();
+  return s || DEFAULT_LOB;
+}
+
+function cardKey(lob, cardId) {
+  return `${normalizeLob(lob)}/${String(cardId || "").trim()}`;
+}
+
+/**
+ * Walk queue/<LOB>/<card>/ (and leftover flat card dirs).
+ * @returns {{ lob: string, id: string, dir: string, lobConfig?: { assignees: string[] } }[]}
+ */
+function listLobCardDirs(rootDir) {
+  const found = [];
+  if (!rootDir || !fs.existsSync(rootDir)) return found;
+  for (const lobEntry of fs.readdirSync(rootDir, { withFileTypes: true })) {
+    if (!lobEntry.isDirectory() || lobEntry.name.startsWith(".")) continue;
+    const lobName = lobEntry.name;
+    const lobPath = path.join(rootDir, lobName);
+    if (isCardDir(lobPath)) {
+      found.push({ lob: DEFAULT_LOB, id: lobName, dir: lobPath });
+      continue;
+    }
+    const lobConfig = loadLobConfig(lobPath);
+    for (const cardEntry of fs.readdirSync(lobPath, { withFileTypes: true })) {
+      if (!cardEntry.isDirectory() || cardEntry.name.startsWith(".")) continue;
+      const caseDir = path.join(lobPath, cardEntry.name);
+      if (!isCardDir(caseDir)) continue;
+      found.push({
+        lob: normalizeLob(lobName),
+        id: cardEntry.name,
+        dir: caseDir,
+        lobConfig,
+      });
+    }
+  }
+  return found;
+}
+
+function documentsForCardDir(caseDir) {
+  if (!caseDir || !fs.existsSync(caseDir)) return [];
+  return listFilesRecursive(caseDir)
+    .filter((f) => f.name !== "data.json" && f.name !== "meta.json")
+    .filter((f) => DOC_EXTENSIONS.has(f.ext) || f.ext === "")
+    .map((f) => ({
+      name: f.name,
+      path: f.absolutePath,
+      relativePath: f.relativePath,
+    }));
+}
+
+function cardFromWorkbookRow(row, rootDir, dataByCard) {
+  const lob = normalizeLob(row.lob);
+  const id = String(row.card_id || "").trim();
+  const caseDir = row.source_dir || lobCardDir(rootDir, id, lob);
+  const exists = Boolean(caseDir && fs.existsSync(caseDir));
+  return {
+    id,
+    title: row.title || id,
+    sopId: row.sop_id || "vendor-onboarding",
+    status: row.status || "queued",
+    lob,
+    sourceDir: caseDir,
+    formUrl: row.form_url || null,
+    pdfPath: row.pdf_path || null,
+    formMatch: row.form_match ? String(row.form_match).split("|").filter(Boolean) : [],
+    assignees: normalizeAssignees(String(row.assignees || "").split(",")),
+    data: dataByCard.get(cardKey(lob, id)) || {},
+    documents: documentsForCardDir(caseDir),
+    _sourceExists: exists,
+  };
 }
 
 /**
@@ -384,41 +487,77 @@ function migrateFlatCardsToLob(rootDir, lob = DEFAULT_LOB) {
  *   - Else empty assignees = everyone; hide cards assigned only to other users
  *   - LOB .lob.json assignees still gate the whole LOB when set
  */
-function loadQueueFromDocuments(rootDir = defaultDocumentsRoot(), opts = {}) {
+async function loadQueueFromDocuments(rootDir = defaultDocumentsRoot(), opts = {}) {
   migrateLegacyDocumentsCoact();
-  ensureDir(rootDir);
-  migrateFlatCardsToLob(rootDir, DEFAULT_LOB);
+  if (fs.existsSync(rootDir)) {
+    migrateFlatCardsToLob(rootDir, DEFAULT_LOB);
+  }
 
   const filterByUser = Boolean(opts.filterByUser);
   const userId = opts.userId != null ? String(opts.userId).trim() : "";
+  const workbookStore = require("./workbook");
+  const projectRoot = defaultProjectRoot();
+  const { QueueCards, QueueData, QueueLobs } = await workbookStore.readTables(
+    ["QueueCards", "QueueData", "QueueLobs"],
+    projectRoot
+  );
 
-  const cards = [];
+  const dataByCard = new Map();
+  for (const row of QueueData || []) {
+    const key = cardKey(row.lob, row.card_id);
+    if (!dataByCard.has(key)) dataByCard.set(key, {});
+    if (row.field_key) dataByCard.get(key)[row.field_key] = row.field_value;
+  }
+
   const lobs = [];
   const lobAssigneeMap = new Map();
-  const lobEntries = fs.readdirSync(rootDir, { withFileTypes: true });
+  for (const row of QueueLobs || []) {
+    const name = normalizeLob(row.lob);
+    if (lobAssigneeMap.has(name)) continue;
+    const assignees = normalizeAssignees(String(row.assignees || "").split(","));
+    lobs.push({ name, assignees });
+    lobAssigneeMap.set(name, assignees);
+  }
 
-  for (const lobEntry of lobEntries) {
-    if (!lobEntry.isDirectory() || lobEntry.name.startsWith(".")) continue;
-    const lobName = lobEntry.name;
-    const lobPath = path.join(rootDir, lobName);
-
-    // Defensive: if somehow still a flat card at root, load under DEFAULT_LOB
-    if (isCardDir(lobPath)) {
-      cards.push(loadCardFromDir(lobPath, lobName, DEFAULT_LOB));
-      continue;
-    }
-
-    const lobConfig = loadLobConfig(lobPath);
-    lobs.push({ name: lobName, assignees: lobConfig.assignees });
-    lobAssigneeMap.set(lobName, lobConfig.assignees);
-
-    for (const cardEntry of fs.readdirSync(lobPath, { withFileTypes: true })) {
-      if (!cardEntry.isDirectory() || cardEntry.name.startsWith(".")) continue;
-      const caseDir = path.join(lobPath, cardEntry.name);
-      if (!isCardDir(caseDir)) continue;
-      cards.push(loadCardFromDir(caseDir, cardEntry.name, lobName));
+  // Workbook wins; drop duplicate lob/card_id rows (prefer a source_dir that exists).
+  const byKey = new Map();
+  for (const row of QueueCards || []) {
+    const id = String(row.card_id || "").trim();
+    if (!id) continue;
+    const mapped = cardFromWorkbookRow(row, rootDir, dataByCard);
+    const key = cardKey(mapped.lob, mapped.id);
+    const prev = byKey.get(key);
+    if (!prev || (!prev._sourceExists && mapped._sourceExists)) {
+      byKey.set(key, mapped);
     }
   }
+
+  // Partial workbooks (e.g. packaged ~/Projects/coact with one leftover row)
+  // must still surface on-disk TCOO / other LOB cards.
+  for (const entry of listLobCardDirs(rootDir)) {
+    const key = cardKey(entry.lob, entry.id);
+    if (entry.lobConfig && !lobAssigneeMap.has(entry.lob)) {
+      lobs.push({ name: entry.lob, assignees: entry.lobConfig.assignees });
+      lobAssigneeMap.set(entry.lob, entry.lobConfig.assignees);
+    }
+    if (byKey.has(key)) continue;
+    const fromDisk = loadCardFromDir(entry.dir, entry.id, entry.lob);
+    fromDisk.lob = normalizeLob(fromDisk.lob || entry.lob);
+    if (!fromDisk.data || !Object.keys(fromDisk.data).length) {
+      fromDisk.data = dataByCard.get(key) || fromDisk.data || {};
+    }
+    byKey.set(key, fromDisk);
+  }
+
+  if (!lobAssigneeMap.has(DEFAULT_LOB)) {
+    lobs.push({ name: DEFAULT_LOB, assignees: [] });
+    lobAssigneeMap.set(DEFAULT_LOB, []);
+  }
+
+  let cards = [...byKey.values()].map((c) => {
+    const { _sourceExists, ...card } = c;
+    return card;
+  });
 
   const visible = filterByUser
     ? filterCardsForUser(cards, lobAssigneeMap, userId)
@@ -427,93 +566,189 @@ function loadQueueFromDocuments(rootDir = defaultDocumentsRoot(), opts = {}) {
   visible.sort((a, b) => {
     const lobCmp = (a.lob || "").localeCompare(b.lob || "");
     if (lobCmp !== 0) return lobCmp;
-    return a.title.localeCompare(b.title);
+    return String(a.title || "").localeCompare(String(b.title || ""));
   });
   return { rootDir, cards: visible, lobs, allCardCount: cards.length };
 }
 
-function writeCardFiles(dir, { data, meta, readme }) {
+function writeCardFiles(dir, { data, meta }) {
   ensureDir(dir);
-  if (data != null) {
-    fs.writeFileSync(path.join(dir, "data.json"), JSON.stringify(data, null, 2));
-  }
-  if (meta != null) {
-    fs.writeFileSync(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2));
-  }
-  if (readme != null) {
-    fs.writeFileSync(path.join(dir, "README.txt"), readme);
-  }
+  const workbookStore = require("./workbook");
+  const projectRoot = defaultProjectRoot();
+  const lob = normalizeLob(meta?.lob);
+  const cardId = String(meta?.id || path.basename(dir)).trim();
+  const now = new Date().toISOString();
+  const job = (async () => {
+    const { QueueCards, QueueData } = await workbookStore.readTables(
+      ["QueueCards", "QueueData"],
+      projectRoot
+    );
+    const cardRow = {
+      lob,
+      card_id: cardId,
+      title: meta?.title || cardId,
+      sop_id: meta?.sopId || "",
+      status: meta?.status || "queued",
+      form_url: meta?.formUrl || "",
+      pdf_path: meta?.pdfPath || "",
+      form_match: Array.isArray(meta?.formMatch) ? meta.formMatch.join("|") : "",
+      assignees: normalizeAssignees(meta?.assignees).join(","),
+      source_dir: dir,
+      updated_at: now,
+    };
+    const nextCards = [
+      ...(QueueCards || []).filter((r) => cardKey(r.lob, r.card_id) !== cardKey(lob, cardId)),
+      cardRow,
+    ];
+    await workbookStore.replaceRows("QueueCards", nextCards, projectRoot);
+    if (data != null) {
+      const nextData = [
+        ...(QueueData || []).filter((r) => cardKey(r.lob, r.card_id) !== cardKey(lob, cardId)),
+        ...Object.entries(data).map(([field_key, field_value]) => ({
+          lob,
+          card_id: cardId,
+          field_key,
+          field_value: field_value == null ? "" : String(field_value),
+        })),
+      ];
+      await workbookStore.replaceRows("QueueData", nextData, projectRoot);
+    }
+  })();
+  return job;
 }
 
 function lobCardDir(rootDir, cardId, lob = DEFAULT_LOB) {
   return path.join(rootDir, lob, cardId);
 }
 
-function seedSampleCases(rootDir = defaultDocumentsRoot()) {
+async function seedSampleCases(rootDir = defaultDocumentsRoot()) {
   migrateLegacyDocumentsCoact();
   ensureDir(rootDir);
   migrateFlatCardsToLob(rootDir, DEFAULT_LOB);
   const lobRoot = path.join(rootDir, DEFAULT_LOB);
   ensureDir(lobRoot);
 
-  const existing = fs.readdirSync(lobRoot).filter((n) => !n.startsWith("."));
-  if (existing.length === 0) {
-    const samples = [
-      {
-        folder: "acme-supplies",
-        data: {
-          companyName: "Acme Supplies",
-          contactName: "Jordan Lee",
-          email: "jordan@acmesupplies.example",
-          phone: "555-0142",
-          taxId: "12-3456789",
-          address: "100 Market Street",
-          city: "Austin",
-          state: "TX",
-          zip: "78701",
-        },
-        note: "Put W9, COI, and other vendor docs in this folder.",
-      },
-      {
-        folder: "blue-river-parts",
-        data: {
-          companyName: "Blue River Parts",
-          contactName: "Sam Rivera",
-          email: "sam@blueriver.example",
-          phone: "555-0199",
-          taxId: "98-7654321",
-          address: "42 Harbor Ave",
-          city: "Seattle",
-          state: "WA",
-          zip: "98101",
-        },
-        note: "Put supporting PDFs here. Fill values live in data.json.",
-      },
-    ];
-
-    for (const sample of samples) {
-      const dir = lobCardDir(rootDir, sample.folder);
-      writeCardFiles(dir, {
-        data: sample.data,
-        meta: {
-          id: sample.folder,
-          title: titleFromFolder(sample.folder, sample.data),
-          sopId: "vendor-onboarding",
-          status: "queued",
-          lob: DEFAULT_LOB,
-        },
-        readme: `${sample.note}\n\nEdit data.json — those fields are what liveAct fills into the form.\n`,
-      });
-    }
+  const workbookStore = require("./workbook");
+  const projectRoot = defaultProjectRoot();
+  let existingKeys = new Set();
+  try {
+    const { QueueCards } = await workbookStore.readTables(["QueueCards"], projectRoot);
+    existingKeys = new Set(
+      (QueueCards || [])
+        .filter((r) => String(r.card_id || "").trim())
+        .map((r) => cardKey(r.lob, r.card_id))
+    );
+  } catch {
+    existingKeys = new Set();
   }
 
-  // Always ensure the multi-site demo queue cards exist (idempotent)
+  async function seedIfMissing(dir, payload) {
+    const meta = payload.meta || {};
+    const lob = normalizeLob(meta.lob);
+    const id = String(meta.id || path.basename(dir)).trim();
+    if (!id || existingKeys.has(cardKey(lob, id))) return false;
+    await writeCardFiles(dir, payload);
+    existingKeys.add(cardKey(lob, id));
+    return true;
+  }
+
+  // Rehydrate cards that still live on disk (queue/TCOO/…) but vanished from the workbook.
+  for (const entry of listLobCardDirs(rootDir)) {
+    const disk = loadCardFromDir(entry.dir, entry.id, entry.lob);
+    await seedIfMissing(entry.dir, {
+      data: disk.data || {},
+      meta: {
+        id: disk.id,
+        title: disk.title,
+        sopId: disk.sopId,
+        status: disk.status,
+        lob: normalizeLob(disk.lob || entry.lob),
+        formUrl: disk.formUrl,
+        pdfPath: disk.pdfPath,
+        formMatch: disk.formMatch,
+        assignees: disk.assignees,
+      },
+    });
+  }
+
+  try {
+    const { QueueLobs } = await workbookStore.readTables(["QueueLobs"], projectRoot);
+    const nextLobs = [];
+    const seenLobs = new Set();
+    for (const row of QueueLobs || []) {
+      const name = normalizeLob(row.lob);
+      if (seenLobs.has(name)) continue;
+      seenLobs.add(name);
+      nextLobs.push({ ...row, lob: name });
+    }
+    if (!seenLobs.has(DEFAULT_LOB)) {
+      nextLobs.push({
+        lob: DEFAULT_LOB,
+        assignees: "",
+        updated_at: new Date().toISOString(),
+      });
+    }
+    if (nextLobs.length !== (QueueLobs || []).length) {
+      await workbookStore.replaceRows("QueueLobs", nextLobs, projectRoot);
+    }
+  } catch {
+    /* QueueLobs is optional until the workbook exists */
+  }
+
+  const samples = [
+    {
+      folder: "acme-supplies",
+      data: {
+        companyName: "Acme Supplies",
+        contactName: "Jordan Lee",
+        email: "jordan@acmesupplies.example",
+        phone: "555-0142",
+        taxId: "12-3456789",
+        address: "100 Market Street",
+        city: "Austin",
+        state: "TX",
+        zip: "78701",
+      },
+      note: "Put W9, COI, and other vendor docs in this folder.",
+    },
+    {
+      folder: "blue-river-parts",
+      data: {
+        companyName: "Blue River Parts",
+        contactName: "Sam Rivera",
+        email: "sam@blueriver.example",
+        phone: "555-0199",
+        taxId: "98-7654321",
+        address: "42 Harbor Ave",
+        city: "Seattle",
+        state: "WA",
+        zip: "98101",
+      },
+      note: "Put supporting PDFs here. Field values live in livetrack.xlsx.",
+    },
+  ];
+
+  for (const sample of samples) {
+    const dir = lobCardDir(rootDir, sample.folder);
+    await seedIfMissing(dir, {
+      data: sample.data,
+      meta: {
+        id: sample.folder,
+        title: titleFromFolder(sample.folder, sample.data),
+        sopId: "vendor-onboarding",
+        status: "queued",
+        lob: DEFAULT_LOB,
+      },
+      readme: `${sample.note}\n\nCase field values live in livetrack.xlsx (QueueData).\n`,
+    });
+  }
+
+  // Always ensure the multi-site demo queue cards exist (idempotent; never wipe user rows)
   try {
     const { DEMO_SITES } = require("@coact/shared/demo-catalog");
     for (const site of DEMO_SITES) {
       const dir = lobCardDir(rootDir, site.id);
-      if (fs.existsSync(path.join(dir, "data.json"))) continue;
-      writeCardFiles(dir, {
+      await seedIfMissing(dir, {
         data: site.answers,
         meta: {
           id: site.id,
@@ -523,7 +758,7 @@ function seedSampleCases(rootDir = defaultDocumentsRoot()) {
           lob: DEFAULT_LOB,
           formUrl: `http://127.0.0.1:4173/${site.path.replace(/\.html$/, "")}`,
         },
-        readme: `${site.title}\n\nOpen http://127.0.0.1:4173/${site.path.replace(/\.html$/, "")} then Start in liveAct.\n`,
+        readme: `${site.title}\n\nOpen http://127.0.0.1:4173/${site.path.replace(/\.html$/, "")} then Start in LiveTrack.\n`,
       });
     }
 
@@ -545,7 +780,7 @@ function seedSampleCases(rootDir = defaultDocumentsRoot()) {
           formMatch: ["orbit-onboard", "Orbit Onboard"],
         },
         readme:
-          "Orbit Onboard multi-page click stream.\n\nOpen http://127.0.0.1:4173/sites/orbit-onboard/ then Start in liveAct.\n",
+          "Orbit Onboard multi-page click stream.\n\nOpen http://127.0.0.1:4173/sites/orbit-onboard/ then Start in LiveTrack.\n",
       },
       {
         id: "gateform-access",
@@ -566,7 +801,7 @@ function seedSampleCases(rootDir = defaultDocumentsRoot()) {
           formMatch: ["gateform-access", "Gateform Access"],
         },
         readme:
-          "Gateform Access single-page click gate.\n\nOpen http://127.0.0.1:4173/sites/gateform-access/ then Start in liveAct.\n",
+          "Gateform Access single-page click gate.\n\nOpen http://127.0.0.1:4173/sites/gateform-access/ then Start in LiveTrack.\n",
       },
       {
         id: "planstream-apply",
@@ -587,7 +822,7 @@ function seedSampleCases(rootDir = defaultDocumentsRoot()) {
           formMatch: ["planstream-apply", "PlanStream Apply", "sites/planstream-apply"],
         },
         readme:
-          "PlanStream Apply: Landing (Accept → Choose plan → Continue) → Eligibility (Confirm → Select workspace → Open application) → form.\n\nOpen http://127.0.0.1:4173/sites/planstream-apply/ then Start in liveAct.\n",
+          "PlanStream Apply: Landing (Accept → Choose plan → Continue) → Eligibility (Confirm → Select workspace → Open application) → form.\n\nOpen http://127.0.0.1:4173/sites/planstream-apply/ then Start in LiveTrack.\n",
       },
       {
         id: "section-select",
@@ -608,14 +843,13 @@ function seedSampleCases(rootDir = defaultDocumentsRoot()) {
           formMatch: ["section-select", "Segue Select", "sites/section-select"],
         },
         readme:
-          "Segue Select: Region → Product → Intent → Plan → Confirm (same page), then form.\n\nOpen http://127.0.0.1:4173/sites/section-select/ then Start in liveAct.\n",
+          "Segue Select: Region → Product → Intent → Plan → Confirm (same page), then form.\n\nOpen http://127.0.0.1:4173/sites/section-select/ then Start in LiveTrack.\n",
       },
     ];
 
     for (const c of clickStreamCases) {
       const dir = lobCardDir(rootDir, c.id);
-      if (fs.existsSync(path.join(dir, "data.json"))) continue;
-      writeCardFiles(dir, { data: c.data, meta: c.meta, readme: c.readme });
+      await seedIfMissing(dir, { data: c.data, meta: c.meta, readme: c.readme });
     }
   } catch (err) {
     console.error("[coact] demo site seed failed", err.message);
@@ -642,6 +876,8 @@ module.exports = {
   writeCardFiles,
   lobCardDir,
   loadCardFromDir,
+  cardKey,
+  normalizeLob,
   updateQueueCardStatus,
   isCardDir,
   loadLobConfig,

@@ -2,7 +2,7 @@
 node_modules/
 packages/*/node_modules/
 
-# Build / pack output
+# Build / pack output (installers: ../release next to this repo)
 dist/
 release/
 out/
@@ -21,14 +21,16 @@ settings.json
 .env.*
 !.env.example
 
-# Runtime execution logs (kept under the project, not committed)
-executions/*.xlsx
-sql/*.sql
+# Runtime (not committed)
+livetrack.xlsx
+liveact.xlsx
+coact.xlsx
 packages/dashboard/data.json
 packages/dashboard/data.js
-!executions/.gitkeep
-!sql/.gitkeep
 jira-actions.jsonl
 /queue/
 /extension/
 /sops/
+/sql/
+/executions/
+/digests/

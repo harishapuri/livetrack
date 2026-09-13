@@ -21,9 +21,9 @@
 }
 
 .dash-nav a.active {
-  color: var(--text);
-  border-color: var(--line);
-  background: var(--panel);
+  color: var(--accent);
+  border-color: var(--gold);
+  background: rgba(252, 204, 68, 0.18);
 }
 
 .studio-lead {

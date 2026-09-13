@@ -8,6 +8,7 @@
 
 const http = require("http");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { URL } = require("url");
 
@@ -28,8 +29,12 @@ function hoursAgo(n) {
 const issues = new Map();
 /** @type {Map<string, object[]>} */
 const comments = new Map();
+/** @type {Map<string, object[]>} */
+const attachments = new Map();
+const ATTACH_DIR = path.join(os.tmpdir(), "jira-mock-attachments");
 let nextCommentId = 1000;
 let nextIssueId = 10001;
+let nextAttachId = 1;
 
 function seed() {
   const rows = [
@@ -74,6 +79,7 @@ function seed() {
       },
     });
     comments.set(row.key, []);
+    attachments.set(row.key, []);
   }
 }
 
@@ -100,21 +106,113 @@ function sendJson(res, status, body) {
   res.end(data);
 }
 
-function readBody(req) {
+function readRawBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     req.on("data", (c) => chunks.push(c));
-    req.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8");
-      if (!raw) return resolve({});
-      try {
-        resolve(JSON.parse(raw));
-      } catch (err) {
-        reject(err);
-      }
-    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
+}
+
+function readBody(req) {
+  return readRawBody(req).then((buf) => {
+    const raw = buf.toString("utf8");
+    if (!raw) return {};
+    return JSON.parse(raw);
+  });
+}
+
+function parseMultipartFiles(buffer, contentType) {
+  const bm = String(contentType || "").match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  if (!bm || !buffer || !buffer.length) return [];
+  const boundary = String(bm[1] || bm[2] || "").trim();
+  if (!boundary) return [];
+  const raw = Buffer.isBuffer(buffer) ? buffer.toString("latin1") : String(buffer);
+  const files = [];
+  for (const chunk of raw.split(`--${boundary}`)) {
+    if (!chunk || chunk === "--" || chunk === "--\r\n" || chunk.startsWith("--")) continue;
+    const normalized = chunk.startsWith("\r\n") ? chunk.slice(2) : chunk;
+    const headerEnd = normalized.indexOf("\r\n\r\n");
+    if (headerEnd < 0) continue;
+    const headers = normalized.slice(0, headerEnd);
+    const nameMatch = headers.match(/filename\*?=(?:UTF-8''|")?([^";\r\n]+)"?/i);
+    if (!nameMatch) continue;
+    let filename = nameMatch[1].replace(/"/g, "").trim();
+    try {
+      filename = decodeURIComponent(filename);
+    } catch {
+      /* keep raw */
+    }
+    filename = path.basename(filename);
+    if (!filename) continue;
+    let body = normalized.slice(headerEnd + 4);
+    if (body.endsWith("\r\n")) body = body.slice(0, -2);
+    const mimeMatch = headers.match(/Content-Type:\s*([^\r\n]+)/i);
+    files.push({
+      filename,
+      mimeType: (mimeMatch && mimeMatch[1].trim()) || "application/octet-stream",
+      data: Buffer.from(body, "latin1"),
+    });
+  }
+  return files;
+}
+
+function attachmentPublicUrl(id) {
+  return `http://127.0.0.1:${PORT}/api/attachments/${id}`;
+}
+
+function persistIssueAttachments(issueKey, files) {
+  const key = String(issueKey || "").trim();
+  if (!key || !Array.isArray(files) || !files.length) return [];
+  const dir = path.join(ATTACH_DIR, key.replace(/[^\w.-]+/g, "_"));
+  fs.mkdirSync(dir, { recursive: true });
+  const list = attachments.get(key) || [];
+  const saved = [];
+  for (const file of files) {
+    const data = Buffer.isBuffer(file.data) ? file.data : Buffer.from(file.data || []);
+    if (!data.length) continue;
+    const id = String(nextAttachId++);
+    const filename = path.basename(String(file.filename || `file-${id}`));
+    const storedPath = path.join(dir, `${id}-${filename.replace(/[^\w.\-]+/g, "_")}`);
+    fs.writeFileSync(storedPath, data);
+    const rec = {
+      id,
+      filename,
+      mimeType: file.mimeType || "application/octet-stream",
+      size: data.length,
+      content: attachmentPublicUrl(id),
+      storedPath,
+    };
+    list.push(rec);
+    saved.push(rec);
+  }
+  attachments.set(key, list);
+  return saved;
+}
+
+function listAttachments(issueKey) {
+  return attachments.get(String(issueKey || "").trim()) || [];
+}
+
+function findAttachment(id) {
+  const want = String(id || "").trim();
+  for (const list of attachments.values()) {
+    const found = list.find((item) => item.id === want);
+    if (found) return found;
+  }
+  return null;
+}
+
+function attachmentToApi(item) {
+  return {
+    id: item.id,
+    filename: item.filename,
+    mimeType: item.mimeType,
+    size: item.size,
+    content: item.content,
+    url: item.content,
+  };
 }
 
 function adfToText(adf) {
@@ -123,10 +221,14 @@ function adfToText(adf) {
   const walk = (node) => {
     if (!node) return;
     if (node.type === "text" && node.text) parts.push(node.text);
-    if (Array.isArray(node.content)) node.content.forEach(walk);
+    if (node.type === "hardBreak") parts.push("\n");
+    if (Array.isArray(node.content)) {
+      node.content.forEach(walk);
+      if (node.type === "paragraph" || node.type === "heading") parts.push("\n");
+    }
   };
   walk(adf);
-  return parts.join(" ") || "";
+  return parts.join("").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function listIssues() {
@@ -138,6 +240,8 @@ function listIssues() {
 function handleSearch(url, res) {
   const maxResults = Math.min(100, Number(url.searchParams.get("maxResults") || 50) || 50);
   const jql = String(url.searchParams.get("jql") || "");
+  const tokenRaw = String(url.searchParams.get("nextPageToken") || "").trim();
+  const startAt = tokenRaw ? Math.max(0, Number(tokenRaw) || 0) : 0;
   let all = listIssues();
   // Honor assignee = currentUser() (mock user = demo@coact.local / Demo Agent)
   if (/\bassignee\s*=\s*currentUser\s*\(\s*\)/i.test(jql)) {
@@ -148,13 +252,16 @@ function handleSearch(url, res) {
       return email === DEMO_EMAIL.toLowerCase() || name === "Demo Agent";
     });
   }
-  const sliced = all.slice(0, maxResults);
+  const sliced = all.slice(startAt, startAt + maxResults);
+  const isLast = startAt + sliced.length >= all.length;
   sendJson(res, 200, {
     expand: "names,schema",
-    startAt: 0,
+    startAt,
     maxResults,
     total: all.length,
+    isLast,
     issues: sliced,
+    ...(isLast ? {} : { nextPageToken: String(startAt + sliced.length) }),
   });
 }
 
@@ -168,11 +275,20 @@ function handleGetIssue(key, url, res) {
     const wanted = fieldsParam.split(",").map((s) => s.trim()).filter(Boolean);
     const fields = {};
     for (const f of wanted) {
-      if (issue.fields[f] != null) fields[f] = issue.fields[f];
+      if (f === "attachment") {
+        fields.attachment = listAttachments(issue.key).map(attachmentToApi);
+      } else if (issue.fields[f] != null) fields[f] = issue.fields[f];
     }
     return sendJson(res, 200, { id: issue.id, key: issue.key, fields });
   }
-  sendJson(res, 200, issue);
+  const withAttach = {
+    ...issue,
+    fields: {
+      ...issue.fields,
+      attachment: listAttachments(issue.key).map(attachmentToApi),
+    },
+  };
+  sendJson(res, 200, withAttach);
 }
 
 async function handleComment(key, req, res) {
@@ -198,6 +314,27 @@ async function handleComment(key, req, res) {
   sendJson(res, 201, { id, created: comment.created, body: body.body });
 }
 
+async function handlePutIssue(key, req, res) {
+  const issue = findIssue(key);
+  if (!issue) {
+    return sendJson(res, 404, { errorMessages: [`Issue does not exist.`] });
+  }
+  const body = await readBody(req);
+  const fields = body?.fields || {};
+  if (fields.summary != null) {
+    issue.fields.summary = String(fields.summary || "").trim();
+  }
+  if (fields.description != null) {
+    issue.fields.description =
+      typeof fields.description === "string"
+        ? fields.description
+        : adfToText(fields.description);
+  }
+  issue.fields.updated = new Date().toISOString();
+  res.writeHead(204, { "Access-Control-Allow-Origin": "*" });
+  res.end();
+}
+
 function issueToApi(i) {
   return {
     id: i.id,
@@ -212,8 +349,39 @@ function issueToApi(i) {
     updated: i.fields.updated,
     issueType: i.fields.issuetype?.name,
     comments: (comments.get(i.key) || []).length,
+    attachments: listAttachments(i.key).map(attachmentToApi),
     url: `http://127.0.0.1:${PORT}/browse/${i.key}`,
   };
+}
+
+function createIssueRecord({ key, summary, description, status, priority, issueType, assignee }) {
+  const issueKey = String(key || `LIVEACT-${nextIssueId}`).trim().toUpperCase();
+  if (issues.has(issueKey)) {
+    return { error: "exists", key: issueKey };
+  }
+  const id = String(nextIssueId++);
+  const issue = {
+    id,
+    key: issueKey,
+    fields: {
+      summary: String(summary || "New story").trim(),
+      description: String(description || "").trim(),
+      status: { name: String(status || "To Do").trim() },
+      priority: { name: String(priority || "Medium").trim() },
+      assignee: {
+        displayName: String(assignee || "Demo Agent").trim(),
+        emailAddress: DEMO_EMAIL,
+      },
+      reporter: { displayName: "Demo Agent", emailAddress: DEMO_EMAIL },
+      labels: [],
+      updated: new Date().toISOString(),
+      issuetype: { name: String(issueType || "Task").trim() },
+    },
+  };
+  issues.set(issueKey, issue);
+  comments.set(issueKey, []);
+  attachments.set(issueKey, []);
+  return { issue, id, key: issueKey };
 }
 
 function findIssue(keyOrId) {
@@ -240,34 +408,47 @@ async function handleDashboardApi(req, res, url) {
     return sendJson(res, 200, issueToApi(issue));
   }
 
+  const attachFileMatch = url.pathname.match(/^\/api\/attachments\/([^/]+)$/);
+  if (attachFileMatch && req.method === "GET") {
+    const rec = findAttachment(decodeURIComponent(attachFileMatch[1]));
+    if (!rec || !fs.existsSync(rec.storedPath)) {
+      return sendJson(res, 404, { error: "Not found" });
+    }
+    res.writeHead(200, {
+      "Content-Type": rec.mimeType || "application/octet-stream",
+      "Content-Disposition": `inline; filename="${rec.filename.replace(/"/g, "")}"`,
+      "Access-Control-Allow-Origin": "*",
+    });
+    return fs.createReadStream(rec.storedPath).pipe(res);
+  }
+
+  const issueAttachMatch = url.pathname.match(/^\/api\/issues\/([^/]+)\/attachments$/);
+  if (issueAttachMatch && req.method === "GET") {
+    const issue = findIssue(decodeURIComponent(issueAttachMatch[1]));
+    if (!issue) return sendJson(res, 404, { error: "Not found" });
+    return sendJson(res, 200, { attachments: listAttachments(issue.key).map(attachmentToApi) });
+  }
+
   if (url.pathname === "/api/issues" && req.method === "POST") {
     const body = await readBody(req);
-    const key = String(body.key || `LIVEACT-${nextIssueId}`).trim().toUpperCase();
-    if (issues.has(key)) {
+    const created = createIssueRecord({
+      key: body.key,
+      summary: body.summary,
+      description: body.description,
+      status: body.status,
+      priority: body.priority,
+      issueType: body.issueType,
+      assignee: body.assignee,
+    });
+    if (created.error === "exists") {
       return sendJson(res, 409, { error: "Key already exists" });
     }
-    const id = String(nextIssueId++);
-    const issue = {
-      id,
-      key,
-      fields: {
-        summary: String(body.summary || "New story").trim(),
-        description: String(body.description || "").trim(),
-        status: { name: String(body.status || "To Do").trim() },
-        priority: { name: String(body.priority || "Medium").trim() },
-        assignee: {
-          displayName: String(body.assignee || "Demo Agent").trim(),
-          emailAddress: DEMO_EMAIL,
-        },
-        reporter: { displayName: "Demo Agent", emailAddress: DEMO_EMAIL },
-        labels: Array.isArray(body.labels) ? body.labels.map(String) : [],
-        updated: body.updated ? new Date(body.updated).toISOString() : new Date().toISOString(),
-        issuetype: { name: String(body.issueType || "Story").trim() },
-      },
-    };
-    issues.set(key, issue);
-    comments.set(key, []);
-    return sendJson(res, 201, { ok: true, key, id, url: `http://127.0.0.1:${PORT}/browse/${key}` });
+    return sendJson(res, 201, {
+      ok: true,
+      key: created.key,
+      id: created.id,
+      url: `http://127.0.0.1:${PORT}/browse/${created.key}`,
+    });
   }
 
   if (oneMatch && req.method === "PATCH") {
@@ -413,16 +594,118 @@ const server = http.createServer(async (req, res) => {
       return await handleDashboardApi(req, res, url);
     }
 
-    if (url.pathname.startsWith("/rest/api/3/")) {
+    // Never serve dashboard HTML under /rest/* — LiveTrack expects JSON at /rest/api/3/search and /search/jql.
+    if (url.pathname.startsWith("/rest/")) {
       if (!checkAuth(req)) {
         return sendJson(res, 401, { errorMessages: ["Unauthorized"] });
       }
 
-      if (url.pathname === "/rest/api/3/search" && req.method === "GET") {
+      if (!url.pathname.startsWith("/rest/api/3/")) {
+        return sendJson(res, 404, { errorMessages: ["Not found"] });
+      }
+
+      if (url.pathname === "/rest/api/3/myself" && req.method === "GET") {
+        return sendJson(res, 200, {
+          accountId: "demo-account",
+          displayName: "Demo Agent",
+          emailAddress: DEMO_EMAIL,
+        });
+      }
+
+      const MOCK_PROJECTS = [{ key: "LIVEACT", name: "LiveAct" }];
+      if (
+        (url.pathname === "/rest/api/3/project" || url.pathname === "/rest/api/3/project/") &&
+        req.method === "GET"
+      ) {
+        return sendJson(res, 200, MOCK_PROJECTS);
+      }
+      if (
+        (url.pathname === "/rest/api/3/project/search" ||
+          url.pathname === "/rest/api/3/project/search/") &&
+        req.method === "GET"
+      ) {
+        return sendJson(res, 200, {
+          maxResults: 100,
+          startAt: 0,
+          total: MOCK_PROJECTS.length,
+          isLast: true,
+          values: MOCK_PROJECTS,
+        });
+      }
+      const projectMatch = url.pathname.match(/^\/rest\/api\/3\/project\/([^/]+)$/);
+      if (projectMatch && req.method === "GET") {
+        const key = decodeURIComponent(projectMatch[1]).trim().toUpperCase();
+        const found = MOCK_PROJECTS.find((p) => p.key === key);
+        if (found) return sendJson(res, 200, found);
+        return sendJson(res, 404, { errorMessages: [`Project ${key} does not exist.`] });
+      }
+
+      const isSearch = /^\/rest\/api\/3\/search(?:\/jql)?\/?$/.test(url.pathname);
+      if (isSearch && (req.method === "GET" || req.method === "POST")) {
+        if (req.method === "POST") {
+          try {
+            const body = await readBody(req);
+            if (body?.jql && !url.searchParams.get("jql")) {
+              url.searchParams.set("jql", String(body.jql));
+            }
+            if (body?.maxResults != null && !url.searchParams.get("maxResults")) {
+              url.searchParams.set("maxResults", String(body.maxResults));
+            }
+            if (body?.nextPageToken && !url.searchParams.get("nextPageToken")) {
+              url.searchParams.set("nextPageToken", String(body.nextPageToken));
+            }
+          } catch {
+            /* ignore body parse; still run search with query params */
+          }
+        }
         return handleSearch(url, res);
       }
 
+      if (url.pathname === "/rest/api/3/issue" && req.method === "POST") {
+        const body = await readBody(req);
+        const fields = body.fields || {};
+        const projectKey = String(fields.project?.key || "LIVEACT").trim().toUpperCase();
+        const summary = fields.summary;
+        const description =
+          typeof fields.description === "string"
+            ? fields.description
+            : adfToText(fields.description);
+        const created = createIssueRecord({
+          key: `${projectKey}-${nextIssueId}`,
+          summary,
+          description,
+          issueType: fields.issuetype?.name || "Task",
+        });
+        if (created.error === "exists") {
+          return sendJson(res, 409, { errorMessages: ["Issue already exists"] });
+        }
+        return sendJson(res, 201, { id: created.id, key: created.key, self: `http://127.0.0.1:${PORT}/rest/api/3/issue/${created.key}` });
+      }
+
+      const attachMatch = url.pathname.match(/^\/rest\/api\/3\/issue\/([^/]+)\/attachments$/);
+      if (attachMatch && req.method === "POST") {
+        const issue = findIssue(decodeURIComponent(attachMatch[1]));
+        if (!issue) {
+          return sendJson(res, 404, { errorMessages: ["Issue does not exist."] });
+        }
+        const raw = await readRawBody(req);
+        const files = parseMultipartFiles(raw, req.headers["content-type"]);
+        const saved = persistIssueAttachments(issue.key, files);
+        if (saved.length) {
+          const names = saved.map((item) => item.filename).join(", ");
+          const note = `\n\n[Attached: ${names}]`;
+          issue.fields.description = `${issue.fields.description || ""}${note}`.trim();
+        } else {
+          issue.fields.description = `${issue.fields.description || ""}\n\n[Attachment received]`.trim();
+        }
+        issue.fields.updated = new Date().toISOString();
+        return sendJson(res, 200, saved.map(attachmentToApi));
+      }
+
       const issueMatch = url.pathname.match(/^\/rest\/api\/3\/issue\/([^/]+)$/);
+      if (issueMatch && (req.method === "PUT" || req.method === "PATCH")) {
+        return await handlePutIssue(decodeURIComponent(issueMatch[1]), req, res);
+      }
       if (issueMatch && req.method === "GET") {
         return handleGetIssue(decodeURIComponent(issueMatch[1]), url, res);
       }
@@ -450,10 +733,44 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`[jira-mock] dashboard  http://127.0.0.1:${PORT}/`);
-  console.log(`[jira-mock] API base   http://127.0.0.1:${PORT}`);
-  console.log(`[jira-mock] email      ${DEMO_EMAIL}`);
-  console.log(`[jira-mock] token      ${DEMO_TOKEN}`);
-  console.log(`[jira-mock] liveAct → Settings → Jira site URL = http://127.0.0.1:${PORT}`);
-});
+function startLocalJiraMock(port = PORT) {
+  const listenPort = Number(port || PORT) || PORT;
+  return new Promise((resolve, reject) => {
+    if (server.listening) {
+      resolve({ ok: true, already: true, port: listenPort });
+      return;
+    }
+    const onError = (err) => {
+      server.off("error", onError);
+      if (err?.code === "EADDRINUSE") {
+        resolve({ ok: true, already: true, port: listenPort });
+        return;
+      }
+      reject(err);
+    };
+    server.once("error", onError);
+    server.listen(listenPort, "127.0.0.1", () => {
+      server.off("error", onError);
+      console.log(`[jira-mock] dashboard  http://127.0.0.1:${listenPort}/`);
+      console.log(`[jira-mock] API base   http://127.0.0.1:${listenPort}`);
+      resolve({ ok: true, already: false, port: listenPort });
+    });
+  });
+}
+
+if (require.main === module) {
+  startLocalJiraMock().catch((err) => {
+    console.error("[jira-mock]", err);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  startLocalJiraMock,
+  PORT,
+  createIssueRecord,
+  parseMultipartFiles,
+  persistIssueAttachments,
+  listAttachments,
+};
+

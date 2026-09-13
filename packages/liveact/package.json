@@ -2,8 +2,8 @@
   "name": "@coact/liveact",
   "version": "0.1.0",
   "private": true,
-  "description": "liveAct Electron app — queue cards, step watcher, pause/takeover",
-  "author": "liveAct",
+  "description": "LiveTrack Electron app — queue cards, step watcher, pause/takeover",
+  "author": "LiveTrack",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -11,7 +11,8 @@
     "pack": "electron-builder --dir --config.electronVersion=33.4.11",
     "dist": "electron-builder --config.electronVersion=33.4.11",
     "dist:mac": "electron-builder --mac --config.electronVersion=33.4.11",
-    "dist:win": "electron-builder --win --config.electronVersion=33.4.11"
+    "dist:win": "electron-builder --win --config.electronVersion=33.4.11",
+    "dist:win:uninstaller": "node scripts/build-portable-uninstaller.js"
   },
   "dependencies": {
     "@coact/shared": "*",
@@ -24,15 +25,16 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "com.coact.app",
-    "productName": "liveAct",
-    "copyright": "Copyright © liveAct",
+    "appId": "com.livetrack.app",
+    "productName": "LiveTrack",
+    "copyright": "Copyright © LiveTrack",
     "electronVersion": "33.4.11",
     "npmRebuild": false,
     "nodeGypRebuild": false,
     "directories": {
-      "output": "../../release"
+      "output": "../../../release"
     },
+    "afterPack": "./scripts/after-pack-clear-quarantine.js",
     "files": [
       "**/*",
       "!scripts/**/*"
@@ -60,6 +62,20 @@
           "!generate-sites.js",
           "!package.json"
         ]
+      },
+      {
+        "from": "../jira-mock",
+        "to": "jira-mock",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "prompts",
+        "to": "prompts",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "mac": {
@@ -80,7 +96,12 @@
       ],
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
-      "identity": null
+      "identity": null,
+      "extendInfo": {
+        "NSScreenCaptureUsageDescription": "LiveTrack captures a screen region for Desk tickets and captures meeting playback (earphones or speakers) for Minutes of Meeting.",
+        "NSMicrophoneUsageDescription": "LiveTrack uses the microphone for spoken prompts and Minutes of Meeting, including speaker playback in the room.",
+        "NSSpeechRecognitionUsageDescription": "LiveTrack converts spoken prompts into text for Ask LiveTrack."
+      }
     },
     "dmg": {
       "contents": [
@@ -111,19 +132,23 @@
           ]
         }
       ],
-      "artifactName": "liveAct-Setup-${version}-${arch}.${ext}"
+      "artifactName": "LiveTrack-Setup-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "liveAct",
+      "shortcutName": "LiveTrack",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
       "license": null,
       "include": null
     },
     "portable": {
-      "artifactName": "liveAct-Portable-${version}-${arch}.${ext}"
+      "artifactName": "LiveTrack-Portable-${version}-${arch}.${ext}"
     }
   }
 }

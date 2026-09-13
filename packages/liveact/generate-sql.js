@@ -1,6 +1,6 @@
 /**
- * Generate PostgreSQL SQL from all queue-card Excel execution logs.
- * One table (coact_executions), one row per execution, answers as JSONB.
+ * Generate PostgreSQL SQL from the mother workbook (livetrack.xlsx).
+ * One table (livetrack_executions), one row per execution, answers as JSONB.
  */
 const fs = require("fs");
 const path = require("path");
@@ -9,7 +9,7 @@ const { defaultProjectRoot } = require("./documents");
 const { resolveExecutionsRoot } = require("./settings");
 
 const SHEET_NAME = "Executions";
-const TABLE = "coact_executions";
+const TABLE = "livetrack_executions";
 const META_HEADERS = [
   "LOB",
   "Queue Card",
@@ -213,13 +213,13 @@ function schemaSql() {
     `  answers        JSONB NOT NULL DEFAULT '{}'::jsonb`,
     `);`,
     ``,
-    `CREATE INDEX IF NOT EXISTS idx_coact_exec_day_lob`,
+    `CREATE INDEX IF NOT EXISTS idx_livetrack_exec_day_lob`,
     `  ON ${TABLE} (run_date, lob, queue_card_id);`,
     ``,
-    `CREATE INDEX IF NOT EXISTS idx_coact_exec_answers`,
+    `CREATE INDEX IF NOT EXISTS idx_livetrack_exec_answers`,
     `  ON ${TABLE} USING GIN (answers);`,
     ``,
-    `CREATE INDEX IF NOT EXISTS idx_coact_exec_mistakes`,
+    `CREATE INDEX IF NOT EXISTS idx_livetrack_exec_mistakes`,
     `  ON ${TABLE} USING GIN (mistakes);`,
     ``,
     `ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS mistake_count INTEGER NOT NULL DEFAULT 0;`,
@@ -303,27 +303,69 @@ async function loadAllExecutions(opts = {}) {
     dateTo = range.dateTo;
   }
   const includeAnswers = opts.includeAnswers !== false;
+  const projectRoot = defaultProjectRoot();
+  const workbookStore = require("./workbook");
+  const xlsxPath = workbookStore.workbookPath(projectRoot);
+  const tables = await workbookStore.readTables(
+    ["Executions", "Answers", "Mistakes"],
+    projectRoot
+  );
+  const answersByRun = new Map();
+  if (includeAnswers) {
+    for (const row of tables.Answers || []) {
+      if (!row.run_id || !row.field_key) continue;
+      if (!answersByRun.has(row.run_id)) answersByRun.set(row.run_id, {});
+      answersByRun.get(row.run_id)[row.field_key] = row.field_value;
+    }
+  }
+  const mistakesByRun = new Map();
+  for (const row of tables.Mistakes || []) {
+    if (!row.run_id) continue;
+    if (!mistakesByRun.has(row.run_id)) mistakesByRun.set(row.run_id, []);
+    const parsed = workbookStore.parseJsonCell(row.payload_json);
+    mistakesByRun.get(row.run_id).push(parsed && typeof parsed === "object" ? parsed : { raw: row.payload_json });
+  }
+
   let execRoot = opts.executionsRoot;
   if (!execRoot) {
     try {
       execRoot = resolveExecutionsRoot();
     } catch {
-      execRoot = path.join(defaultProjectRoot(), "executions");
+      execRoot = path.join(projectRoot, "executions");
     }
   }
-  ensureDir(execRoot);
-  const files = listExcelFiles(execRoot);
+
   const allRows = [];
-  const sheetOpts = { dateFilter, dateFrom, dateTo, includeAnswers };
-  for (const file of files) {
-    allRows.push(...(await loadWideSheet(file, sheetOpts)));
+  for (const row of tables.Executions || []) {
+    const runId = row.run_id;
+    if (!runId) continue;
+    const runDateVal = row.run_date;
+    if (dateFilter && runDateVal !== dateFilter) continue;
+    if (dateFrom && runDateVal && runDateVal < dateFrom) continue;
+    if (dateTo && runDateVal && runDateVal > dateTo) continue;
+    const mistakes = mistakesByRun.get(runId) || [];
+    allRows.push({
+      run_id: runId,
+      run_date: runDateVal || dateFilter || null,
+      lob: row.lob || "TCOO",
+      queue_card_id: row.queue_card_id || "",
+      queue_card: row.queue_card || row.queue_card_id || "",
+      user_id: row.user_id || "",
+      fill_mode: row.fill_mode || "automated",
+      completed_at: row.completed_at || "",
+      excel_path: path.basename(xlsxPath),
+      mistake_count: Number(row.mistake_count) || mistakes.length,
+      mistakes,
+      answers: includeAnswers ? answersByRun.get(runId) || {} : {},
+    });
   }
+
   const byId = new Map();
   for (const row of allRows) byId.set(row.run_id, row);
   const runs = [...byId.values()].sort((a, b) =>
     String(a.completed_at).localeCompare(String(b.completed_at))
   );
-  return { files, runs, execRoot, dateFrom, dateTo, dateFilter };
+  return { files: fs.existsSync(xlsxPath) ? [xlsxPath] : [], runs, execRoot, dateFrom, dateTo, dateFilter };
 }
 
 /**
@@ -333,9 +375,10 @@ async function loadAllExecutions(opts = {}) {
 async function generatePostgresSql(opts = {}) {
   const dateFilter = opts.dateFilter || null;
   const quiet = Boolean(opts.quiet);
+  const writeFiles = Boolean(opts.writeFiles);
   const outSqlRoot = path.join(defaultProjectRoot(), "sql");
 
-  ensureDir(outSqlRoot);
+  if (writeFiles) ensureDir(outSqlRoot);
 
   const { files, runs, dateFrom, dateTo } = await loadAllExecutions({
     dateFilter,
@@ -348,7 +391,7 @@ async function generatePostgresSql(opts = {}) {
   if (!quiet) {
     for (const file of files) {
       const n = runs.filter((r) => r.excel_path === path.basename(file)).length;
-      console.log(`[coact-sql] ${path.basename(file)}: ${n} execution(s)`);
+      console.log(`[livetrack-sql] ${path.basename(file)}: ${n} execution(s)`);
     }
   }
 
@@ -362,20 +405,22 @@ async function generatePostgresSql(opts = {}) {
     : `All executions from all queue-card Excel files`;
 
   const schemaBody = schemaSql();
-  const schemaPath = path.join(outSqlRoot, "coact_schema.sql");
-  const insertsPath = path.join(outSqlRoot, "coact_inserts.sql");
-  const allInOnePath = path.join(outSqlRoot, "coact_poc_all_in_one.sql");
+  const schemaPath = path.join(outSqlRoot, "livetrack_schema.sql");
+  const insertsPath = path.join(outSqlRoot, "livetrack_inserts.sql");
+  const allInOnePath = path.join(outSqlRoot, "livetrack_poc_all_in_one.sql");
 
-  fs.writeFileSync(
-    schemaPath,
-    [
-      `/* Coact PostgreSQL schema — one table for ALL queue cards */`,
-      `/* Generated: ${generatedAt} */`,
-      ``,
-      schemaBody,
-    ].join("\n"),
-    "utf8"
-  );
+  if (writeFiles) {
+    fs.writeFileSync(
+      schemaPath,
+      [
+        `/* LiveTrack PostgreSQL schema — one table for ALL queue cards */`,
+        `/* Generated: ${generatedAt} */`,
+        ``,
+        schemaBody,
+      ].join("\n"),
+      "utf8"
+    );
+  }
 
   const insertLines = [
     `/* Coact PostgreSQL upserts — one row per execution */`,
@@ -398,7 +443,7 @@ async function generatePostgresSql(opts = {}) {
   }
   insertLines.push(`COMMIT;`);
   insertLines.push(``);
-  fs.writeFileSync(insertsPath, insertLines.join("\n"), "utf8");
+  if (writeFiles) fs.writeFileSync(insertsPath, insertLines.join("\n"), "utf8");
 
   const allLines = [
     `/*`,
@@ -430,9 +475,9 @@ async function generatePostgresSql(opts = {}) {
   allLines.push(`FROM ${TABLE}`);
   allLines.push(`ORDER BY completed_at NULLS LAST, run_id;`);
   allLines.push(``);
-  fs.writeFileSync(allInOnePath, allLines.join("\n"), "utf8");
+  if (writeFiles) fs.writeFileSync(allInOnePath, allLines.join("\n"), "utf8");
 
-  if (dateFilter) {
+  if (writeFiles && dateFilter) {
     fs.writeFileSync(
       path.join(outSqlRoot, `coact_inserts_${dateFilter}.sql`),
       insertLines.join("\n"),
@@ -445,27 +490,14 @@ async function generatePostgresSql(opts = {}) {
     );
   }
 
-  // Keep execution dashboard stats in sync
-  try {
-    const { generateDashboardData } = require("./dashboard-stats");
-    await generateDashboardData({
-      quiet: true,
-      runs,
-      fileCount: files.length,
-      dateFrom: dateFrom || null,
-      dateTo: dateTo || null,
-      dateFilter,
-    });
-  } catch (err) {
-    if (!quiet) console.warn("[coact-sql] dashboard refresh failed", err.message);
-  }
-
   if (!quiet) {
-    console.log(`[coact-sql] Queue-card Excel files: ${files.length}`);
-    console.log(`[coact-sql] Executions (single rows): ${runs.length}`);
-    console.log(`[coact-sql] Schema  → ${schemaPath}`);
-    console.log(`[coact-sql] Inserts → ${insertsPath}`);
-    console.log(`[coact-sql] All-in-one → ${allInOnePath}`);
+    console.log(`[livetrack-sql] Queue-card Excel files: ${files.length}`);
+    console.log(`[livetrack-sql] Executions (single rows): ${runs.length}`);
+    if (writeFiles) {
+      console.log(`[livetrack-sql] Schema  → ${schemaPath}`);
+      console.log(`[livetrack-sql] Inserts → ${insertsPath}`);
+      console.log(`[livetrack-sql] All-in-one → ${allInOnePath}`);
+    }
   }
 
   return {

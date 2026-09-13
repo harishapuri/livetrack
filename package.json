@@ -1,9 +1,9 @@
 {
-  "name": "coact",
+  "name": "livetrack",
   "version": "0.1.0",
   "private": true,
-  "description": "Attended form automation monorepo — liveAct, Chrome extension, supervisor dashboard",
-  "author": "liveAct",
+  "description": "Attended form automation monorepo — LiveTrack, Chrome extension, supervisor dashboard",
+  "author": "LiveTrack",
   "workspaces": [
     "packages/*"
   ],

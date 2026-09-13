@@ -332,6 +332,13 @@ async function applyPdfStep({ pdfPath, step, data = {}, valueOverride, onStep })
 function cardPrefersPdf(card, sop) {
   const pdfPath = resolvePdfPath(card, sop);
   if (!pdfPath) return { prefer: false, pdfPath: null };
+  const hasHtmlSelectors = (sop?.steps || []).some(
+    (s) => s.selector && !String(s.selector).startsWith("pdf:")
+  );
+  // Dual-mode SOP (New Hire HTML + PDF): do not force PDF fill
+  if (hasHtmlSelectors) {
+    return { prefer: false, pdfPath };
+  }
   const formUrl = String(card?.formUrl || sop?.formUrl || "");
   if (/127\.0\.0\.1:17322\/pdf\//i.test(formUrl)) {
     return { prefer: true, pdfPath };
@@ -345,7 +352,6 @@ function cardPrefersPdf(card, sop) {
   ) {
     return { prefer: true, pdfPath };
   }
-  // Generic: any SOP that declares AcroForm field mapping is a PDF workflow
   if (
     (sop?.steps || []).some(
       (s) => s.pdfField || String(s.selector || "").startsWith("pdf:")

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ForgeGuard Pipeline — RL review</title>
+    <style>
+      :root {
+        --bg: #f3f5f8;
+        --ink: #0f172a;
+        --line: #cbd5e1;
+        --accent: #1d4ed8;
+        --muted: #475569;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Avenir Next", sans-serif;
+        color: var(--ink);
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 36%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      main { max-width: 640px; margin: 0 auto; padding: 40px 22px 64px; }
+      .site { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+      h1 { margin: 6px 0 8px; font-size: 1.75rem; }
+      .sub { margin: 0 0 24px; color: var(--muted); line-height: 1.45; }
+      .card { background: transparent; border: 0; padding: 4px 0; display: grid; gap: 14px; }
+      .findings {
+        margin: 0;
+        padding: 12px 14px 12px 1.4rem;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .action-options { display: grid; gap: 10px; }
+      .action-options label {
+        display: flex; gap: 10px; align-items: flex-start;
+        padding: 12px; border: 1px solid var(--line); border-radius: 10px;
+        cursor: pointer; background: #fff;
+      }
+      .action-options label:has(input:checked) {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 8%, #fff);
+      }
+      button {
+        justify-self: start; font: inherit; padding: 11px 16px; border: 0;
+        border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer;
+      }
+      .hint { margin-top: 18px; color: #64748b; font-size: 0.88rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="site">ForgeGuard Pipeline</div>
+      <div id="app"></div>
+      <p class="hint">URL: http://127.0.0.1:4173/sites/forgeguard-pipeline/review</p>
+    </main>
+    <script>
+      const app = document.getElementById("app");
+
+      function showStride() {
+        app.innerHTML =
+          "<h1>Confirm STRIDE map</h1>" +
+          '<p class="sub">Page 2 of 2 — confirm threat mapping, then pick the RL action.</p>' +
+          '<div class="card">' +
+          "<p>Deterministic compliance gates stay on even if model confidence is low (ISO 27001, NIST SP 800-53, SOC 2, PCI-DSS).</p>" +
+          '<ul class="findings">' +
+          "<li>Commit tampering → ML code classifier (NIST CSF)</li>" +
+          "<li>Build elevation → container risk scorer (CIS Docker)</li>" +
+          "<li>Deploy spoofing → anomaly detection (SOC 2)</li>" +
+          "<li>Runtime DoS → RL remediation agent (ISO 27001)</li>" +
+          "<li>IaC disclosure → IaC risk scorer (PCI-DSS)</li>" +
+          "</ul>" +
+          '<button id="btnConfirmStride" type="button">Confirm STRIDE map</button>' +
+          "</div>";
+        document.getElementById("btnConfirmStride").onclick = showAction;
+      }
+
+      function showAction() {
+        app.innerHTML =
+          "<h1>Select RL action</h1>" +
+          '<p class="sub">Click 2 — Deep Q-Network policy: ALLOW, WARN, BLOCK BUILD, BLOCK DEPLOYMENT, ROLLBACK.</p>' +
+          '<div class="card">' +
+          "<p>Reward weights: security 1.0, velocity 0.1, compliance 1.5. High-risk findings prefer BLOCK BUILD.</p>" +
+          '<div class="action-options">' +
+          '<label><input type="radio" name="rl" value="allow" /><span><strong>ALLOW</strong> — 72.3% of trained actions</span></label>' +
+          '<label><input type="radio" name="rl" value="warn" /><span><strong>WARN</strong> — ticket + non-disruptive mitigation</span></label>' +
+          '<label><input type="radio" name="rl" value="block-build" checked /><span><strong>BLOCK BUILD</strong> — CVSS ≥ 7.0 on payments-api</span></label>' +
+          "</div>" +
+          '<button id="btnSelectAction" type="button">Select RL action</button>' +
+          "</div>";
+        document.getElementById("btnSelectAction").onclick = showTicket;
+      }
+
+      function showTicket() {
+        app.innerHTML =
+          "<h1>Open remediation ticket</h1>" +
+          '<p class="sub">Click 3 — navigates to the attended ticket form.</p>' +
+          '<div class="card">' +
+          "<p>Policy selected. Coact fills analyst, service, commit, CVSS, and compliance fields next.</p>" +
+          '<button id="btnOpenTicket" type="button">Open remediation ticket</button>' +
+          "</div>";
+        document.getElementById("btnOpenTicket").onclick = function () {
+          location.href = "/sites/forgeguard-pipeline/ticket";
+        };
+      }
+
+      showStride();
+    </script>
+  </body>
+</html>

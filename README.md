@@ -45,7 +45,7 @@ npm install
 npm run dist:mac
 ```
 
-Installer lands in `release/` (`.dmg` + `.zip`). The browser extension is bundled under Resources as `extension/`.
+Installer lands in `../release/` (parent `livetrack/release`, `.dmg` + `.zip`). The browser extension is bundled under Resources as `extension/`.
 
 ### Build Windows `.exe` (NSIS installer + portable)
 
@@ -55,13 +55,18 @@ Run on a Windows machine (or CI with Windows runners):
 npm run dist:win
 ```
 
-Outputs in `release/`:
-- `liveAct-Setup-…-x64.exe` — NSIS installer
-- `liveAct-Portable-…-x64.exe` — portable app
+Outputs in `../release/` (parent `livetrack/release`):
+- `LiveTrack-Setup-…-x64.exe` — NSIS installer (Apps & Features uninstall)
+- `LiveTrack-Portable-…-x64.exe` — portable app (no installed uninstaller)
+- `LiveTrack-Uninstall-Portable-…-x64.exe` — portable cleanup tool (+ matching `.cmd`)
+
+**Portable uninstall:** put `LiveTrack-Uninstall-Portable-*.exe` next to the portable exe (or in the same download folder), run it, and confirm. It quits LiveTrack, deletes `LiveTrack-Portable-*.exe` beside it, and removes `Projects\coact`, `Documents\Coact`, `.coact`, and `%APPDATA%` / `%LOCALAPPDATA%\LiveTrack`. Use `/S` for silent. Setup installs still uninstall via Windows Apps & Features.
+
+Rebuild only the portable uninstaller: `npm run dist:win:uninstaller -w @coact/liveact`.
 
 The Chrome/Edge extension is **inside the install** at:
 
-`C:\Users\<you>\AppData\Local\Programs\liveAct\resources\extension`
+`C:\Users\<you>\AppData\Local\Programs\LiveTrack\resources\extension`
 
 (or next to the portable exe under `resources\extension`).
 

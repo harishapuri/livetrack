@@ -22,7 +22,7 @@ function parseArgs(argv) {
   return { dateFilter, dateFrom, dateTo };
 }
 
-generatePostgresSql({ ...parseArgs(process.argv), quiet: false }).catch((err) => {
+generatePostgresSql({ ...parseArgs(process.argv), quiet: false, writeFiles: true }).catch((err) => {
   console.error(err);
   process.exit(1);
 });

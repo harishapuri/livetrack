@@ -211,7 +211,7 @@ const DEMO_SITES = [
     answers: {
       name: "Hannah Brooks",
       email: "hannah.brooks@example.com",
-      product: "liveAct Desktop",
+      product: "LiveTrack Desktop",
       rating: "8",
       liked: "Step tracking and attended fill are clear.",
       improve: "Faster snippet capture and quieter status notes.",

@@ -1,3 +1,4 @@
+(function () {
 const dropZone = document.getElementById("dropZone");
 const fileInput = document.getElementById("fileInput");
 const fileName = document.getElementById("fileName");
@@ -9,11 +10,11 @@ const sopDesc = document.getElementById("sopDesc");
 const btnConvert = document.getElementById("btnConvert");
 const btnClear = document.getElementById("btnClear");
 const btnAddStep = document.getElementById("btnAddStep");
-const btnSave = document.getElementById("btnSave");
+const btnSave = document.getElementById("converterBtnSave");
 const btnDownload = document.getElementById("btnDownload");
 const extractStatus = document.getElementById("extractStatus");
 const saveStatus = document.getElementById("saveStatus");
-const stepsList = document.getElementById("stepsList");
+const stepsList = document.getElementById("converterStepsList");
 const jsonPreview = document.getElementById("jsonPreview");
 const existingList = document.getElementById("existingList");
 
@@ -560,7 +561,7 @@ btnSave.addEventListener("click", async () => {
     if (!res.ok) throw new Error(data.error || `Save failed (${res.status})`);
     setStatus(
       saveStatus,
-      `Saved SOP + queue card${data.queueCard ? ` (${data.queueCard})` : ""}. Refresh liveAct.`,
+      `Saved SOP + queue card${data.queueCard ? ` (${data.queueCard})` : ""}. Refresh LiveTrack.`,
       "ok"
     );
     await loadExisting();
@@ -598,3 +599,4 @@ async function loadExisting() {
 
 renderSteps();
 loadExisting();
+})();

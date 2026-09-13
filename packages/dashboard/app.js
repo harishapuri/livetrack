@@ -1,3 +1,4 @@
+(function () {
 const PAGE_SIZE = 50;
 
 let rawData = null;
@@ -78,10 +79,10 @@ function aggregateFromRuns(runs) {
   const bump = (map, key, fillMode, mc) => {
     if (!key) key = "(unknown)";
     if (!map[key]) {
-      map[key] = { name: key, count: 0, automated: 0, manual: 0, mixed: 0, mistakes: 0 };
+      map[key] = { name: key, count: 0, automated: 0, manual: 0, mixed: 0, capture: 0, mistakes: 0 };
     }
     map[key].count += 1;
-    const mode = fillMode === "manual" || fillMode === "mixed" ? fillMode : "automated";
+    const mode = fillMode === "manual" || fillMode === "mixed" || fillMode === "capture" ? fillMode : "automated";
     map[key][mode] += 1;
     map[key].mistakes += Number(mc) || 0;
   };
@@ -100,12 +101,15 @@ function aggregateFromRuns(runs) {
         automated: 0,
         manual: 0,
         mixed: 0,
+        capture: 0,
         mistakes: 0,
       };
     }
     byQueueCard[cardKey].count += 1;
     const mode =
-      r.fill_mode === "manual" || r.fill_mode === "mixed" ? r.fill_mode : "automated";
+      r.fill_mode === "manual" || r.fill_mode === "mixed" || r.fill_mode === "capture"
+        ? r.fill_mode
+        : "automated";
     byQueueCard[cardKey][mode] += 1;
     byQueueCard[cardKey].mistakes += mc;
   }
@@ -123,6 +127,7 @@ function aggregateFromRuns(runs) {
       automated: runs.filter((r) => r.fill_mode === "automated" || !r.fill_mode).length,
       manual: runs.filter((r) => r.fill_mode === "manual").length,
       mixed: runs.filter((r) => r.fill_mode === "mixed").length,
+      capture: runs.filter((r) => r.fill_mode === "capture").length,
     },
   };
 }
@@ -175,6 +180,14 @@ function renderTotals(agg, mistakeRows, meta) {
       <div class="value">${wrongRuns}</div>
       <div class="substat">${wrongFields} mandatory fields · ${meta.rangeLabel}</div>
     </article>
+    ${
+      agg.byFillMode.capture
+        ? `<article class="stat">
+      <div class="label">Capture agent</div>
+      <div class="value">${agg.byFillMode.capture}</div>
+    </article>`
+        : ""
+    }
   `;
 }
 
@@ -430,4 +443,119 @@ async function boot() {
   }
 }
 
+window.addEventListener("dash:route", (e) => {
+  if (e.detail?.id === "executions" && rawData) paint();
+  syncCapturePoll();
+});
+
+function captureLiveOpen() {
+  return document.getElementById("captureLiveToggle")?.getAttribute("aria-expanded") === "true";
+}
+
+function setCaptureLiveOpen(open) {
+  const toggle = document.getElementById("captureLiveToggle");
+  const body = document.getElementById("captureLiveBody");
+  if (!toggle || !body) return;
+  toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  body.hidden = !open;
+  syncCapturePoll();
+}
+
+document.getElementById("captureLiveToggle")?.addEventListener("click", () => {
+  setCaptureLiveOpen(!captureLiveOpen());
+});
+
+function renderCaptureTransactions(payload) {
+  const body = document.getElementById("captureTxnBody");
+  const hint = document.getElementById("captureLiveHint");
+  const meta = document.getElementById("captureLiveMeta");
+  if (!body) return;
+  const rows = payload?.transactions || [];
+  if (meta) {
+    meta.textContent = rows.length
+      ? `${rows.length} transaction${rows.length === 1 ? "" : "s"}`
+      : "Click to open";
+  }
+  if (hint) {
+    if (!payload?.ok && payload?.error) {
+      hint.textContent = `Capture agent offline — showing saved transactions if any. ${payload.error}`;
+    } else if (payload?.recording) {
+      hint.textContent = `Capture agent is recording · ${rows.length} transaction${
+        rows.length === 1 ? "" : "s"
+      } · one JSON object per row`;
+    } else {
+      hint.textContent = "One JSON object per capture-agent transaction";
+    }
+  }
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="4" class="empty">No capture-agent transactions yet. Start recording in LiveTrack while filling a form.</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows
+    .map((txn) => {
+      const json = JSON.stringify(txn, null, 2);
+      const ticket = txn.ticket || "";
+      return `
+    <tr class="${txn.live ? "capture-txn-live" : ""}">
+      <td class="nowrap">${fmtWhen(txn.completedAt)}</td>
+      <td><strong>${esc(txn.user || "—")}</strong></td>
+      <td class="nowrap"><button type="button" class="ticket-copy" data-ticket="${esc(ticket)}">${esc(ticket || "—")}</button></td>
+      <td><pre class="capture-json">${esc(json)}</pre></td>
+    </tr>`;
+    })
+    .join("");
+}
+
+document.getElementById("captureTxnBody")?.addEventListener("click", async (event) => {
+  const btn = event.target.closest("[data-ticket]");
+  if (!btn) return;
+  const ticket = btn.getAttribute("data-ticket") || "";
+  if (!ticket) return;
+  try {
+    await navigator.clipboard.writeText(ticket);
+    const prev = btn.textContent;
+    btn.textContent = "Copied";
+    setTimeout(() => {
+      btn.textContent = prev;
+    }, 1200);
+  } catch {
+    btn.textContent = ticket;
+  }
+});
+
+let capturePollTimer = null;
+
+async function refreshCaptureLive() {
+  if (location.protocol !== "http:" && location.protocol !== "https:") return;
+  if (document.getElementById("pane-executions")?.hidden) return;
+  if (!captureLiveOpen()) return;
+  try {
+    const res = await fetch(`/api/capture/live?t=${Date.now()}`);
+    const body = await res.json().catch(() => ({}));
+    renderCaptureTransactions(body);
+  } catch (err) {
+    renderCaptureTransactions({ ok: false, transactions: [], error: err.message });
+  }
+}
+
+function syncCapturePoll() {
+  const onExecutions = !document.getElementById("pane-executions")?.hidden;
+  if (onExecutions && captureLiveOpen()) startCapturePoll();
+  else stopCapturePoll();
+}
+
+function startCapturePoll() {
+  refreshCaptureLive();
+  if (capturePollTimer) return;
+  capturePollTimer = setInterval(refreshCaptureLive, 2500);
+}
+
+function stopCapturePoll() {
+  if (!capturePollTimer) return;
+  clearInterval(capturePollTimer);
+  capturePollTimer = null;
+}
+
 boot();
+syncCapturePoll();
+})();

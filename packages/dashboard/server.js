@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 /**
- * Supervisor dashboard + queue studio + SOP converter
+ * Supervisor dashboard (single UI)
  *
  *   npm run dashboard
- *   → http://127.0.0.1:4175/              executions
- *   → http://127.0.0.1:4175/queue-studio/ create/clone queue cards
- *   → http://127.0.0.1:4175/assignments/  assign users to LOB / queue cards
- *   → http://127.0.0.1:4175/converter/    PPT/PDF → SOP JSON
+ *   → http://127.0.0.1:4175/              all sections (hash routes)
+ *   → /#/executions /#/analytics /#/digest /#/studio /#/assignments /#/reviews /#/converter
  *
  *   node dashboard/server.js --from=2026-07-01 --to=2026-07-18
  */
@@ -30,8 +28,21 @@ const {
   normalizeAssignees,
 } = require("../liveact/documents");
 const { BRIDGE_PORT } = require("../shared/protocol");
+const learningPipeline = require("../liveact/learning-pipeline");
+const processIntelligence = require("../liveact/process-intelligence");
+const {
+  readAllFeedback,
+  summarizeFeedback,
+  recordFeedback,
+} = require("../liveact/feedback-log");
+const { loadCaptureLiveSummary } = require("../liveact/capture-forward");
+const inbox = require("../liveact/inbox");
+const sopsStore = require("../liveact/sops-store");
+const workbookStore = require("../liveact/workbook");
+const { buildAnalytics } = require("../liveact/analytics");
 
 const PORT = 4175;
+let lastDashboardPayload = null;
 // Same machine by default; override only for rare remote publish (never hardcode a personal LAN IP).
 const LIVEACT_BRIDGE_HOST = String(process.env.LIVEACT_BRIDGE_HOST || "127.0.0.1").trim() || "127.0.0.1";
 const LIVEACT_BRIDGE = `http://${LIVEACT_BRIDGE_HOST}:${BRIDGE_PORT}`;
@@ -40,6 +51,7 @@ const dashRoot = path.join(__dirname);
 const converterRoot = path.join(__dirname, "converter");
 const SOPS_DIR = path.join(__dirname, "..", "shared", "sops");
 const USER_SOPS_DIR = defaultUserSopsDir();
+const DIGESTS_DIR = path.join(REPO_ROOT, "digests");
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -53,7 +65,7 @@ function parseArgs(argv) {
   let dateFrom = null;
   let dateTo = null;
   let dateFilter = null;
-  let days = 7;
+  let days = null;
   for (const a of args) {
     if (a.startsWith("--from=")) dateFrom = a.slice("--from=".length);
     else if (a.startsWith("--to=")) dateTo = a.slice("--to=".length);
@@ -100,7 +112,8 @@ function safeId(id) {
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
+    // discovered-<host-path-40>-<ts> IDs can exceed 80; keep them intact
+    .slice(0, 120);
   return cleaned || null;
 }
 
@@ -113,24 +126,80 @@ function safeLob(lob) {
   return cleaned || DEFAULT_LOB;
 }
 
-function listSops() {
-  if (!fs.existsSync(SOPS_DIR)) return [];
+function findSopFile(id) {
+  const user = path.join(USER_SOPS_DIR, `${id}.json`);
+  const shared = path.join(SOPS_DIR, `${id}.json`);
+  if (fs.existsSync(user)) return user;
+  if (fs.existsSync(shared)) return shared;
+  return null;
+}
+
+function loadSopJson(filePath) {
+  const sop = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  if (sop && typeof sop === "object") {
+    sop.id = sop.id || path.basename(filePath, ".json");
+  }
+  return sop;
+}
+
+function listSopsFromDir(dir) {
+  if (!fs.existsSync(dir)) return [];
   return fs
-    .readdirSync(SOPS_DIR)
+    .readdirSync(dir)
     .filter((n) => n.endsWith(".json"))
     .map((file) => {
+      const filePath = path.join(dir, file);
       try {
-        const sop = JSON.parse(fs.readFileSync(path.join(SOPS_DIR, file), "utf8"));
-        return {
-          file,
-          id: sop.id || file.replace(/\.json$/, ""),
-          name: sop.name || "",
-          steps: Array.isArray(sop.steps) ? sop.steps.length : 0,
-        };
+        const sop = loadSopJson(filePath);
+        return { file, filePath, sop };
       } catch {
-        return { file, id: file.replace(/\.json$/, ""), name: "", steps: 0 };
+        return null;
       }
     })
+    .filter(Boolean);
+}
+
+async function allSopsById() {
+  const map = new Map();
+  const xlsx = workbookStore.workbookPath();
+  for (const sop of await sopsStore.loadAllSopObjects()) {
+    map.set(sop.id, { sop, filePath: xlsx, file: `${sop.id}.json` });
+  }
+  return map;
+}
+
+async function resolveSopRecord(id, { regenerate = true } = {}) {
+  const cleaned = safeId(id);
+  if (!cleaned) return null;
+  const map = await allSopsById();
+  if (map.has(cleaned)) return map.get(cleaned);
+  // Exact id match without safeId truncation quirks
+  for (const [key, rec] of map) {
+    if (key === id || safeId(key) === cleaned) return rec;
+  }
+  if (!regenerate) return null;
+  try {
+    const discovery = require("../liveact/process-discovery");
+    const out = await discovery.loadSopOrRegenerateFromCapture(cleaned);
+    if (out?.ok && out.sop) {
+      const xlsx = workbookStore.workbookPath();
+      return { sop: out.sop, filePath: xlsx, file: `${out.sop.id}.json`, regenerated: true };
+    }
+  } catch (err) {
+    console.warn("[dashboard] regenerate SOP", err?.message || err);
+  }
+  return null;
+}
+
+async function listSops() {
+  const list = await sopsStore.loadAllSopObjects();
+  return list
+    .map((sop) => ({
+      file: `${sop.id}.json`,
+      id: sop.id,
+      name: sop.name || "",
+      steps: Array.isArray(sop.steps) ? sop.steps.length : 0,
+    }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
@@ -173,17 +242,13 @@ function collectKnownUsers(cards) {
   for (const c of cards || []) {
     for (const u of c.assignees || []) set.add(u);
   }
-  // From latest dashboard data.json if present
+  // From latest in-memory dashboard payload
   try {
-    const dataPath = path.join(dashRoot, "data.json");
-    if (fs.existsSync(dataPath)) {
-      const data = JSON.parse(fs.readFileSync(dataPath, "utf8"));
-      for (const u of data.byUser || []) {
-        if (u?.name) set.add(String(u.name));
-      }
-      for (const r of data.recent || []) {
-        if (r?.user_id) set.add(String(r.user_id));
-      }
+    for (const u of lastDashboardPayload?.byUser || []) {
+      if (u?.name) set.add(String(u.name));
+    }
+    for (const r of lastDashboardPayload?.recent || []) {
+      if (r?.user_id) set.add(String(r.user_id));
     }
   } catch {
     /* ignore */
@@ -233,7 +298,6 @@ function injectConverterNav(html) {
   const nav = `
 <nav class="dash-nav" aria-label="Dashboard">
   <a href="/" data-nav="executions">Executions</a>
-  <a href="/queue-studio/" data-nav="studio">Queue studio</a>
   <a href="/assignments/" data-nav="assignments">Assignments</a>
   <a href="/converter/" data-nav="converter" class="active">SOP converter</a>
 </nav>
@@ -243,23 +307,16 @@ function injectConverterNav(html) {
   return nav + html;
 }
 
-function writeSopFile(sop) {
+async function writeSopFile(sop) {
   const id = safeId(sop.id);
   if (!id) throw new Error("SOP id is required");
   sop.id = id;
-  fs.mkdirSync(SOPS_DIR, { recursive: true });
-  fs.mkdirSync(USER_SOPS_DIR, { recursive: true });
-  const fileName = `${id}.json`;
-  const filePath = path.join(SOPS_DIR, fileName);
-  const payload = `${JSON.stringify(sop, null, 2)}\n`;
-  fs.writeFileSync(filePath, payload, "utf8");
-  fs.writeFileSync(path.join(USER_SOPS_DIR, fileName), payload, "utf8");
+  const saved = await require("../liveact/sops-store").upsertSop(sop);
   return {
     ok: true,
     id,
-    path: path.join("shared", "sops", fileName),
-    userPath: path.join("Projects", "coact", "sops", fileName),
-    absolutePath: filePath,
+    path: saved.path,
+    absolutePath: saved.path,
   };
 }
 
@@ -376,8 +433,241 @@ async function handleApi(req, res, pathname) {
     return true;
   }
 
+  if (pathname === "/api/sops/pending" && req.method === "GET") {
+    const pending = [...(await allSopsById()).values()]
+      .map((rec) => rec.sop)
+      .filter((sop) => sop.status === "draft")
+      .map((sop) => ({
+        id: sop.id,
+        name: sop.name || sop.id,
+        formUrl: sop.formUrl || "",
+        steps: sop.steps || [],
+        sampleData: sop.sampleData && typeof sop.sampleData === "object" ? sop.sampleData : {},
+        source: sop.source || "",
+        description: sop.description || "",
+        recordingSessionId: sop.recordingSessionId || "",
+        discoveredAt: sop.discoveredAt || "",
+        status: sop.status,
+      }));
+    send(res, 200, { pending });
+    return true;
+  }
+
+  const sopAction = pathname.match(/^\/api\/sops\/([^/]+)\/(approve|reject)$/);
+  if (sopAction && req.method === "POST") {
+    try {
+      const id = safeId(decodeURIComponent(sopAction[1]));
+      const action = sopAction[2];
+      const body = JSON.parse((await readBody(req)) || "{}");
+      const rec = await resolveSopRecord(id);
+      if (!rec) {
+        send(res, 404, { ok: false, error: `SOP not found: ${id}` });
+        return true;
+      }
+      const sop = rec.sop;
+      if (action === "approve") {
+        sop.status = "published";
+        sop.approvedAt = new Date().toISOString();
+        sop.approvedBy = body.user || null;
+        delete sop.rejectedReason;
+      } else {
+        sop.status = "rejected";
+        sop.rejectedAt = new Date().toISOString();
+        sop.rejectedReason = body.reason || "";
+      }
+      await writeSopFile(sop);
+      let card = null;
+      if (action === "approve") {
+        try {
+          const promoted = await require("../liveact/process-discovery").promoteSopToQueueCard(
+            sop,
+            { user: body.user, data: sop.sampleData, title: sop.name }
+          );
+          card = promoted.card || null;
+        } catch (err) {
+          send(res, 200, {
+            ok: true,
+            sop,
+            cardError: err.message || "SOP published, but queue card was not created",
+          });
+          return true;
+        }
+      }
+      await recordFeedback({
+        source: "discovery",
+        action: action === "approve" ? "approve" : "reject",
+        sopId: id,
+        user: body.user,
+        reason: body.reason,
+      });
+      publishToLiveAct().catch(() => {});
+      send(res, 200, { ok: true, sop, card });
+    } catch (e) {
+      send(res, 400, { ok: false, error: e.message || "Invalid request" });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/datasets" && req.method === "GET") {
+    send(res, 200, { datasets: await learningPipeline.listDatasets() });
+    return true;
+  }
+
+  if (pathname === "/api/datasets/build" && req.method === "POST") {
+    try {
+      const body = JSON.parse((await readBody(req)) || "{}");
+      const result = await learningPipeline.buildDataset({ days: Number(body.days) || 30 });
+      send(res, 200, result);
+    } catch (e) {
+      send(res, 400, { ok: false, error: e.message || "Build failed" });
+    }
+    return true;
+  }
+
+  const datasetAction = pathname.match(/^\/api\/datasets\/([^/]+)\/(approve|reject)$/);
+  if (datasetAction && req.method === "POST") {
+    try {
+      const version = Number(datasetAction[1]);
+      const body = JSON.parse((await readBody(req)) || "{}");
+      const result =
+        datasetAction[2] === "approve"
+          ? await learningPipeline.approveDataset(version, body.user || "")
+          : await learningPipeline.rejectDataset(version, body.reason || "");
+      if (result.ok) {
+        await recordFeedback({
+          source: "dataset",
+          action: datasetAction[2] === "approve" ? "approve" : "reject",
+          user: body.user,
+          reason: body.reason,
+          meta: { version },
+        });
+      }
+      send(res, result.ok ? 200 : 404, result);
+    } catch (e) {
+      send(res, 400, { ok: false, error: e.message || "Invalid request" });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/process-intelligence" && req.method === "GET") {
+    send(res, 200, { report: await processIntelligence.loadLatestReport() });
+    return true;
+  }
+
+  if (pathname === "/api/process-intelligence/run" && req.method === "POST") {
+    try {
+      await readBody(req);
+      const report = await processIntelligence.runProcessIntelligence();
+      send(res, 200, { ok: true, report });
+    } catch (e) {
+      send(res, 500, { ok: false, error: e.message || "Run failed" });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/ai-metrics" && req.method === "GET") {
+    send(res, 200, { summary: summarizeFeedback(await readAllFeedback()) });
+    return true;
+  }
+
+  if (pathname === "/api/analytics" && req.method === "GET") {
+    try {
+      const url = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
+      const grain = url.searchParams.get("grain") || "month";
+      const payload = await buildAnalytics({
+        grain,
+        from: url.searchParams.get("from") || "",
+        to: url.searchParams.get("to") || "",
+        user: url.searchParams.get("user") || "",
+        lob: url.searchParams.get("lob") || "",
+        card: url.searchParams.get("card") || "",
+      });
+      send(res, 200, payload);
+    } catch (e) {
+      send(res, 500, { error: e.message || "Analytics failed" });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/inbox" && req.method === "GET") {
+    try {
+      send(res, 200, { notes: await inbox.listNotes() });
+    } catch (e) {
+      send(res, 500, { ok: false, error: e.message || "Inbox failed", notes: [] });
+    }
+    return true;
+  }
+
+  const inboxAction = pathname.match(/^\/api\/inbox\/([^/]+)$/);
+  if (inboxAction && req.method === "POST") {
+    try {
+      const id = decodeURIComponent(inboxAction[1]);
+      const body = JSON.parse((await readBody(req)) || "{}");
+      const result = await inbox.updateNote(id, {
+        status: body.status,
+        smeNote: body.smeNote,
+        sme: body.sme,
+      });
+      send(res, result.ok ? 200 : 404, result);
+    } catch (e) {
+      send(res, 400, { ok: false, error: e.message || "Invalid request" });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/capture/live" && req.method === "GET") {
+    try {
+      send(res, 200, await loadCaptureLiveSummary());
+    } catch (e) {
+      send(res, 200, {
+        ok: false,
+        recording: false,
+        users: [],
+        error: e.message || "Capture summary failed",
+      });
+    }
+    return true;
+  }
+
+  if (pathname === "/api/digests" && req.method === "GET") {
+    const indexPath = path.join(DIGESTS_DIR, "index.json");
+    if (fs.existsSync(indexPath)) {
+      try {
+        const digests = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+        send(res, 200, { digests: Array.isArray(digests) ? digests : [] });
+        return true;
+      } catch {
+        /* fall through to directory listing */
+      }
+    }
+    const digests = fs.existsSync(DIGESTS_DIR)
+      ? fs
+          .readdirSync(DIGESTS_DIR)
+          .filter((n) => n.endsWith(".json") && n !== "index.json")
+          .map((file) => ({ digestId: file.replace(/\.json$/, ""), path: file }))
+      : [];
+    send(res, 200, { digests });
+    return true;
+  }
+
+  const digestGet = pathname.match(/^\/api\/digests\/([^/]+)$/);
+  if (digestGet && req.method === "GET") {
+    const id = String(digestGet[1] || "").replace(/[^a-zA-Z0-9._-]/g, "");
+    const filePath = path.join(DIGESTS_DIR, `${id}.json`);
+    if (!id || !filePath.startsWith(DIGESTS_DIR) || !fs.existsSync(filePath)) {
+      send(res, 404, { error: `Digest not found: ${id}` });
+      return true;
+    }
+    try {
+      send(res, 200, { digest: JSON.parse(fs.readFileSync(filePath, "utf8")) });
+    } catch (e) {
+      send(res, 400, { error: e.message || "Invalid digest file" });
+    }
+    return true;
+  }
+
   if (pathname === "/api/sops" && req.method === "GET") {
-    send(res, 200, { sops: listSops(), dir: path.relative(REPO_ROOT, SOPS_DIR) });
+    send(res, 200, { sops: await listSops(), dir: "livetrack.xlsx" });
     return true;
   }
 
@@ -388,17 +678,12 @@ async function handleApi(req, res, pathname) {
       send(res, 400, { error: "Invalid SOP id" });
       return true;
     }
-    const filePath = path.join(SOPS_DIR, `${id}.json`);
-    if (!fs.existsSync(filePath)) {
+    const rec = await resolveSopRecord(id);
+    if (!rec) {
       send(res, 404, { error: `SOP not found: ${id}` });
       return true;
     }
-    try {
-      const sop = JSON.parse(fs.readFileSync(filePath, "utf8"));
-      send(res, 200, { sop, path: path.join("shared", "sops", `${id}.json`) });
-    } catch (e) {
-      send(res, 400, { error: e.message || "Invalid SOP file" });
-    }
+    send(res, 200, { sop: rec.sop, path: "livetrack.xlsx", regenerated: Boolean(rec.regenerated) });
     return true;
   }
 
@@ -409,8 +694,8 @@ async function handleApi(req, res, pathname) {
         send(res, 400, { error: "Invalid SOP id" });
         return true;
       }
-      const filePath = path.join(SOPS_DIR, `${id}.json`);
-      if (!fs.existsSync(filePath)) {
+      const rec = await resolveSopRecord(id);
+      if (!rec) {
         send(res, 404, { error: `SOP not found: ${id}` });
         return true;
       }
@@ -421,7 +706,7 @@ async function handleApi(req, res, pathname) {
         send(res, 400, { error: err });
         return true;
       }
-      send(res, 200, writeSopFile(sop));
+      send(res, 200, await writeSopFile(sop));
     } catch (e) {
       send(res, 400, { error: e.message || "Invalid JSON" });
     }
@@ -436,7 +721,7 @@ async function handleApi(req, res, pathname) {
         send(res, 400, { error: err });
         return true;
       }
-      const result = writeSopFile(sop);
+      const result = await writeSopFile(sop);
       if (!result.id) {
         send(res, 400, { error: "SOP id is required" });
         return true;
@@ -449,7 +734,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (pathname === "/api/queue-cards" && req.method === "GET") {
-    const { rootDir, cards, lobs } = loadQueueFromDocuments();
+    const { rootDir, cards, lobs } = await loadQueueFromDocuments();
     send(res, 200, {
       rootDir,
       cards: cards.map((c) => ({ ...cardSummary(c), data: c.data })),
@@ -460,7 +745,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (pathname === "/api/assignments" && req.method === "GET") {
-    const { rootDir, cards, lobs } = loadQueueFromDocuments();
+    const { rootDir, cards, lobs } = await loadQueueFromDocuments();
     const lobMap = {};
     for (const lob of listLobNames(rootDir)) {
       const cfg = loadLobConfig(path.join(rootDir, lob));
@@ -492,7 +777,7 @@ async function handleApi(req, res, pathname) {
       const root = defaultDocumentsRoot();
       const lobDir = path.join(root, lob);
       fs.mkdirSync(lobDir, { recursive: true });
-      const cfg = saveLobConfig(lobDir, { assignees: body.assignees || [] });
+      const cfg = await saveLobConfig(lobDir, { assignees: body.assignees || [] });
       send(res, 200, { ok: true, lob, assignees: cfg.assignees });
     } catch (e) {
       send(res, 400, { error: e.message || "Invalid request" });
@@ -516,14 +801,21 @@ async function handleApi(req, res, pathname) {
         return true;
       }
       const assignees = normalizeAssignees(body.assignees || []);
-      const metaPath = path.join(card.sourceDir, "meta.json");
-      const meta = fs.existsSync(metaPath)
-        ? JSON.parse(fs.readFileSync(metaPath, "utf8"))
-        : { id, title: card.title, sopId: card.sopId, status: card.status, lob };
-      meta.assignees = assignees;
-      meta.id = meta.id || id;
-      meta.lob = meta.lob || lob;
-      fs.writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+      const dir = card.sourceDir || lobCardDir(defaultDocumentsRoot(), id, lob);
+      await writeCardFiles(dir, {
+        data: card.data || {},
+        meta: {
+          id,
+          title: card.title,
+          sopId: card.sopId,
+          status: card.status,
+          lob,
+          formUrl: card.formUrl,
+          pdfPath: card.pdfPath,
+          formMatch: card.formMatch,
+          assignees,
+        },
+      });
       send(res, 200, { ok: true, lob, id, assignees });
     } catch (e) {
       send(res, 400, { error: e.message || "Invalid request" });
@@ -722,28 +1014,64 @@ async function handler(req, res) {
 
   if (await handleApi(req, res, pathname)) return;
 
+  if (req.method === "GET" && (pathname === "/data.json" || pathname === "/data.js")) {
+    if (!lastDashboardPayload) {
+      lastDashboardPayload = await generateDashboardData({ quiet: true, writeFiles: false });
+    }
+    if (pathname === "/data.js") {
+      res.writeHead(200, {
+        "Content-Type": "application/javascript; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      res.end(`window.DASHBOARD_DATA = ${JSON.stringify(lastDashboardPayload)};\n`);
+      return;
+    }
+    send(res, 200, lastDashboardPayload);
+    return;
+  }
+
   if (req.method !== "GET") {
     send(res, 405, { error: "Method not allowed" });
     return;
   }
 
-  // SOP JSON converter under /converter/
-  if (pathname === "/converter" || pathname.startsWith("/converter/")) {
-    let rel = pathname === "/converter" || pathname === "/converter/" ? "/index.html" : pathname.slice("/converter".length);
+  const pageRedirects = {
+    "/queue-studio": "/#/studio",
+    "/queue-studio/": "/#/studio",
+    "/queue-studio/index.html": "/#/studio",
+    "/assignments": "/#/assignments",
+    "/assignments/": "/#/assignments",
+    "/assignments/index.html": "/#/assignments",
+    "/converter": "/#/converter",
+    "/converter/": "/#/converter",
+    "/converter/index.html": "/#/converter",
+    "/digest": "/#/digest",
+    "/digest/": "/#/digest",
+    "/digest/index.html": "/#/digest",
+    "/approvals": "/#/approvals",
+    "/approvals/": "/#/approvals",
+    "/approvals/index.html": "/#/approvals",
+    "/reviews": "/#/reviews",
+    "/reviews/": "/#/reviews",
+    "/reviews/index.html": "/#/reviews",
+    "/analytics": "/#/analytics",
+    "/analytics/": "/#/analytics",
+    "/analytics/index.html": "/#/analytics",
+  };
+  if (pageRedirects[pathname]) {
+    res.writeHead(302, { Location: pageRedirects[pathname], "Cache-Control": "no-store" });
+    res.end();
+    return;
+  }
+
+  if (pathname.startsWith("/converter/")) {
+    let rel = pathname.slice("/converter".length);
     if (rel.includes("..")) {
       res.writeHead(400);
       res.end("bad path");
       return;
     }
-    const file = path.join(converterRoot, rel);
-    if (path.extname(file).toLowerCase() === ".html" && fs.existsSync(file)) {
-      let html = fs.readFileSync(file, "utf8");
-      html = injectConverterNav(html);
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-      res.end(html);
-      return;
-    }
-    serveFile(file, converterRoot, res);
+    serveFile(path.join(converterRoot, rel), converterRoot, res);
     return;
   }
 
@@ -761,8 +1089,9 @@ async function handler(req, res) {
 
 async function main() {
   const args = parseArgs(process.argv);
-  await generateDashboardData({
+  lastDashboardPayload = await generateDashboardData({
     quiet: false,
+    writeFiles: false,
     dateFrom: args.dateFrom,
     dateTo: args.dateTo,
     dateFilter: args.dateFilter,
@@ -777,10 +1106,13 @@ async function main() {
   });
 
   server.listen(PORT, "127.0.0.1", () => {
-    console.log(`Dashboard:     http://127.0.0.1:${PORT}/`);
-    console.log(`Queue studio:  http://127.0.0.1:${PORT}/queue-studio/`);
-    console.log(`Assignments:   http://127.0.0.1:${PORT}/assignments/`);
-    console.log(`SOP converter: http://127.0.0.1:${PORT}/converter/`);
+    console.log(`LiveTrack dashboard: http://127.0.0.1:${PORT}/`);
+    console.log(`  Executions     http://127.0.0.1:${PORT}/#/executions`);
+    console.log(`  Analytics      http://127.0.0.1:${PORT}/#/analytics`);
+    console.log(`  Weekly digest  http://127.0.0.1:${PORT}/#/digest`);
+    console.log(`  Assignments    http://127.0.0.1:${PORT}/#/assignments`);
+    console.log(`  Reviews        http://127.0.0.1:${PORT}/#/reviews`);
+    console.log(`  SOP converter  http://127.0.0.1:${PORT}/#/converter`);
   });
 }
 

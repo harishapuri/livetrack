@@ -1,28 +1,29 @@
 {
   "manifest_version": 3,
-  "name": "liveAct Form Agent",
-  "version": "0.1.30",
-  "description": "Fills forms on the current tab when liveAct desktop sends a queue card SOP.",
+  "name": "LiveTrack Form Agent",
+  "version": "0.1.44",
+  "description": "Fills forms on the current tab when LiveTrack desktop sends a queue card SOP.",
   "minimum_chrome_version": "116",
   "permissions": ["tabs", "windows", "scripting", "storage", "alarms"],
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",
     "http://*/*",
-    "https://*/*"
+    "https://*/*",
+    "file:///*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
+      "matches": ["http://*/*", "https://*/*", "file:///*"],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
   ],
   "action": {
-    "default_title": "liveAct Form Agent",
+    "default_title": "LiveTrack Form Agent",
     "default_popup": "popup.html"
   }
 }

@@ -1,3 +1,4 @@
+(function () {
 function esc(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -34,6 +35,7 @@ function apiBase() {
 }
 
 function preferHttpServer(pathSuffix) {
+  if (document.getElementById("dashShell")) return false;
   if (location.protocol !== "file:") return false;
   location.replace(`http://127.0.0.1:4175${pathSuffix}`);
   return true;
@@ -62,7 +64,7 @@ function slugify(value) {
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
+    .slice(0, 120);
 }
 
 function parseDataJson() {
@@ -479,6 +481,7 @@ async function maybeSaveSop(cardPayload, { forcePublish = false } = {}) {
       name: document.getElementById("newSopName").value.trim() || sopDraft?.name || title || sopId,
       description: sopDraft?.description || `Updated from Queue studio for card ${cardPayload.id}`,
       steps: normalized,
+      status: forcePublish ? "published" : sopDraft?.status || "published",
     };
     if (formUrl) sop.formUrl = formUrl;
     if (Array.isArray(sopDraft?.formMatch) && sopDraft.formMatch.length) {
@@ -510,6 +513,7 @@ async function maybeSaveSop(cardPayload, { forcePublish = false } = {}) {
     name: sopName,
     description: sopDraft?.description || `Created from Queue studio for card ${cardPayload.id}`,
     steps: normalized,
+    status: "published",
   };
   if (formUrl) sop.formUrl = formUrl;
   if (Array.isArray(sopDraft?.formMatch) && sopDraft.formMatch.length) {
@@ -658,11 +662,11 @@ async function publishLiveAct() {
   try {
     const res = await api("/api/publish-liveact", { method: "POST", body: "{}" });
     if (!res.ok && res.liveAct === false) {
-      return { ok: false, message: res.error || "liveAct not updated" };
+      return { ok: false, message: res.error || "LiveTrack not updated" };
     }
     const n = res.cardCount != null ? Number(res.cardCount) : null;
     const all = res.allCardCount != null ? Number(res.allCardCount) : null;
-    let message = "Published to liveAct";
+    let message = "Published to LiveTrack";
     if (n != null) message += ` · ${n} card${n === 1 ? "" : "s"} visible`;
     if (all != null && n != null && all > n) {
       message += ` (${all} on disk — assignees filter hides the rest)`;
@@ -703,7 +707,7 @@ async function saveExistingCard({ publish = false } = {}) {
       const pub = await publishLiveAct();
       pubMsg = pub.ok ? ` · ${pub.message}` : ` · saved, but ${pub.message}`;
       if (pub.ok && Array.isArray(pub.cardIds) && !pub.cardIds.includes(res.id)) {
-        pubMsg += ` · note: ${res.id} is not in your liveAct list (assignees)`;
+        pubMsg += ` · note: ${res.id} is not in your LiveTrack list (assignees)`;
       }
     }
 
@@ -745,7 +749,7 @@ async function createCard({ publish = false } = {}) {
       const pub = await publishLiveAct();
       pubMsg = pub.ok ? ` · ${pub.message}` : ` · created, but ${pub.message}`;
       if (pub.ok && Array.isArray(pub.cardIds) && !pub.cardIds.includes(res.id)) {
-        pubMsg += ` · note: ${res.id} is not in your liveAct list (assignees)`;
+        pubMsg += ` · note: ${res.id} is not in your LiveTrack list (assignees)`;
       }
     }
 
@@ -885,9 +889,90 @@ async function boot() {
   renderSteps();
   try {
     await refreshLists();
+    await openFromHashQuery();
   } catch (err) {
     setStatus(document.getElementById("sourceStatus"), err.message, "err");
   }
 }
 
+function studioQueryFromHash() {
+  const raw = (location.hash || "").replace(/^#\/?/, "");
+  const q = raw.includes("?") ? raw.slice(raw.indexOf("?") + 1) : "";
+  return new URLSearchParams(q);
+}
+
+function cardIdFromSop(sop) {
+  const fromName = slugify(String(sop?.name || "").replace(/^draft:\s*/i, ""));
+  if (fromName) return fromName;
+  return (
+    slugify(String(sop?.id || "").replace(/^discovered-/, "").replace(/-[a-z0-9]+$/i, "")) ||
+    sop?.id ||
+    "recorded-process"
+  );
+}
+
+async function openRecordedSop(sopId) {
+  // Keep the raw id (only normalize separators). Truncating/slug-chopping
+  // discovered-* ids caused Queue studio 404s against the workbook catalog.
+  const id = String(sopId || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!id) return;
+  setMode("create");
+  editingKey = null;
+  const status = document.getElementById("sourceStatus");
+  setStatus(status, "Loading recorded SOP…");
+  const { sop } = await api(`/api/sops/${encodeURIComponent(id)}`);
+  applySopDraft(sop);
+  const sel = document.getElementById("cardSopId");
+  if (sop.id && ![...sel.options].some((o) => o.value === sop.id)) {
+    const opt = document.createElement("option");
+    opt.value = sop.id;
+    opt.textContent = `${sop.name || sop.id} (draft)`;
+    sel.appendChild(opt);
+  }
+  const title = String(sop.name || "").replace(/^Draft:\s*/i, "") || sop.id;
+  document.getElementById("cardLob").value = "TCOO";
+  document.getElementById("cardId").value = cardIdFromSop(sop);
+  document.getElementById("cardTitle").value = title;
+  document.getElementById("cardSopId").value = sop.id;
+  document.getElementById("cardStatus").value = "queued";
+  document.getElementById("cardFormUrl").value = sop.formUrl || "";
+  document.getElementById("cardPdfPath").value = "";
+  document.getElementById("cardFormMatch").value = Array.isArray(sop.formMatch)
+    ? sop.formMatch.join(", ")
+    : "";
+  document.getElementById("cardAssignees").value = "";
+  document.getElementById("newSopId").value = sop.id;
+  document.getElementById("newSopName").value = title;
+  document.getElementById("sopSaveMode").value = "update";
+  writeDataJson(sop.sampleData && typeof sop.sampleData === "object" ? sop.sampleData : {});
+  document.getElementById("sourceMeta").hidden = false;
+  document.getElementById("sourceMeta").innerHTML = `Recorded process <strong>${esc(
+    sop.name || sop.id
+  )}</strong> — edit steps, then <strong>Create &amp; publish</strong> to the queue.`;
+  document.getElementById("pickHint").textContent =
+    "Loaded from LiveTrack Record. Edit SOP steps, then Create & publish.";
+  setStatus(status, `Loaded ${sop.steps?.length || 0} recorded steps`, "ok");
+}
+
+async function openFromHashQuery(detailQuery) {
+  const query = detailQuery
+    ? new URLSearchParams(detailQuery)
+    : studioQueryFromHash();
+  const sopId = query.get("sop") || query.get("sopId") || "";
+  if (!sopId) return;
+  await openRecordedSop(sopId);
+}
+
+window.addEventListener("dash:route", (e) => {
+  if (e.detail?.id !== "studio") return;
+  openFromHashQuery(e.detail.query).catch((err) =>
+    setStatus(document.getElementById("sourceStatus"), err.message, "err")
+  );
+});
+
 boot();
+})();

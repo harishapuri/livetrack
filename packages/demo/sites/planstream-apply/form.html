@@ -36,37 +36,81 @@
         border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer;
       }
       .hint { margin-top: 18px; color: #78716c; font-size: 0.88rem; }
+      .form-error {
+        margin: 0 0 14px; padding: 10px 12px; border-radius: 8px;
+        background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca;
+        font-size: 0.92rem; line-height: 1.45;
+      }
+      .form-error[hidden] { display: none; }
+      input[aria-invalid="true"], textarea[aria-invalid="true"] {
+        border-color: #b91c1c;
+      }
     </style>
   </head>
   <body>
     <main>
       <div class="site">PlanStream Apply</div>
       <h1>Application</h1>
-      <p class="sub">Final page — Coact fills these fields after the multi-page click stream.</p>
-      <form id="applyForm" onsubmit="event.preventDefault(); alert('Submitted (demo only)');">
+      <p class="sub">Final page — LiveTrack fills these fields after the multi-page click stream.</p>
+      <div id="formAlert" class="form-error" role="alert" hidden></div>
+      <form id="applyForm">
         <label>
           Full name
-          <input id="fullName" name="fullName" type="text" />
+          <input id="fullName" name="fullName" type="text" required />
         </label>
         <label>
           Work email
-          <input id="email" name="email" type="email" />
+          <input id="email" name="email" type="email" required />
         </label>
         <label>
           Company
-          <input id="company" name="company" type="text" />
+          <input id="company" name="company" type="text" required />
         </label>
         <label>
           Team size
-          <input id="teamSize" name="teamSize" type="text" />
+          <input id="teamSize" name="teamSize" type="text" required />
         </label>
         <label>
           Use case
-          <textarea id="useCase" name="useCase" rows="3"></textarea>
+          <textarea id="useCase" name="useCase" rows="3" required></textarea>
         </label>
         <button id="submitBtn" type="submit">Submit</button>
       </form>
       <p class="hint">URL: http://127.0.0.1:4173/sites/planstream-apply/form</p>
     </main>
+    <script>
+      const form = document.getElementById("applyForm");
+      const alertBox = document.getElementById("formAlert");
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const fields = [
+          ["fullName", "Full name is required"],
+          ["email", "Work email is required and must be a valid address"],
+          ["company", "Company is required"],
+          ["teamSize", "Team size is required"],
+          ["useCase", "Use case is required"],
+        ];
+        const errors = [];
+        for (const [id, message] of fields) {
+          const el = document.getElementById(id);
+          const empty = !String(el.value || "").trim();
+          const badEmail = id === "email" && el.value && !el.validity.valid;
+          if (empty || badEmail) {
+            el.setAttribute("aria-invalid", "true");
+            errors.push(empty ? message : "Work email must be a valid address");
+          } else {
+            el.removeAttribute("aria-invalid");
+          }
+        }
+        if (errors.length) {
+          alertBox.hidden = false;
+          alertBox.textContent = "Could not submit: " + errors.join(". ") + ".";
+          return;
+        }
+        alertBox.hidden = true;
+        alertBox.textContent = "";
+        alert("Submitted (demo only)");
+      });
+    </script>
   </body>
 </html>

@@ -9,6 +9,9 @@ const BRIDGE_PORT = 17321;
 /** Same-machine default. liveAct + extension always run on one PC; use loopback. */
 const BRIDGE_URL = `ws://127.0.0.1:${BRIDGE_PORT}`;
 
+const CAPTURE_PORT = 17322;
+const CAPTURE_URL = `http://127.0.0.1:${CAPTURE_PORT}`;
+
 function isPrivateIPv4(ip) {
   const parts = String(ip || "")
     .split(".")
@@ -69,13 +72,19 @@ const MessageType = {
   STATUS: "status",
   CAPTURE_SNIPPET: "capture_snippet",
   SNIPPET: "snippet",
+  CAPTURE_TAB_SHOT: "capture_tab_shot",
+  TAB_SHOT: "tab_shot",
   OPEN_URL: "open_url",
   JIRA_SNAPSHOT: "jira_snapshot",
+  CAPTURE_RECORDING: "capture_recording",
+  CAPTURE_EVENT: "capture_event",
 };
 
 module.exports = {
   BRIDGE_PORT,
   BRIDGE_URL,
+  CAPTURE_PORT,
+  CAPTURE_URL,
   MessageType,
   detectPrimaryLanIPv4,
   bridgeEndpoints,
