@@ -691,6 +691,12 @@ body {
   display: grid;
   grid-template-columns: minmax(90px, 38%) 1fr;
   gap: 4px 10px;
+  /* The panel's outer container clips overflow, so a long recording (many
+     fields) would grow past the visible window with nothing to scroll —
+     make the field list itself the scroll region instead. */
+  max-height: min(320px, 45vh);
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .capture-live-fields dt {
