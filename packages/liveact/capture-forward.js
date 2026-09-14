@@ -1043,9 +1043,19 @@ function withCaptureRef(txn) {
  */
 function cleanCaptureDisplayPairs(steps = [], values = {}) {
   const pdf = require("./pdf-server");
-  const pairs = [];
-  const seen = new Set();
+  const byKey = new Map();
+  const seenExact = new Set();
   let answerN = 0;
+  let order = 0;
+
+  // Workday auto-generates ids by slugifying the visible label, then
+  // appends "-2"/"-3" when a second element (typically a hidden
+  // accessibility-shim control behind the same widget) collides with it.
+  // Both sides describe the same logical field, so merge them instead of
+  // showing the question twice.
+  function dedupeKeyFor(k) {
+    return k.toLowerCase().replace(/[-_]\d+$/, "");
+  }
 
   function pushPair(key, value, type) {
     let k = String(key || "").replace(/\s+/g, " ").trim();
@@ -1061,10 +1071,20 @@ function cleanCaptureDisplayPairs(steps = [], values = {}) {
       answerN += 1;
       k = `Answer ${answerN}`;
     }
-    const dedupe = `${type}|${k.toLowerCase()}|${v.toLowerCase()}`;
-    if (seen.has(dedupe)) return;
-    seen.add(dedupe);
-    pairs.push({ key: k, value: v || (type === "click" ? "click" : ""), type });
+    const exactKey = `${type}|${k.toLowerCase()}|${v.toLowerCase()}`;
+    if (seenExact.has(exactKey)) return;
+    seenExact.add(exactKey);
+    const value_ = v || (type === "click" ? "click" : "");
+    const mapKey = `${type}|${dedupeKeyFor(k)}`;
+    const existing = byKey.get(mapKey);
+    if (existing) {
+      // Keep the later value (a real edit, e.g. the user changed No -> Yes)
+      // and prefer whichever key reads as the plain, unsuffixed base name.
+      existing.value = value_;
+      if (k.length < existing.key.length) existing.key = k;
+      return;
+    }
+    byKey.set(mapKey, { key: k, value: value_, type, order: order++ });
   }
 
   for (const step of steps || []) {
@@ -1116,13 +1136,15 @@ function cleanCaptureDisplayPairs(steps = [], values = {}) {
     pushPair(key, value, "field entry");
   }
 
-  if (!pairs.length && values && typeof values === "object") {
+  if (!byKey.size && values && typeof values === "object") {
     for (const [key, value] of Object.entries(values)) {
       if (pdf.looksLikeOpaqueId?.(value)) continue;
       pushPair(key, value, "field entry");
     }
   }
-  return pairs;
+  return [...byKey.values()]
+    .sort((a, b) => a.order - b.order)
+    .map(({ order: _order, ...pair }) => pair);
 }
 
 function captureTransactionsToDashRows(transactions) {
