@@ -366,6 +366,16 @@ function groupCaptureEvents(eventList) {
     if (finalName && (value || action === "check" || action === "select")) {
       const fillAction = action === "check" || action === "select" ? action : "fill";
       const displayValue = value || selectedText || "checked";
+      // A hidden accessibility-shim control (synced behind the real widget,
+      // e.g. a native <select> Workday keeps for form submission) can fire
+      // its own event for the same field carrying a bare sentinel index
+      // ("0"/"1") — sometimes after the real answer was already captured.
+      // Never let that clobber a real-looking answer already recorded.
+      const existingFieldValue = row.fields[finalName];
+      const newLooksSuspicious = /^\d{1,3}$/.test(String(displayValue).trim());
+      const existingLooksReal =
+        existingFieldValue != null && !/^\d{1,3}$/.test(String(existingFieldValue).trim());
+      if (existingLooksReal && newLooksSuspicious) continue;
       // Prefer human labels over opaque ids in the fields map
       row.fields[finalName] = displayValue;
       const last = row.steps[row.steps.length - 1];
