@@ -304,11 +304,18 @@ function groupCaptureEvents(eventList) {
       : !isJunkCaptureName(selector)
         ? selector
         : "";
-    const value = truncateCaptureText(
+    let value = truncateCaptureText(
       event.value != null && String(event.value).trim() !== "" ? event.value : event.selectedText,
       200
     );
-    const selectedText = truncateCaptureText(event.selectedText, 200);
+    let selectedText = truncateCaptureText(event.selectedText, 200);
+    // An opaque hex/GUID-looking "value" is never a real Yes/No or typed
+    // answer — it's almost always an internal widget/option id (e.g. a
+    // hidden accessibility-shim control's own id) leaking through. Clear it
+    // so the field degrades to a generic "checked" rather than showing
+    // garbage — for every action type, not just "fill".
+    if (isJunkCaptureValue(value)) value = "";
+    if (isJunkCaptureValue(selectedText)) selectedText = "";
     // Keep real typed/selected values even when the DOM id is opaque — use label if human
     if ((!name || isJunkCaptureName(name)) && value && !isJunkCaptureValue(value)) {
       const alt = String(event.label || "").trim();
@@ -343,7 +350,9 @@ function groupCaptureEvents(eventList) {
       finalName = "Answer";
     }
     if (!finalName) continue;
-    if (isJunkCaptureValue(value) && action !== "check" && action !== "select") continue;
+    // value/selectedText were already stripped of opaque junk above, so a
+    // "fill" with nothing left to show is correctly skipped by the check
+    // below rather than needing a separate continue here.
     if (finalName && (value || action === "check" || action === "select")) {
       const fillAction = action === "check" || action === "select" ? action : "fill";
       const displayValue = value || selectedText || "checked";
