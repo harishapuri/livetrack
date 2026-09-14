@@ -388,20 +388,34 @@ function humanizeFieldLabel(name) {
     .replace(/^./, (c) => c.toUpperCase());
 }
 
-function latestCaptureTxn(transactions) {
+function txnPayloadOf(row) {
+  try {
+    return typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload || {};
+  } catch {
+    return {};
+  }
+}
+
+function latestCaptureTxn(transactions, currentSessionId) {
   const rows = Array.isArray(transactions) ? transactions : [];
+  // The capture agent's event buffer is never cleared between recordings —
+  // it just keeps accumulating, each event tagged with its own session id.
+  // A brand-new recording (its own fresh session id) with zero events so
+  // far must never fall back to "the last transaction in the list", since
+  // that's still the PREVIOUS recording's fully-answered transaction —
+  // exactly the "already has values before I've touched anything" bug.
+  if (currentSessionId) {
+    return (
+      rows.find((row) => {
+        const payload = txnPayloadOf(row);
+        return String(row.transactionId || payload.recordingSessionId || "") === currentSessionId;
+      }) || null
+    );
+  }
   if (!rows.length) return null;
   if (captureRecordingCardId) {
     const match = [...rows].reverse().find((row) => {
-      let payload = {};
-      try {
-        payload =
-          typeof row.payload === "string"
-            ? JSON.parse(row.payload)
-            : row.payload || {};
-      } catch {
-        payload = {};
-      }
+      const payload = txnPayloadOf(row);
       return (
         String(row.cardId || payload.cardId || "") === captureRecordingCardId
       );
@@ -710,7 +724,7 @@ async function tickCaptureStatus() {
         updateRecordButton();
       }
     }
-    renderLiveCapture(latestCaptureTxn(status?.transactions));
+    renderLiveCapture(latestCaptureTxn(status?.transactions, status?.recordingSessionId));
     if (activeNav === "dashboard" && !dashLoading) {
       refreshDashboard({ silent: true });
     }
