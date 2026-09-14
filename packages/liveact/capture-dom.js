@@ -516,12 +516,18 @@ function installLiveTrackPageCapture() {
     // Visible text (what the user actually reads and clicked on) ranks above
     // el.value — a form control's raw value attribute is very often an
     // internal boolean/index code (e.g. "0"/"1"), not the human answer, and
-    // would otherwise win just because it happens to look choice-shaped.
+    // would otherwise win just because it happens to look choice-shaped. A
+    // bare 1-3 digit el.value specifically is dropped outright rather than
+    // used as a last resort — for a real choice/radio/checkbox control this
+    // is reliably an internal sentinel index, not a visible answer, and
+    // showing it live for a split second before the real event corrects it
+    // is exactly the "flashes a wrong value" symptom this exists to avoid.
+    const rawElValue = captureNormalizeText(el.value || "");
     const candidates = [
       fromAria,
       captureNormalizeText(el.getAttribute?.("data-automation-label") || ""),
       captureNormalizeText((el.innerText || el.textContent || "").split("\n")[0]),
-      captureNormalizeText(el.value || ""),
+      /^\d{1,3}$/.test(rawElValue) ? "" : rawElValue,
     ];
     // Validate the FULL candidate before truncating — slicing a 65-char opaque
     // token down to 64 chars first would let it slip past the length check.
