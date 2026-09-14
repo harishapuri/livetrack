@@ -3069,6 +3069,27 @@
     return "";
   }
 
+  /**
+   * True when a container scopes a single question. A container holding more
+   * than one answerable control is a multi-question SECTION wrapper, and its
+   * text belongs to several questions at once — picking a question out of it
+   * lands on whichever candidate scores highest (i.e. the longest one with a
+   * "?"), not the question actually being answered. Radios/checkboxes are not
+   * counted, since one question legitimately owns many of them.
+   */
+  function captureContainerScopesOneField(container) {
+    if (!container?.querySelectorAll) return true;
+    let seen = 0;
+    const controls = container.querySelectorAll(
+      'select, textarea, input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]):not([type="submit"]):not([type="button"]), [role="combobox"], [role="listbox"]',
+    );
+    for (let i = 0; i < controls.length; i += 1) {
+      seen += 1;
+      if (seen > 1) return false;
+    }
+    return true;
+  }
+
   function captureWorkdayQuestion(el, optionText) {
     if (!el) return "";
     let node = el;
@@ -3080,6 +3101,9 @@
         role === "group" ||
         role === "radiogroup"
       ) {
+        // Once a matching container is too broad, every ancestor is broader
+        // still — stop rather than keep climbing into worse candidates.
+        if (!captureContainerScopesOneField(node)) return "";
         const rich = [];
         node
           .querySelectorAll?.(
@@ -3110,10 +3134,14 @@
     if (!el) return "";
     const wd = captureWorkdayQuestion(el, optionText);
     if (wd) return wd;
-    const group =
+    const groupCandidate =
       el.closest?.(
         '[role="radiogroup"], [role="group"], fieldset, [data-automation-id*="formField"], [data-automation-id*="question"], [data-automation-id*="questionnaire"], .WDGO, [class*="formField"]',
       ) || null;
+    // Same trap as captureWorkdayQuestion: a container spanning several
+    // questions yields every question's text, and the highest-scoring
+    // candidate (longest with a "?") wins regardless of which field asked.
+    const group = captureContainerScopesOneField(groupCandidate) ? groupCandidate : null;
     const fromGroup = captureQuestionFromContainer(group, optionText);
     if (fromGroup) return fromGroup;
     if (group) {
@@ -3265,12 +3293,12 @@
         group.getAttribute?.("data-automation-id") ||
         group.getAttribute?.("aria-labelledby") ||
         "";
-      // Same uniqueness concern as id/name/auto above, and worse in
-      // practice: this selector can match a wrapper around an ENTIRE
-      // multi-question section, not just one question's own option group.
-      // A shared group id would let every control in that section overwrite
-      // and read back each other's cached question.
-      if (gid && isUniqueInDom(`[id="${gid.replace(/"/g, '\\"')}"], [data-automation-id="${gid.replace(/"/g, '\\"')}"]`)) {
+      // A unique container id is NOT enough here: the container itself can
+      // legitimately be unique while still wrapping an entire multi-question
+      // section, in which case every control inside shares this one key and
+      // they overwrite/read back each other's question. Require that the
+      // container actually scopes a single field.
+      if (gid && captureContainerScopesOneField(group)) {
         keys.push(`group:${gid}`);
       }
     }
@@ -3324,6 +3352,11 @@
     const groupSel =
       '[role="radiogroup"], [role="group"], fieldset, [data-automation-id*="formField"], [data-automation-id*="question"], [data-automation-id*="questionnaire"], .WDGO, [class*="formField"]';
     document.querySelectorAll(groupSel).forEach((group) => {
+      // A container spanning several questions has no single question to
+      // apply — labelling every control inside it would stamp whichever
+      // candidate scores highest (the longest one with a "?") onto fields
+      // it has nothing to do with.
+      if (!captureContainerScopesOneField(group)) return;
       const question =
         captureQuestionFromContainer(group, "") ||
         captureQuestionNear(group, "") ||
