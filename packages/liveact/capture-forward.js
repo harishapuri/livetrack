@@ -728,12 +728,27 @@ function startCaptureRecording() {
   return setCaptureRecording({ action: "start" });
 }
 
+/**
+ * Attach the same {key, value, type} pairs the dashboard/queue-studio views
+ * show (cleanCaptureDisplayPairs) onto a raw transaction, so the desktop
+ * app's live "Dash" panel — which reads this same transaction shape — shows
+ * identical field names/values instead of the noisier raw fields map.
+ */
+function withCleanPairs(txn) {
+  if (!txn || typeof txn !== "object") return txn;
+  try {
+    return { ...txn, pairs: cleanCaptureDisplayPairs(stepsOf(txn), valuesOf(txn)) };
+  } catch {
+    return txn;
+  }
+}
+
 async function getCaptureStatus() {
   const health = await requestCapture("/health");
   let transactions = [];
   if (health.ok) {
     try {
-      transactions = await fetchCaptureTransactions();
+      transactions = (await fetchCaptureTransactions()).map(withCleanPairs);
     } catch {
       transactions = [];
     }
@@ -1330,8 +1345,15 @@ function summarizeCaptureByUser({ transactions = [], events = [], now = Date.now
 
 function captureTransactionRecord(txn, { now = Date.now() } = {}) {
   const payload = payloadOf(txn);
-  const values = valuesOf(txn);
   const clicks = clicksOf(txn);
+  const steps = stepsOf(txn);
+  // Same {key, value, type} cleanup the queue-studio "needs review" table
+  // uses, so this raw-JSON view shows identical field names/values instead
+  // of confusing readers with two different pictures of the same recording.
+  const pairs = cleanCaptureDisplayPairs(steps, valuesOf(txn));
+  const values = Object.fromEntries(
+    pairs.filter((p) => p.type !== "click").map((p) => [p.key, p.value])
+  );
   const completedAt = String(txn.completedAt || payload.completedAt || txn.ts || "");
   const ts = Date.parse(completedAt);
   const ticket = ticketOf(txn) || "";
@@ -1348,8 +1370,8 @@ function captureTransactionRecord(txn, { now = Date.now() } = {}) {
     values,
   };
   if (clicks.length) record.clicks = clicks;
-  const steps = stepsOf(txn);
   if (steps.length) record.steps = steps;
+  if (pairs.length) record.pairs = pairs;
   return record;
 }
 

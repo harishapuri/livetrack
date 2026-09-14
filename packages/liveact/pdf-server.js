@@ -140,6 +140,16 @@ function isJunkCaptureName(name) {
   // like concatenated codes (e.g. a checkbox group's id built by joining
   // each option's short code, "s6s7s63s65s66s24no"), not a real word.
   if (!/[\s_-]/.test(bare) && bare.length > 12 && (bare.match(/\d+/g) || []).length >= 2) return true;
+  // An unselected dropdown's own placeholder text ("Select One", "Please
+  // select") is not a question either — it surfaces here as a fallback
+  // fieldName once the control's real (generic/junk) id gets rejected above.
+  if (
+    /^(select one|select an option|select\.\.\.|select…|please select( one)?|choose one|choose an option|-\s*select\s*-|--\s*select\s*--)$/i.test(
+      bare,
+    )
+  ) {
+    return true;
+  }
   if (/^\[?(name|id|type)=/i.test(n)) return false;
   if (/^[a-f0-9]{16,}$/i.test(n)) return true;
   if (/^(primaryquestionnaire--|wd-|input-|select-)/i.test(n) && n.length > 24) return true;

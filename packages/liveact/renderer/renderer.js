@@ -572,13 +572,34 @@ function clearLiveRecordingCache() {
   syncCaptureLiveMinButton();
 }
 
+/**
+ * Turn the same {key, value, type} pairs the dashboard/queue-studio "needs
+ * review" table shows into the {values, clicks} shape this panel renders,
+ * so both views agree instead of one showing raw generic ids the other
+ * already resolved to real questions.
+ */
+function pairsToValuesAndClicks(pairs) {
+  const values = {};
+  const clicks = [];
+  for (const p of pairs || []) {
+    if (!p || !p.key) continue;
+    if (p.type === "click") {
+      clicks.push({ label: p.value || p.key });
+    } else {
+      values[p.key] = p.value;
+    }
+  }
+  return { values, clicks };
+}
+
 function renderLiveCapture(txn) {
   if (liveRecordingCacheCleared && !captureRecording && !capturePausedForNav) {
     captureLivePanel?.classList.add("hidden");
     return;
   }
-  const values = captureValuesMap(txn);
-  const clicks = captureClicksList(txn);
+  const fromPairs = Array.isArray(txn?.pairs) ? pairsToValuesAndClicks(txn.pairs) : null;
+  const values = fromPairs ? fromPairs.values : captureValuesMap(txn);
+  const clicks = fromPairs ? fromPairs.clicks : captureClicksList(txn);
   const n = Object.keys(values).length;
   const c = clicks.length;
   const page = txn?.pageTitle || txn?.pageUrl || "";

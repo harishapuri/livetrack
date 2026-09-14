@@ -79,6 +79,10 @@ function captureLooksLikeJunkFieldKey(text) {
   // like concatenated codes (e.g. a checkbox group's id built by joining
   // each option's short code, "s6s7s63s65s66s24no"), not a real word.
   if (!/[\s_-]/.test(t) && t.length > 12 && (t.match(/\d+/g) || []).length >= 2) return true;
+  // An unselected dropdown's own placeholder text ("Select One", "Please
+  // select") is not a question either — it surfaces here as a fallback
+  // fieldName once the control's real (generic/junk) id gets rejected above.
+  if (captureLooksLikePlaceholderValue(t)) return true;
   return false;
 }
 
@@ -233,6 +237,10 @@ function installLiveTrackPageCapture() {
     // like concatenated codes (e.g. a checkbox group's id built by joining
     // each option's short code, "s6s7s63s65s66s24no"), not a real word.
     if (!/[\s_-]/.test(t) && t.length > 12 && (t.match(/\d+/g) || []).length >= 2) return true;
+    // An unselected dropdown's own placeholder text ("Select One", "Please
+    // select") is not a question either — it surfaces here as a fallback
+    // fieldName once the control's real (generic/junk) id gets rejected above.
+    if (captureLooksLikePlaceholderValue(t)) return true;
     return false;
   }
 
