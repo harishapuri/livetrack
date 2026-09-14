@@ -3265,7 +3265,14 @@
         group.getAttribute?.("data-automation-id") ||
         group.getAttribute?.("aria-labelledby") ||
         "";
-      if (gid) keys.push(`group:${gid}`);
+      // Same uniqueness concern as id/name/auto above, and worse in
+      // practice: this selector can match a wrapper around an ENTIRE
+      // multi-question section, not just one question's own option group.
+      // A shared group id would let every control in that section overwrite
+      // and read back each other's cached question.
+      if (gid && isUniqueInDom(`[id="${gid.replace(/"/g, '\\"')}"], [data-automation-id="${gid.replace(/"/g, '\\"')}"]`)) {
+        keys.push(`group:${gid}`);
+      }
     }
     return keys;
   }
