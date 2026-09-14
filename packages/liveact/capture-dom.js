@@ -64,6 +64,17 @@ function captureLooksLikeJunkFieldKey(text) {
   if (/^(input|select|textarea|field|button|div|span)$/i.test(t)) return true;
   if (/^#?(primaryQuestionnaire--|wd-|ember\d)/i.test(t)) return true;
   if (/^primaryQuestionnaire--/i.test(t)) return true;
+  // Generic test-automation ids some sites assign in place of real names
+  // ("select-one", "input-two", "field3", bare "one"/"two", ...) — never a
+  // real question, so never worth showing as a field's name.
+  if (
+    /^(select|input|field|option|choice|dropdown|radio|checkbox|text|textbox|combo|combobox)[-_]?(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,3})$/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (/^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)$/i.test(t)) return true;
   return false;
 }
 
@@ -203,6 +214,17 @@ function installLiveTrackPageCapture() {
     if (/^(input|select|textarea|field|button|div|span)$/i.test(t)) return true;
     if (/^#?(primaryQuestionnaire--|wd-|ember\d)/i.test(t)) return true;
     if (/^primaryQuestionnaire--/i.test(t)) return true;
+    // Generic test-automation ids some sites assign in place of real names
+    // ("select-one", "input-two", "field3", bare "one"/"two", ...) — never a
+    // real question, so never worth showing as a field's name.
+    if (
+      /^(select|input|field|option|choice|dropdown|radio|checkbox|text|textbox|combo|combobox)[-_]?(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,3})$/i.test(
+        t,
+      )
+    ) {
+      return true;
+    }
+    if (/^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)$/i.test(t)) return true;
     return false;
   }
 

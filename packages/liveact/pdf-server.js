@@ -117,6 +117,25 @@ function isJunkCaptureName(name) {
   const n = String(name || "").trim();
   if (!n) return true;
   if (/^(input|select|textarea|button|div|span|label)$/i.test(n)) return true;
+  // Generic test-automation ids some sites assign in place of real names
+  // ("select-one", "input-two", "field3", bare "one"/"two", ...) — never a
+  // real question, so never worth showing as a field's name. Strip CSS
+  // selector wrapping (#id, [name="..."]) first so the fallback selector
+  // string doesn't just re-leak the same generic token in disguise, and
+  // check this BEFORE the generic "[name=...] is fine" rule below, which
+  // would otherwise let it through unexamined.
+  const bare = n
+    .replace(/^#/, "")
+    .replace(/^\[[\w-]+=["']?/, "")
+    .replace(/["'\]]+$/, "");
+  if (
+    /^(select|input|field|option|choice|dropdown|radio|checkbox|text|textbox|combo|combobox)[-_]?(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,3})$/i.test(
+      bare,
+    )
+  ) {
+    return true;
+  }
+  if (/^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)$/i.test(bare)) return true;
   if (/^\[?(name|id|type)=/i.test(n)) return false;
   if (/^[a-f0-9]{16,}$/i.test(n)) return true;
   if (/^(primaryquestionnaire--|wd-|input-|select-)/i.test(n) && n.length > 24) return true;
