@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LiveTrack Form Agent",
-  "version": "0.1.55",
+  "version": "0.1.56",
   "description": "Fills forms on the current tab when LiveTrack desktop sends a queue card SOP.",
   "minimum_chrome_version": "116",
   "permissions": ["tabs", "windows", "scripting", "storage", "alarms"],
