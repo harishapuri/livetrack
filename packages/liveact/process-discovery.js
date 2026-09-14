@@ -177,13 +177,12 @@ function formMatchHints(url, title) {
   return [...new Set(hints.filter(Boolean))];
 }
 
+// Delegate to pdf-server.js's canonical, actively-maintained detectors
+// instead of keeping a second copy here that silently drifts out of sync
+// (this is what let junk keys like "one"/"select-one" reach case data
+// after they'd already been fixed everywhere else).
 function looksLikeOpaqueToken(value) {
-  const s = String(value || "").trim();
-  if (!s) return false;
-  // Workday / WD5 often writes UUID-like tokens into nameless inputs after a radio click.
-  if (/^[a-f0-9]{20,}$/i.test(s.replace(/-/g, ""))) return true;
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return true;
-  return false;
+  return require("./pdf-server").looksLikeOpaqueId(value);
 }
 
 function isShortOptionLabel(text) {
@@ -193,13 +192,7 @@ function isShortOptionLabel(text) {
 }
 
 function isJunkFieldKey(text) {
-  const t = String(text || "").replace(/\s+/g, " ").trim();
-  if (!t) return true;
-  if (/^(input|select|textarea|button|div|span|label|text|field)$/i.test(t)) return true;
-  if (/^[a-f0-9]{16,}$/i.test(t)) return true;
-  if (/^(primaryquestionnaire--|wd-|ember\d)/i.test(t)) return true;
-  if (/^#?(primaryquestionnaire--|input$)/i.test(t)) return true;
-  return false;
+  return require("./pdf-server").isJunkCaptureName(text);
 }
 
 function humanQuestionLabel(raw) {
@@ -216,6 +209,11 @@ function captureEventsToSopSteps(rawSteps) {
   const seen = new Set();
   const steps = [];
   const data = {};
+  // A hidden accessibility-shim control synced behind the real widget often
+  // resolves to the SAME real question as a separate raw step. Track steps
+  // by their base (pre-uniqueStepId) key so a repeat merges into the
+  // existing step instead of becoming a "-2"/"-3" duplicate.
+  const fieldStepByKey = new Map();
   let choiceN = 0;
   for (const raw of rawSteps || []) {
     const action = String(raw.action || "fill").toLowerCase();
@@ -245,12 +243,18 @@ function captureEventsToSopSteps(rawSteps) {
         action === "click" ||
         (action === "fill" && question))
     ) {
+      const human = question || `Choice ${choiceN + 1}`;
+      const fieldKey = slugify(human) || `choice-${choiceN + 1}`;
+      const existingChoice = fieldStepByKey.get(fieldKey);
+      if (existingChoice) {
+        data[existingChoice.id] = option;
+        existingChoice.allowedValues = [option];
+        continue;
+      }
       choiceN += 1;
-      const human = question || `Choice ${choiceN}`;
-      const fieldKey = slugify(human) || `choice-${choiceN}`;
       const id = uniqueStepId(fieldKey, seen, fieldKey);
       data[id] = option;
-      steps.push({
+      const choiceStep = {
         id,
         action: "check",
         label: human,
@@ -259,7 +263,9 @@ function captureEventsToSopSteps(rawSteps) {
         mandatory: true,
         findByLabel: [human],
         allowedValues: [option],
-      });
+      };
+      steps.push(choiceStep);
+      fieldStepByKey.set(fieldKey, choiceStep);
       continue;
     }
 
@@ -281,10 +287,18 @@ function captureEventsToSopSteps(rawSteps) {
     if (isJunkFieldKey(human) && looksLikeOpaqueToken(raw.value)) continue;
     const fieldKey = slugify(raw.fieldName || human) || `field-${steps.length + 1}`;
     if (isJunkFieldKey(fieldKey) && looksLikeOpaqueToken(raw.value)) continue;
-    const id = uniqueStepId(fieldKey, seen, fieldKey);
     const fillAction = action === "check" || action === "select" ? action : "fill";
     const value = String(raw.value || raw.selectedText || "").trim();
     if (looksLikeOpaqueToken(value)) continue;
+    const existingField = fieldStepByKey.get(fieldKey);
+    if (existingField) {
+      if (value) data[existingField.id] = value;
+      if ((fillAction === "select" || fillAction === "check") && value) {
+        existingField.allowedValues = [value];
+      }
+      continue;
+    }
+    const id = uniqueStepId(fieldKey, seen, fieldKey);
     if (value) data[id] = value;
     const step = {
       id,
@@ -298,6 +312,7 @@ function captureEventsToSopSteps(rawSteps) {
     else if (human) step.findByLabel = [human];
     if ((fillAction === "select" || fillAction === "check") && value) step.allowedValues = [value];
     steps.push(step);
+    fieldStepByKey.set(fieldKey, step);
   }
   return { steps, data };
 }
