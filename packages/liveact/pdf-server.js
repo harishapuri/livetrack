@@ -129,13 +129,17 @@ function isJunkCaptureName(name) {
     .replace(/^\[[\w-]+=["']?/, "")
     .replace(/["'\]]+$/, "");
   if (
-    /^(select|input|field|option|choice|dropdown|radio|checkbox|text|textbox|combo|combobox)[-_]?(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,3})$/i.test(
+    /^(select|input|field|option|choice|dropdown|radio|checkbox|text|textbox|combo|combobox)[-_]?(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,3})([-_]?\d{1,3})?$/i.test(
       bare,
     )
   ) {
     return true;
   }
-  if (/^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)$/i.test(bare)) return true;
+  if (/^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)([-_]?\d{1,3})?$/i.test(bare)) return true;
+  // Long unbroken alphanumeric blobs with several embedded digit groups look
+  // like concatenated codes (e.g. a checkbox group's id built by joining
+  // each option's short code, "s6s7s63s65s66s24no"), not a real word.
+  if (!/[\s_-]/.test(bare) && bare.length > 12 && (bare.match(/\d+/g) || []).length >= 2) return true;
   if (/^\[?(name|id|type)=/i.test(n)) return false;
   if (/^[a-f0-9]{16,}$/i.test(n)) return true;
   if (/^(primaryquestionnaire--|wd-|input-|select-)/i.test(n) && n.length > 24) return true;

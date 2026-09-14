@@ -2924,13 +2924,17 @@
     // ("select-one", "input-two", "field3", bare "one"/"two", ...) — never a
     // real question, so never worth showing as a field's name.
     if (
-      /^(select|input|field|option|choice|dropdown|radio|checkbox|text|textbox|combo|combobox)[-_]?(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,3})$/i.test(
+      /^(select|input|field|option|choice|dropdown|radio|checkbox|text|textbox|combo|combobox)[-_]?(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,3})([-_]?\d{1,3})?$/i.test(
         t,
       )
     ) {
       return true;
     }
-    if (/^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)$/i.test(t)) return true;
+    if (/^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)([-_]?\d{1,3})?$/i.test(t)) return true;
+    // Long unbroken alphanumeric blobs with several embedded digit groups look
+    // like concatenated codes (e.g. a checkbox group's id built by joining
+    // each option's short code, "s6s7s63s65s66s24no"), not a real word.
+    if (!/[\s_-]/.test(t) && t.length > 12 && (t.match(/\d+/g) || []).length >= 2) return true;
     return false;
   }
 
