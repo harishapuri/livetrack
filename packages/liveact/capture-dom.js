@@ -607,6 +607,15 @@ function installLiveTrackPageCapture() {
   }
 
   function onCaptureClick(event) {
+    // A native <select> is fully handled by its own "change" event
+    // (captureDescribe's select branch, which reads the real chosen
+    // option's visible text directly) — never let click-based choice
+    // logic touch it. In particular the combobox-trigger/pending-question
+    // fallback below exists for Workday's CUSTOM popup widgets; letting a
+    // plain <select> click reach it meant every such click could pick up
+    // a stale pendingComboboxQuestion() left over from a much earlier,
+    // unrelated dropdown — the "wrong label sticks to every field" bug.
+    if (event.target?.closest?.("select")) return;
     const el = event.target?.closest?.(
       "button, a[href], [role='button'], [role='tab'], [role='option'], [role='radio'], [role='menuitem'], [role='checkbox'], input[type='submit'], input[type='button'], input[type='radio'], input[type='checkbox'], label, [data-automation-id*='primaryQuestionnaire'], [data-automation-id*='promptOption'], [data-automation-id*='optionRenderer']",
     );
