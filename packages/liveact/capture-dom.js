@@ -764,15 +764,46 @@ function installLiveTrackPageCapture() {
     return tag;
   }
 
+  /** A non-unique id/name/data-automation-id is not a reliable cache key —
+   *  using it lets one field's cached question bleed onto a completely
+   *  different field that happens to share the same (often generic,
+   *  page-template) identifier, e.g. a hidden accessibility-shim control
+   *  reusing the same id across every dropdown on the page. */
+  function isUniqueInDom(selector) {
+    try {
+      return document.querySelectorAll(selector).length <= 1;
+    } catch {
+      return true;
+    }
+  }
+
   function inventoryKeysFor(el) {
     const keys = [];
     if (!el) return keys;
-    if (el.id) keys.push(`id:${el.id}`);
+    let idIsUnique = true;
+    if (el.id) {
+      try {
+        idIsUnique = isUniqueInDom(`#${CSS.escape(el.id)}`);
+      } catch {
+        idIsUnique = true;
+      }
+      if (idIsUnique) keys.push(`id:${el.id}`);
+    }
     const auto = el.getAttribute?.("data-automation-id");
-    if (auto) keys.push(`auto:${auto}`);
-    if (el.name) keys.push(`name:${el.name}`);
+    if (auto && isUniqueInDom(`[data-automation-id="${auto.replace(/"/g, '\\"')}"]`)) {
+      keys.push(`auto:${auto}`);
+    }
+    if (el.name) {
+      let nameIsUnique = true;
+      try {
+        nameIsUnique = document.getElementsByName(el.name).length <= 1;
+      } catch {
+        nameIsUnique = true;
+      }
+      if (nameIsUnique) keys.push(`name:${el.name}`);
+    }
     const sel = captureSelectorFor(el);
-    if (sel) keys.push(`sel:${sel}`);
+    if (sel && !(sel.startsWith("#") && !idIsUnique)) keys.push(`sel:${sel}`);
     const group =
       el.closest?.(
         '[role="radiogroup"], [role="group"], fieldset, [data-automation-id*="formField"], [data-automation-id*="question"], [data-automation-id*="questionnaire"]',
@@ -807,24 +838,16 @@ function installLiveTrackPageCapture() {
   function lookupInventory(el) {
     const map = window.__ltFieldInventory;
     if (!map || !el) return "";
+    // Only a direct key match on THIS element — no longer falls back to
+    // scanning every control in the enclosing fieldset/questionnaire
+    // container for "any" cached hit. That container can easily wrap an
+    // entire multi-question section (e.g. all of "Application Questions"),
+    // so the old fallback would confidently return a completely unrelated
+    // question's cached label. resolveFieldQuestion() already falls back
+    // to live, element-scoped resolution when this comes back empty.
     for (const k of inventoryKeysFor(el)) {
       const hit = map.get(k);
       if (hit?.label && captureIsUsefulQuestionLabel(hit.label, "")) return hit.label;
-    }
-    const group =
-      el.closest?.(
-        '[role="radiogroup"], [role="group"], fieldset, [data-automation-id*="formField"], [data-automation-id*="question"], [data-automation-id*="questionnaire"]',
-      ) || null;
-    if (group) {
-      const ctrls = group.querySelectorAll?.(
-        "input, textarea, select, button, [role='radio'], [role='checkbox'], [role='button'], [data-automation-id]",
-      );
-      for (const ctrl of ctrls || []) {
-        for (const k of inventoryKeysFor(ctrl)) {
-          const hit = map.get(k);
-          if (hit?.label && captureIsUsefulQuestionLabel(hit.label, "")) return hit.label;
-        }
-      }
     }
     return "";
   }
