@@ -272,13 +272,18 @@ async function generateDashboardData(opts = {}) {
   const outPath = path.join(dashDir, "data.json");
   const jsPath = path.join(dashDir, "data.js");
   if (writeFiles) {
-    const json = JSON.stringify(payload, null, 2);
-    fs.writeFileSync(outPath, `${json}\n`, "utf8");
-    fs.writeFileSync(
-      jsPath,
-      `window.DASHBOARD_DATA = ${JSON.stringify(payload)};\n`,
-      "utf8"
-    );
+    try {
+      ensureDir(dashDir);
+      const json = JSON.stringify(payload, null, 2);
+      fs.writeFileSync(outPath, `${json}\n`, "utf8");
+      fs.writeFileSync(
+        jsPath,
+        `window.DASHBOARD_DATA = ${JSON.stringify(payload)};\n`,
+        "utf8"
+      );
+    } catch (err) {
+      console.warn(`[dashboard] could not write ${outPath}:`, err?.message || err);
+    }
   }
 
   if (!quiet) {
@@ -489,6 +494,8 @@ function mandatoryMetaForCard(stepIndex, queueCardId) {
   return null;
 }
 
+const DASH_LATEST_RUNS = 5;
+
 async function buildAgentDashboard({
   queueCards = [],
   days = 365,
@@ -522,7 +529,7 @@ async function buildAgentDashboard({
     .sort((a, b) =>
       String(b.completed_at || b.run_date).localeCompare(String(a.completed_at || a.run_date))
     )
-    .slice(0, 80)
+    .slice(0, DASH_LATEST_RUNS)
     .map((run) => {
       const card = cardById.get(String(run.queue_card_id || ""));
       const meta = mandatoryMetaForCard(stepIndex, run.queue_card_id);
@@ -619,13 +626,14 @@ async function buildAgentDashboard({
     String(b.completed_at || b.run_date).localeCompare(String(a.completed_at || a.run_date))
   );
 
+  const latest = merged.slice(0, DASH_LATEST_RUNS);
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
     dateFrom: range.dateFrom,
     dateTo: range.dateTo,
-    total: merged.length,
-    rows: merged.slice(0, 80),
+    total: latest.length,
+    rows: latest,
   };
 }
 

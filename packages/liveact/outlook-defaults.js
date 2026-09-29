@@ -3,7 +3,8 @@
  * Client ID is not a secret. Override in Settings only if IT gives another app.
  *
  * App: "LiveTrack outlook" — must allow personal Microsoft accounts (or org + personal)
- * and Allow public client flows = Yes.
+ * and Allow public client flows = Yes. Delegated Graph: User.Read, Calendars.Read, Mail.Read
+ * (one Connect Outlook sign-in covers meetings and inbox).
  */
 module.exports = {
   /** Multi-account authority — personal Outlook + work */

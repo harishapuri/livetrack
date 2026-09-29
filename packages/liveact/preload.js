@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld("coact", {
   getMainBounds: () => ipcRenderer.invoke("get-main-bounds"),
   quitApp: () => ipcRenderer.invoke("quit-app"),
   copyText: (text) => ipcRenderer.invoke("copy-text", text),
+  readClipboard: () => ipcRenderer.invoke("read-clipboard-text"),
+  focusMainWindow: () => ipcRenderer.invoke("focus-main-window"),
   requestTabStatus: () => ipcRenderer.invoke("request-tab-status"),
   getOpenAiSettings: () => ipcRenderer.invoke("get-openai-settings"),
   saveOpenAiSettings: (payload) => ipcRenderer.invoke("save-openai-settings", payload),
@@ -29,7 +31,7 @@ contextBridge.exposeInMainWorld("coact", {
   momTeamsFrame: () => ipcRenderer.invoke("mom-teams-frame"),
   transcribeAudio: (payload) => ipcRenderer.invoke("transcribe-audio", payload),
   synthesizeSpeech: (payload) => ipcRenderer.invoke("synthesize-speech", payload),
-  outlookConnect: () => ipcRenderer.invoke("outlook-connect"),
+  outlookConnect: (payload) => ipcRenderer.invoke("outlook-connect", payload || {}),
   outlookCancelConnect: () => ipcRenderer.invoke("outlook-cancel-connect"),
   outlookDisconnect: () => ipcRenderer.invoke("outlook-disconnect"),
   outlookRefresh: () => ipcRenderer.invoke("outlook-refresh"),
@@ -77,6 +79,12 @@ contextBridge.exposeInMainWorld("coact", {
   jiraRefresh: () => ipcRenderer.invoke("jira-refresh"),
   jiraSetPaneActive: (active) => ipcRenderer.invoke("jira-set-pane-active", Boolean(active)),
   jiraGetSnapshot: () => ipcRenderer.invoke("jira-get-snapshot"),
+  jiraPastWork: (payload) => ipcRenderer.invoke("jira-past-work", payload || {}),
+  jiraPastWorkLoad: () => ipcRenderer.invoke("jira-past-work-load"),
+  savePastWork: (issues) => ipcRenderer.invoke("jira-past-work-save", issues || []),
+  expertIndexStatus: () => ipcRenderer.invoke("expert-index-status"),
+  expertIndexRebuild: () => ipcRenderer.invoke("expert-index-rebuild"),
+  findExpert: (payload) => ipcRenderer.invoke("find-expert", payload || {}),
   jiraOpenIssue: (url) => ipcRenderer.invoke("jira-open-issue", url),
   openDashboard: (payload) => ipcRenderer.invoke("open-dashboard", payload || {}),
   jiraAddComment: (payload) => ipcRenderer.invoke("jira-add-comment", payload || {}),
@@ -84,6 +92,7 @@ contextBridge.exposeInMainWorld("coact", {
   deskCapturePage: () => ipcRenderer.invoke("desk-capture-page"),
   deskDraftFromScreenshot: (payload) =>
     ipcRenderer.invoke("desk-draft-from-screenshot", payload || {}),
+  deskListEpics: () => ipcRenderer.invoke("desk-list-epics"),
   deskCreateJiraIssue: (payload) => ipcRenderer.invoke("desk-create-jira-issue", payload || {}),
   deskRefineTicket: (payload) => ipcRenderer.invoke("desk-refine-ticket", payload || {}),
   deskCreatedTickets: () => ipcRenderer.invoke("desk-created-tickets"),
@@ -98,6 +107,8 @@ contextBridge.exposeInMainWorld("coact", {
   getAnalytics: (payload) => ipcRenderer.invoke("get-analytics", payload || {}),
   setCaptureRecording: (payload) => ipcRenderer.invoke("set-capture-recording", payload || {}),
   getCaptureStatus: () => ipcRenderer.invoke("get-capture-status"),
+  attachStepExplanation: (payload) =>
+    ipcRenderer.invoke("attach-step-explanation", payload || {}),
   jiraMandatorySummary: (payload) =>
     ipcRenderer.invoke("jira-mandatory-summary", payload || {}),
   onJiraUpdated: (cb) => {
@@ -124,6 +135,7 @@ contextBridge.exposeInMainWorld("coact", {
   actionsDone: (payload) => ipcRenderer.invoke("actions-done", payload || {}),
   actionsReopen: (payload) => ipcRenderer.invoke("actions-reopen", payload || {}),
   actionsPendingCount: () => ipcRenderer.invoke("actions-pending-count"),
+  actionsImportOutlook: () => ipcRenderer.invoke("actions-import-outlook"),
   onActionsUpdated: (cb) => {
     const handler = (_event, data) => cb(data);
     ipcRenderer.on("actions-updated", handler);
@@ -145,6 +157,11 @@ contextBridge.exposeInMainWorld("coact", {
     const handler = (_event, data) => cb(data);
     ipcRenderer.on("extension-status", handler);
     return () => ipcRenderer.removeListener("extension-status", handler);
+  },
+  onExtensionHeartbeat: (cb) => {
+    const handler = (_event, data) => cb(data);
+    ipcRenderer.on("extension-heartbeat", handler);
+    return () => ipcRenderer.removeListener("extension-heartbeat", handler);
   },
   onStepUpdate: (cb) => {
     const handler = (_event, data) => cb(data);

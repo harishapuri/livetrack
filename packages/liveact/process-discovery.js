@@ -167,13 +167,11 @@ function formMatchHints(url, title) {
     const parts = String(u.pathname || "")
       .split("/")
       .map((p) => p.replace(/\.html?$/i, ""))
-      .filter((p) => p && p !== "index" && p.length > 2);
+      .filter((p) => p && p.length >= 12 && !/^(apply|job|jobs|career|careers|search|home|index|login)$/i.test(p));
     hints.push(...parts.slice(-2));
   } catch {
     /* ignore */
   }
-  const t = String(title || "").trim();
-  if (t && t.length < 80) hints.push(t);
   return [...new Set(hints.filter(Boolean))];
 }
 
@@ -213,15 +211,55 @@ function humanQuestionLabel(raw) {
 }
 
 function captureEventsToSopSteps(rawSteps) {
+  const pdf = require("./pdf-server");
+  const { copyScreenshotMeta, attachSessionShots } = require("./capture-step-shot");
   const seen = new Set();
   const steps = [];
   const data = {};
   let choiceN = 0;
+  function pushStep(step, raw) {
+    const finder = String(raw?.finder || "").trim();
+    const label = String(step.label || "").trim();
+    if (finder && finder.toLowerCase() !== label.toLowerCase()) {
+      step.finder = finder;
+      const hints = []
+        .concat(step.findByLabel || [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean);
+      if (label && !hints.some((item) => item.toLowerCase() === label.toLowerCase())) {
+        hints.unshift(label);
+      }
+      if (!hints.some((item) => item.toLowerCase() === finder.toLowerCase())) hints.push(finder);
+      if (hints.length) step.findByLabel = hints;
+    }
+    const guiId = String(raw?.guiId || "").trim();
+    if (guiId) {
+      step.guiId = guiId;
+      step.selector = guiId;
+    }
+    steps.push(copyScreenshotMeta(raw, step));
+  }
   for (const raw of rawSteps || []) {
     const action = String(raw.action || "fill").toLowerCase();
     const optionText = String(raw.selectedText || raw.value || "").trim();
     const label = String(raw.label || raw.fieldName || raw.selectedText || raw.value || "").trim();
     if (!label && !raw.fieldName) continue;
+
+    if (pdf.isNavigationClick(raw) || pdf.isNavigationClickLabel(optionText)) {
+      const clickLabel =
+        pdf.navigationClickName(raw) ||
+        (pdf.isNavigationClickLabel(optionText) ? optionText : label.replace(/^click\s+/i, ""));
+      if (!clickLabel || isJunkFieldKey(clickLabel) || looksLikeOpaqueToken(clickLabel)) continue;
+      const id = uniqueStepId(`click-${clickLabel}`, seen, `click-${steps.length + 1}`);
+      pushStep({
+        id,
+        action: "click",
+        label: clickLabel,
+        selector: String(raw.selector || "").trim(),
+        findByText: [clickLabel],
+      }, raw);
+      continue;
+    }
 
     const keyHint = String(raw.fieldName || raw.label || "").trim();
     if (
@@ -250,16 +288,17 @@ function captureEventsToSopSteps(rawSteps) {
       const fieldKey = slugify(human) || `choice-${choiceN}`;
       const id = uniqueStepId(fieldKey, seen, fieldKey);
       data[id] = option;
-      steps.push({
+      pushStep({
         id,
         action: "check",
         label: human,
         selector: String(raw.selector || "").trim(),
         valueFrom: id,
+        value: option,
         mandatory: true,
         findByLabel: [human],
         allowedValues: [option],
-      });
+      }, raw);
       continue;
     }
 
@@ -267,13 +306,13 @@ function captureEventsToSopSteps(rawSteps) {
       if (isJunkFieldKey(label) || looksLikeOpaqueToken(label)) continue;
       const clickLabel = label || "control";
       const id = uniqueStepId(`click-${clickLabel}`, seen, `click-${steps.length + 1}`);
-      steps.push({
+      pushStep({
         id,
         action: "click",
         label: clickLabel.replace(/^click\s+/i, ""),
         selector: String(raw.selector || "").trim(),
         findByText: [clickLabel.replace(/^click\s+/i, "")],
-      });
+      }, raw);
       continue;
     }
     if (isJunkFieldKey(label) && isJunkFieldKey(raw.fieldName)) continue;
@@ -296,10 +335,19 @@ function captureEventsToSopSteps(rawSteps) {
     };
     if (raw.findByLabel) step.findByLabel = raw.findByLabel;
     else if (human) step.findByLabel = [human];
-    if ((fillAction === "select" || fillAction === "check") && value) step.allowedValues = [value];
-    steps.push(step);
+    // Answer lives on the step. Renaming the field or valueFrom does not drop it.
+    if (value) {
+      step.allowedValues = [value];
+      step.value = value;
+    }
+    pushStep(step, raw);
   }
-  return { steps, data };
+  const sessionId = String(
+    (rawSteps || []).find((row) => row?.recordingSessionId || row?.sessionId)?.recordingSessionId ||
+      (rawSteps || []).find((row) => row?.recordingSessionId || row?.sessionId)?.sessionId ||
+      ""
+  );
+  return { steps: attachSessionShots(steps, sessionId), data };
 }
 
 function synthesizeDraftFromCapture(txn) {
@@ -320,6 +368,12 @@ function synthesizeDraftFromCapture(txn) {
     "Recorded with the LiveTrack Record button because no queue card matched this page. Edit steps and values, then approve to add a queue card.";
   base.sampleData = data;
   base.recordingSessionId = String(txn.transactionId || payload.recordingSessionId || "");
+  const script = capture.playwrightScriptFromTxn(txn);
+  if (script) {
+    base.ticket = script.ticket;
+    base.playwright = script;
+    base.sampleData = capture.playwrightCaseData(script, data);
+  }
   const hints = formMatchHints(url, title);
   if (hints.length) base.formMatch = hints;
   if (!steps.length) {
@@ -331,22 +385,25 @@ function synthesizeDraftFromCapture(txn) {
 function txnMatchesExistingCard(txn, queue) {
   const capture = require("./capture-forward");
   const payload = capture.payloadOf(txn);
-  const cardId = String(payload.cardId || txn.cardId || "").trim();
-  if (cardId && (queue || []).some((c) => c.id === cardId)) return true;
   const url = String(txn.pageUrl || payload.url || "").toLowerCase();
-  const title = String(txn.pageTitle || payload.title || "").toLowerCase();
-  if (!url && !title) return false;
+  if (!url) return false;
   for (const card of queue || []) {
     const form = String(card.formUrl || "").toLowerCase().replace(/\/$/, "");
     if (form && url.replace(/\/$/, "") === form) return true;
     for (const hint of card.formMatch || []) {
       const h = String(hint || "").toLowerCase().trim();
-      if (h.length <= 3) continue;
-      if (/^[\w.-]+(:\d+)?\/?$/.test(h.replace(/^https?:\/\//, ""))) continue;
-      if (url.includes(h) || title.includes(h)) return true;
+      if (!h || h.includes(" ")) continue;
+      const host = h.replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
+      if (host.includes(".")) {
+        const tabHost = url.replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
+        if (tabHost === host || tabHost.endsWith(`.${host}`)) return true;
+        continue;
+      }
+      if (h.length < 12) continue;
+      if (url.includes(`/${h}`) || url.includes(`${h}.html`)) return true;
     }
     const id = String(card.id || "").toLowerCase();
-    if (id && url.includes(id)) return true;
+    if (id.length >= 12 && (url.includes(`/${id}`) || url.includes(`${id}.html`))) return true;
   }
   return false;
 }
@@ -372,15 +429,9 @@ async function draftUnmatchedCaptures(queue = []) {
       next.push(ensureTxnRef(txn, capture, pdf));
       continue;
     }
-    // Recording was attached to a queue card — not a discovery draft
+    // A card id only means the Record button was pressed with a card open.
+    // If the page is a different site, it still belongs in Approvals.
     const cardId = String(payload.cardId || txn.cardId || "").trim();
-    if (cardId) {
-      next.push(ensureTxnRef(txn, capture, pdf));
-      continue;
-    }
-    // Explicit unmatched Record (no cardId): always draft when there are steps.
-    // formMatch alone must not suppress drafts — operators use Record precisely
-    // when the existing card did not apply to their session.
     const unmatched = Boolean(payload.unmatched || txn.unmatched || !cardId);
     if (!unmatched && txnMatchesExistingCard(txn, queue)) {
       next.push(ensureTxnRef(txn, capture, pdf));
@@ -501,12 +552,23 @@ async function promoteSopToQueueCard(sop, { data, lob, title, cardId } = {}) {
     n += 1;
   }
   const dir = documents.lobCardDir(documents.defaultDocumentsRoot(), unique, useLob);
-  const values =
-    data && typeof data === "object" && !Array.isArray(data)
-      ? data
-      : published.sampleData || {};
+  const capture = require("./capture-forward");
+  const shot = require("./capture-step-shot");
+  const script = published.playwright || capture.playwrightScriptFromSop(published);
+  const values = capture.playwrightCaseData(
+    script,
+    data && typeof data === "object" && !Array.isArray(data) ? data : published.sampleData || {}
+  );
+  const { clicks: _clicks, startUrl: _startUrl, ticket, ...scalar } = values;
+  const relocated = shot.relocateShotsOntoCard(
+    { steps: published.steps, playwright: script },
+    dir
+  );
+  if (Array.isArray(relocated.steps)) published.steps = relocated.steps;
+  if (relocated.playwright) published.playwright = relocated.playwright;
+  await sopsStore.upsertSop(published);
   await documents.writeCardFiles(dir, {
-    data: values,
+    data: { ...scalar, ...(ticket ? { ticket } : {}) },
     meta: {
       id: unique,
       title: String(title || published.name || unique).replace(/^Draft:\s*/i, ""),
@@ -517,6 +579,9 @@ async function promoteSopToQueueCard(sop, { data, lob, title, cardId } = {}) {
       formMatch: Array.isArray(published.formMatch) ? published.formMatch : [],
     },
   });
+  if (relocated.playwright) {
+    documents.persistQueuePlaywrightCaseData(dir, relocated.playwright, values);
+  }
   return {
     ok: true,
     sop: published,

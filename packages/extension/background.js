@@ -5,6 +5,82 @@
 // Optional rare remote overrides (chrome.storage.local):
 //   bridgeHost: "192.168.x.x"  → ws://that-host:17321
 //   bridgeUrl:  "ws://host:17321" (full URL wins over bridgeHost)
+const CONTENT_SCRIPT_FILES = ["step-match.js", "content.js"];
+
+/** Completed step ids per card so Next-page re-watch keeps earlier greens. */
+const completedByCard = new Map();
+const COMPLETED_STORAGE_KEY = "ltCompletedByCard";
+
+function persistCompletedByCard() {
+  const obj = {};
+  for (const [cardId, set] of completedByCard.entries()) {
+    const ids = [...set];
+    if (ids.length) obj[cardId] = ids;
+  }
+  try {
+    chrome.storage.local.set({ [COMPLETED_STORAGE_KEY]: obj });
+  } catch {
+    /* ignore */
+  }
+}
+
+try {
+  chrome.storage.local.get(COMPLETED_STORAGE_KEY, (res) => {
+    const obj = res?.[COMPLETED_STORAGE_KEY];
+    if (!obj || typeof obj !== "object") return;
+    for (const [cardId, ids] of Object.entries(obj)) {
+      if (!cardId || !Array.isArray(ids)) continue;
+      completedByCard.set(cardId, new Set(ids.filter(Boolean)));
+    }
+  });
+} catch {
+  /* ignore */
+}
+
+function rememberCompletedStep(payload) {
+  const cardId = payload?.cardId;
+  const stepId = payload?.stepId;
+  if (!cardId || !stepId) return;
+  let set = completedByCard.get(cardId);
+  if (!set) {
+    set = new Set();
+    completedByCard.set(cardId, set);
+  }
+  if (payload.status === "done") set.add(stepId);
+  else if (
+    (payload.status === "pending" || payload.status === "missing") &&
+    payload.fieldPresent === true
+  ) {
+    set.delete(stepId);
+  }
+  persistCompletedByCard();
+}
+
+function mergeCompletedStepIds(cardId, ids) {
+  if (!cardId || !Array.isArray(ids) || !ids.length) return;
+  let set = completedByCard.get(cardId);
+  if (!set) {
+    set = new Set();
+    completedByCard.set(cardId, set);
+  }
+  for (const id of ids) {
+    if (id) set.add(id);
+  }
+  persistCompletedByCard();
+}
+
+function completedStepIdsFor(cardId) {
+  if (!cardId) return [];
+  return [...(completedByCard.get(cardId) || [])];
+}
+
+async function injectContentScripts(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: CONTENT_SCRIPT_FILES,
+  });
+}
+
 const DEFAULT_BRIDGE_HOST = "127.0.0.1";
 const DEFAULT_BRIDGE_PORT = 17321;
 const DEFAULT_BRIDGE_URL = `ws://${DEFAULT_BRIDGE_HOST}:${DEFAULT_BRIDGE_PORT}`;
@@ -126,6 +202,14 @@ function isInjectableUrl(url) {
 function broadcastCaptureRecording(msg) {
   const recording = Boolean(msg?.recording);
   captureRecording = recording;
+  try {
+    chrome.storage.session.set({
+      captureRecording: recording,
+      recordingSessionId: msg?.recordingSessionId || null,
+    });
+  } catch {
+    /* ignore */
+  }
   const payload = {
     type: "capture_recording",
     recording,
@@ -143,13 +227,61 @@ function broadcastCaptureRecording(msg) {
 function forwardCaptureEvent(event) {
   const payload = event && typeof event === "object" ? event : {};
   if (connected) {
-    send({ type: MessageType.CAPTURE_EVENT, event: payload });
+    const slim = { ...payload };
+    delete slim.screenshotDataUrl;
+    try {
+      send({ type: MessageType.CAPTURE_EVENT, event: slim });
+    } catch {
+      /* HTTP below still carries the image */
+    }
   }
   fetch(`${CAPTURE_AGENT}/capture`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   }).catch(() => {});
+}
+
+async function recordingIsOn() {
+  try {
+    const res = await fetch(`${CAPTURE_AGENT}/health`, { cache: "no-store" });
+    const health = await res.json();
+    const on = Boolean(health?.recording);
+    if (on !== captureRecording) {
+      broadcastCaptureRecording({
+        recording: on,
+        recordingSessionId: health?.recordingSessionId || null,
+      });
+    } else {
+      captureRecording = on;
+    }
+    return on;
+  } catch {
+    return Boolean(captureRecording);
+  }
+}
+
+async function captureTabDataUrl(tab) {
+  const attempts = [];
+  if (tab?.windowId != null) attempts.push(tab.windowId);
+  attempts.push(undefined);
+  for (const windowId of attempts) {
+    try {
+      const dataUrl =
+        windowId == null
+          ? await chrome.tabs.captureVisibleTab({ format: "png" })
+          : await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
+      if (dataUrl) return dataUrl;
+    } catch {
+      /* quota, focus, or permission — try the next window */
+    }
+  }
+  return "";
+}
+
+async function forwardCaptureEventWithShot(_tab, event) {
+  // Recording stays on the page. Screenshots dim the form and steal focus while typing.
+  forwardCaptureEvent(event);
 }
 
 async function refreshCaptureHealth() {
@@ -243,8 +375,12 @@ async function liveActIsUp() {
 
 function send(msg) {
   if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(msg));
-    return true;
+    try {
+      socket.send(JSON.stringify(msg));
+      return true;
+    } catch {
+      return false;
+    }
   }
   return false;
 }
@@ -312,13 +448,25 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
+function rememberActivityTab(tab) {
+  if (!tab || tab.id == null || tab.active === false) return;
+  if (!isInjectableUrl(tab.url)) return;
+  lastActivityTab = {
+    tabId: tab.id,
+    url: tab.url,
+    title: tab.title || null,
+    at: Date.now(),
+  };
+}
+
 async function getActiveTab() {
-  // Prefer the tab the user last clicked/typed in. LiveTrack is always-on-top,
-  // so lastFocusedWindow stays stuck on the first Chrome window.
+  // Prefer the tab the user last selected or typed in, but only while it is
+  // still the selected tab. LiveTrack is always-on-top, so lastFocusedWindow
+  // stays stuck on the first Chrome window and must not override a tab switch.
   if (lastActivityTab.tabId != null && Date.now() - lastActivityTab.at < 120000) {
     try {
       const tab = await chrome.tabs.get(lastActivityTab.tabId);
-      if (tab && isInjectableUrl(tab.url)) return tab;
+      if (tab && tab.active && isInjectableUrl(tab.url)) return tab;
     } catch {
       lastActivityTab = { tabId: null, url: null, title: null, at: 0 };
     }
@@ -328,12 +476,11 @@ async function getActiveTab() {
   const injectableActives = actives.filter((t) => isInjectableUrl(t.url));
   if (injectableActives.length === 1) return injectableActives[0];
   if (injectableActives.length > 1) {
-    const lastFocused = await chrome.tabs.query({
-      active: true,
-      lastFocusedWindow: true,
-    });
-    const preferred = lastFocused.find((t) => isInjectableUrl(t.url));
-    if (preferred) return preferred;
+    const remembered = injectableActives.find((t) => t.id === lastActivityTab.tabId);
+    if (remembered) return remembered;
+    injectableActives.sort(
+      (a, b) => Number(b.lastAccessed || 0) - Number(a.lastAccessed || 0)
+    );
     return injectableActives[0];
   }
 
@@ -761,10 +908,7 @@ async function sendToTab(tabId, payload, { failCardId = null } = {}) {
     return true;
   } catch {
     try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ["content.js"],
-      });
+      await injectContentScripts(tabId);
       await chrome.tabs.sendMessage(tabId, payload);
       return true;
     } catch (err) {
@@ -787,10 +931,7 @@ async function injectIntoOpenTabs() {
     for (const tab of tabs || []) {
       if (tab?.id == null || !isInjectableUrl(tab.url)) continue;
       try {
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ["content.js"],
-        });
+        await injectContentScripts(tab.id);
       } catch {
         /* chrome://, PDF viewer, etc. */
       }
@@ -888,6 +1029,7 @@ async function resumeSopRunIfReady(tabId, tabUrl) {
       data: resume.data,
       sop: resume.sop,
       startIndex: resume.nextIndex,
+      completedStepIds: completedStepIdsFor(resume.cardId),
       agentApproved: Boolean(resume.agentApproved),
       agentApprovedValues:
         resume.agentApprovedValues && typeof resume.agentApprovedValues === "object"
@@ -1044,8 +1186,44 @@ async function handleApplyStep(msg) {
   );
 }
 
+function tabUrlMatchesTarget(url, target) {
+  const u = String(url || "");
+  if (!u) return 0;
+  const formUrl = String(target?.formUrl || "").trim();
+  const matches = Array.isArray(target?.formMatch) ? target.formMatch : [];
+  if (formUrl && (u === formUrl || u.startsWith(formUrl) || u.includes(formUrl.replace(/^https?:\/\//i, "")))) {
+    return 100;
+  }
+  for (const token of matches) {
+    const t = String(token || "").trim();
+    if (t && u.includes(t)) return 60;
+  }
+  return 0;
+}
+
+async function tabForWatch(msg) {
+  const target = msg?.target || {};
+  try {
+    const all = await chrome.tabs.query({});
+    let best = null;
+    let bestScore = 0;
+    for (const tab of all || []) {
+      if (tab?.id == null || !isInjectableUrl(tab.url)) continue;
+      const score = tabUrlMatchesTarget(tab.url, target);
+      if (score > bestScore) {
+        best = tab;
+        bestScore = score;
+      }
+    }
+    if (best) return best;
+  } catch {
+    /* fall through */
+  }
+  return getActiveTab();
+}
+
 async function handleWatchCard(msg) {
-  const tab = await getActiveTab();
+  const tab = await tabForWatch(msg);
 
   if (!msg.cardId || !msg.sop) {
     lastWatchPayload = null;
@@ -1054,19 +1232,44 @@ async function handleWatchCard(msg) {
     return;
   }
 
+  if (msg.resetAllProgress) {
+    completedByCard.clear();
+    persistCompletedByCard();
+  } else if (msg.resetProgress && msg.cardId) {
+    completedByCard.delete(msg.cardId);
+    persistCompletedByCard();
+  } else if (msg.cardId) {
+    mergeCompletedStepIds(msg.cardId, msg.completedStepIds);
+  }
   lastWatchPayload = {
     type: "watch_sop",
     cardId: msg.cardId,
     sop: msg.sop,
     data: msg.data || {},
+    target: msg.target || null,
+    ...(msg.agentApproved
+      ? {
+          agentApproved: true,
+          agentApprovedValues:
+            msg.agentApprovedValues && typeof msg.agentApprovedValues === "object"
+              ? msg.agentApprovedValues
+              : {},
+        }
+      : {}),
   };
   if (tab?.id != null) watchByTabId.set(tab.id, lastWatchPayload);
 
-  const ok = await sendToActiveTab({
+  const payload = {
     ...lastWatchPayload,
-    resetProgress: Boolean(msg.resetProgress),
+    completedStepIds: msg.resetProgress || msg.resetAllProgress ? [] : completedStepIdsFor(msg.cardId),
+    resetProgress: Boolean(msg.resetProgress) || Boolean(msg.resetAllProgress),
     clearFields: Boolean(msg.clearFields),
-  });
+    resetAllProgress: Boolean(msg.resetAllProgress),
+    acceptStepId: String(msg.acceptStepId || "").trim() || undefined,
+  };
+  const ok = tab?.id != null
+    ? await sendToTab(tab.id, payload)
+    : await sendToActiveTab(payload);
   if (!ok) {
     send({
       type: MessageType.STEP_UPDATE,
@@ -1095,10 +1298,7 @@ async function handleCaptureSnippet(msg) {
     try {
       result = await chrome.tabs.sendMessage(tab.id, { type: "capture_snippet" });
     } catch {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ["content.js"],
-      });
+      await injectContentScripts(tab.id);
       result = await chrome.tabs.sendMessage(tab.id, { type: "capture_snippet" });
     }
 
@@ -1206,7 +1406,7 @@ async function handleCaptureTabShot(msg) {
     return;
   }
   try {
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+    const dataUrl = await captureTabDataUrl(tab);
     if (!dataUrl) {
       send({
         type: MessageType.TAB_SHOT,
@@ -1242,15 +1442,16 @@ async function reapplyWatchForTab(tabId) {
   if (tabId == null) return;
   const payload = watchByTabId.get(tabId);
   if (!payload) return;
+  const withProgress = {
+    ...payload,
+    completedStepIds: completedStepIdsFor(payload.cardId),
+  };
   try {
-    await chrome.tabs.sendMessage(tabId, payload);
+    await chrome.tabs.sendMessage(tabId, withProgress);
   } catch {
     try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ["content.js"],
-      });
-      await chrome.tabs.sendMessage(tabId, payload);
+      await injectContentScripts(tabId);
+      await chrome.tabs.sendMessage(tabId, withProgress);
     } catch {
       /* page not injectable yet */
     }
@@ -1259,8 +1460,12 @@ async function reapplyWatchForTab(tabId) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "capture_event") {
-    if (captureRecording && message.event) {
-      forwardCaptureEvent(message.event);
+    if (message.event) {
+      const sendEvent = (async () => {
+        if (!(await recordingIsOn())) return;
+        await forwardCaptureEventWithShot(sender?.tab, message.event);
+      })();
+      sendEvent.catch(() => {});
     }
     sendResponse({ ok: true, recording: captureRecording });
     return true;
@@ -1271,17 +1476,69 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "capture_install_value_hook") {
+    const tabId = sender?.tab?.id;
+    if (tabId != null) {
+      chrome.scripting
+        .executeScript({
+          target: { tabId, allFrames: true },
+          world: "MAIN",
+          func: () => {
+            if (window.__ltValueHook) return;
+            const proto = window.EventTarget && EventTarget.prototype;
+            if (!proto || typeof proto.dispatchEvent !== "function") return;
+            const orig = proto.dispatchEvent;
+            proto.dispatchEvent = function ltCaptureDispatch(event) {
+              try {
+                const type = String(event?.type || "");
+                if (
+                  /(change|commit)$/i.test(type) &&
+                  !/input$/i.test(type) &&
+                  !/^(change|focusout|blur)$/i.test(type) &&
+                  !/selection/i.test(type)
+                ) {
+                  const el = this && this.nodeType === 1 ? this : event?.target;
+                  const value = el && el.value != null && typeof el.value !== "object" ? String(el.value) : "";
+                  const label =
+                    (el && (el.getAttribute?.("label") || el.getAttribute?.("aria-label") || el.getAttribute?.("name"))) ||
+                    "";
+                  const fieldType = String(el?.getAttribute?.("type") || "").toLowerCase();
+                  if (value && fieldType !== "password" && fieldType !== "hidden") {
+                    window.postMessage(
+                      {
+                        source: "lt-capture",
+                        action: "change",
+                        value,
+                        label,
+                        tag: el.tagName || "",
+                        id: el.id || "",
+                        name: el.getAttribute?.("name") || "",
+                        type: fieldType,
+                      },
+                      "*",
+                    );
+                  }
+                }
+              } catch {
+                /* ignore */
+              }
+              return orig.call(this, event);
+            };
+            window.__ltValueHook = true;
+          },
+        })
+        .catch(() => {});
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (message?.type === "user_activity") {
     const tab = sender?.tab;
     const tabUrl = message.url || tab?.url || null;
     const tabTitle = message.title || tab?.title || null;
-    if (tab?.id != null && isInjectableUrl(tabUrl)) {
-      lastActivityTab = {
-        tabId: tab.id,
-        url: tabUrl,
-        title: tabTitle,
-        at: Date.now(),
-      };
+    if (tab?.id != null && tab.active !== false && isInjectableUrl(tabUrl)) {
+      rememberActivityTab({ ...tab, url: tabUrl, title: tabTitle });
       if (connected) {
         reportTabStatus(tab, { activated: true }).catch(() => {});
       }
@@ -1311,6 +1568,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "step_update") {
+    rememberCompletedStep(message.payload);
     send({
       type: MessageType.STEP_UPDATE,
       ...message.payload,
@@ -1467,6 +1725,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.tabs.onActivated.addListener(async (info) => {
   try {
     const tab = await chrome.tabs.get(info.tabId);
+    rememberActivityTab(tab);
     if (connected) await reportTabStatus(tab, { activated: true });
   } catch {
     if (connected) await reportTabStatus(null, { activated: true });
@@ -1501,7 +1760,10 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== "complete") return;
   // Only the focused tab updates the Coact queue pin
-  if (connected && tab?.active) reportTabStatus(tab, { activated: Boolean(changeInfo.url) });
+  if (connected && tab?.active) {
+    rememberActivityTab(tab);
+    reportTabStatus(tab, { activated: Boolean(changeInfo.url) });
+  }
   if (tab?.active && isInjectableUrl(tab.url)) {
     reapplyWatchForTab(tabId);
   }
@@ -1548,6 +1810,16 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
   refreshCaptureHealth();
 });
+
+try {
+  chrome.storage.session.get(["captureRecording"]).then((stored) => {
+    if (typeof stored?.captureRecording === "boolean") {
+      captureRecording = stored.captureRecording;
+    }
+  });
+} catch {
+  /* ignore */
+}
 
 setConnected(false);
 connect(true);

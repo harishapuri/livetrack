@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="720" viewBox="0 0 760 720">
+  <rect width="760" height="720" fill="#ffffff"/>
+  <text x="24" y="32" font-family="Arial, sans-serif" font-size="16" font-weight="700">FIG. 4</text>
+  <g font-family="Arial, sans-serif" font-size="13">
+    <rect x="220" y="52" width="320" height="44" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="380" y="80" text-anchor="middle">Live control 30 and steps 18</text>
+    <line x1="380" y1="96" x2="380" y2="120" stroke="#000000" stroke-width="1.5"/>
+    <polygon points="380,120 374,108 386,108" fill="#000000"/>
+    <rect x="160" y="120" width="440" height="44" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="380" y="148" text-anchor="middle">Skip highlight and wait steps</text>
+    <line x1="380" y1="164" x2="380" y2="188" stroke="#000000" stroke-width="1.5"/>
+    <polygon points="380,188 374,176 386,176" fill="#000000"/>
+    <rect x="120" y="188" width="520" height="52" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="380" y="210" text-anchor="middle">Discard short option labels and weak field-type hints</text>
+    <text x="380" y="228" text-anchor="middle">before scoring</text>
+    <line x1="380" y1="240" x2="380" y2="264" stroke="#000000" stroke-width="1.5"/>
+    <polygon points="380,264 374,252 386,252" fill="#000000"/>
+    <rect x="140" y="264" width="480" height="52" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="380" y="286" text-anchor="middle">Score distinctive hints. Short hint: exact match.</text>
+    <text x="380" y="304" text-anchor="middle">Longer hint: inclusion. Score is longest hit.</text>
+    <line x1="380" y1="316" x2="380" y2="390" stroke="#000000" stroke-width="1.5"/>
+    <polygon points="380,390 374,378 386,378" fill="#000000"/>
+    <rect x="230" y="390" width="300" height="44" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="380" y="418" text-anchor="middle">Score above zero?</text>
+    <line x1="230" y1="412" x2="120" y2="470" stroke="#000000" stroke-width="1.5"/>
+    <polygon points="120,470 128,456 138,466" fill="#000000"/>
+    <text x="130" y="450" font-size="12">No</text>
+    <rect x="24" y="470" width="200" height="64" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="124" y="496" text-anchor="middle">Withhold completion</text>
+    <text x="124" y="514" text-anchor="middle">mark</text>
+    <line x1="530" y1="412" x2="640" y2="470" stroke="#000000" stroke-width="1.5"/>
+    <polygon points="640,470 622,460 628,474" fill="#000000"/>
+    <text x="560" y="450" font-size="12">Yes</text>
+    <rect x="520" y="470" width="216" height="64" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="628" y="496" text-anchor="middle">Highest-scoring step</text>
+    <text x="628" y="514" text-anchor="middle">may be marked</text>
+    <rect x="80" y="570" width="600" height="110" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="380" y="598" text-anchor="middle">A bare tag selector is not stable and cannot alone</text>
+    <text x="380" y="618" text-anchor="middle">complete a later step. Placeholder or unselected</text>
+    <text x="380" y="638" text-anchor="middle">prompt is an empty value and fails the value check.</text>
+    <text x="380" y="658" text-anchor="middle">Matcher 34</text>
+  </g>
+</svg>

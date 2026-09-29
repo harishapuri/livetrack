@@ -10,6 +10,8 @@ const http = require("http");
 const https = require("https");
 const { File } = require("buffer");
 const { defaultJiraActionsPath, migrateLegacyDocumentsCoact } = require("./documents");
+const { sanitizeJqlPhrase } = require("./past-work-ai");
+const { snowNumberQuery, snowNumberInQuery } = require("./servicenow-search");
 
 const STATUS_WEIGHTS = {
   "to do": 1,
@@ -319,7 +321,14 @@ async function jiraNodeFetch(url, init = {}, redirectCount = 0) {
   const lib = u.protocol === "https:" ? https : http;
   const method = String(init.method || "GET").toUpperCase() || "GET";
 
+  const timeoutMs = Math.max(1000, Number(init.timeout) || 8000);
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
     const req = lib.request(
       {
         protocol: u.protocol,
@@ -339,13 +348,17 @@ async function jiraNodeFetch(url, init = {}, redirectCount = 0) {
             (status === 301 || status === 302 || status === 303) && method !== "GET" && method !== "HEAD"
               ? { ...init, method: "GET", body: undefined }
               : init;
-          jiraNodeFetch(nextUrl, nextInit, redirectCount + 1).then(resolve, reject);
+          jiraNodeFetch(nextUrl, nextInit, redirectCount + 1).then(
+            (value) => finish(resolve, value),
+            (err) => finish(reject, err)
+          );
           return;
         }
         const chunks = [];
         res.on("data", (chunk) => chunks.push(chunk));
         res.on("end", () => {
-          resolve(
+          finish(
+            resolve,
             new Response(Buffer.concat(chunks), {
               status: status || 502,
               statusText: res.statusMessage || "",
@@ -353,10 +366,14 @@ async function jiraNodeFetch(url, init = {}, redirectCount = 0) {
             })
           );
         });
-        res.on("error", reject);
+        res.on("error", (err) => finish(reject, err));
       }
     );
-    req.on("error", reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      finish(reject, new Error("Jira request timed out"));
+    });
+    req.on("error", (err) => finish(reject, err));
     if (buffer) req.write(buffer);
     req.end();
   });
@@ -411,17 +428,27 @@ async function jiraFetch(c, urlOrPath, init = {}) {
   const site = String(c.baseUrl || "").replace(/\/+$/, "");
   const raw = String(urlOrPath || "");
   const url = /^https?:\/\//i.test(raw) ? raw : `${site}${raw.startsWith("/") ? raw : `/${raw}`}`;
-  const headers = stripJiraCookieHeaders({ ...authHeaders(c), ...(init.headers || {}) });
+  const { forceRefresh = false, timeout, ...rest } = init;
+  const headers = stripJiraCookieHeaders({ ...authHeaders(c), ...(rest.headers || {}) });
   headers["X-Atlassian-Token"] = "no-check";
-  if (init.body && typeof FormData !== "undefined" && init.body instanceof FormData) {
+  if (forceRefresh) {
+    headers["Cache-Control"] = "no-cache, no-store";
+    headers["Pragma"] = "no-cache";
+  }
+  if (rest.body && typeof FormData !== "undefined" && rest.body instanceof FormData) {
     delete headers["Content-Type"];
   }
-  const attempt = (target) =>
-    fetchImpl(target, {
-      ...init,
+  const attempt = (target) => {
+    const opts = {
+      ...rest,
       headers,
       credentials: "omit",
-    });
+    };
+    if (fetchImpl === jiraNodeFetch) {
+      opts.timeout = Number(timeout) > 0 ? Number(timeout) : 8000;
+    }
+    return fetchImpl(target, opts);
+  };
 
   let res = await attempt(url);
   if (
@@ -703,14 +730,46 @@ function formatJiraHttpError(status, detail, kind = "write") {
   return `Jira ${code || "error"}${extra ? `: ${extra}` : ""}`;
 }
 
+function pushAttrText(parts, value) {
+  const text = String(value || "").trim();
+  if (text) parts.push(` ${text} `);
+}
+
 function jiraAdfToText(adf) {
   if (typeof adf === "string") return adf;
   if (!adf || typeof adf !== "object") return "";
   const parts = [];
   const walk = (node) => {
     if (!node) return;
+    if (typeof node === "string") {
+      parts.push(node);
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (typeof node !== "object") return;
     if (node.type === "text" && node.text) parts.push(node.text);
     if (node.type === "hardBreak") parts.push("\n");
+    if (node.type === "mention") {
+      pushAttrText(parts, node.attrs?.text || node.attrs?.displayName);
+    }
+    const attrs = node.attrs || {};
+    pushAttrText(parts, attrs.url);
+    pushAttrText(parts, attrs.href);
+    pushAttrText(parts, attrs.title);
+    pushAttrText(parts, attrs.filename);
+    pushAttrText(parts, attrs.alt);
+    pushAttrText(parts, attrs.text);
+    if (Array.isArray(node.marks)) {
+      for (const mark of node.marks) {
+        pushAttrText(parts, mark?.attrs?.href);
+        pushAttrText(parts, mark?.attrs?.url);
+        pushAttrText(parts, mark?.attrs?.title);
+        pushAttrText(parts, mark?.attrs?.id);
+      }
+    }
     if (Array.isArray(node.content)) {
       node.content.forEach(walk);
       if (node.type === "paragraph" || node.type === "heading") parts.push("\n");
@@ -718,6 +777,582 @@ function jiraAdfToText(adf) {
   };
   walk(adf);
   return parts.join("").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+const TICKET_PREFIX =
+  "RITM|INC|CHG|CRQ|SCTASK|STASK|PRB|CTASK|PTASK|KB|REQ|RFC|INT|WO|CALL|TASK|CR";
+const SNOW_TICKET_RE = new RegExp(
+  `(?<![A-Z0-9])((?:${TICKET_PREFIX})[\\s.\\-#]*\\d{2,})(?![0-9])`,
+  "gi"
+);
+const JIRA_KEY_RE = /\b([A-Z][A-Z0-9]{1,9}-\d+)\b/g;
+const SCTASK_ALIAS_RE = /\bstask[\s.\-#]*(\d{5,})/gi;
+const CHG_SEVEN_RE = /\bchg[\s.\-#]*(\d{7})\b/gi;
+
+function canonicalTicketPrefix(prefix) {
+  const up = String(prefix || "").toUpperCase();
+  if (up === "STASK") return "SCTASK";
+  return up;
+}
+
+function normalizeScrapedTicketKey(raw) {
+  const compact = String(raw || "")
+    .toUpperCase()
+    .replace(/[\s.#]+/g, "");
+  const snow = compact.match(
+    new RegExp(`^(${TICKET_PREFIX})-?(\\d+)$`, "i")
+  );
+  if (snow) {
+    return `${canonicalTicketPrefix(snow[1])}${snow[2]}`;
+  }
+  return compact;
+}
+
+function isJiraIssueKey(key) {
+  return /^[A-Z][A-Z0-9]{1,9}-\d+$/i.test(String(key || "").trim());
+}
+
+function isOpsTicketKey(key) {
+  const up = normalizeScrapedTicketKey(key);
+  if (!up || isJiraIssueKey(up)) return false;
+  return new RegExp(`^(?:${TICKET_PREFIX})\\d+$`).test(up);
+}
+
+function ticketKindLabel(key) {
+  const raw = String(key || "").trim();
+  const up = normalizeScrapedTicketKey(raw);
+  if (isJiraIssueKey(raw) || isJiraIssueKey(up)) return "Jira issue";
+  const prefix = canonicalTicketPrefix((up.match(/^([A-Z]+)\d+$/) || [])[1] || "");
+  const labels = {
+    RITM: "request",
+    REQ: "request",
+    INC: "incident",
+    CHG: "change",
+    CRQ: "change request",
+    CR: "change request",
+    RFC: "change",
+    SCTASK: "catalog task",
+    STASK: "catalog task",
+    PRB: "problem",
+    CTASK: "change task",
+    PTASK: "problem task",
+    KB: "knowledge article",
+    INT: "interaction",
+    WO: "work order",
+    CALL: "call",
+    TASK: "task",
+  };
+  return labels[prefix] || "ticket";
+}
+
+function ticketLookupQuery(key) {
+  const raw = String(key || "").trim();
+  const up = normalizeScrapedTicketKey(raw);
+  if (isJiraIssueKey(raw)) return `key = ${raw.toUpperCase()}`;
+  if (isJiraIssueKey(up)) return `key = ${up}`;
+  if (isOpsTicketKey(up)) return snowNumberQuery(up);
+  return "";
+}
+
+function ticketMentionRegex(key) {
+  const up = normalizeScrapedTicketKey(key);
+  const snow = up.match(/^([A-Z]+)(\d+)$/);
+  if (snow && !isJiraIssueKey(up)) {
+    const prefix = snow[1] === "SCTASK" ? "(?:SCTASK|STASK)" : snow[1];
+    return new RegExp(`\\b${prefix}[\\s.\\-#]*${snow[2]}\\b`, "i");
+  }
+  const escaped = String(key || up).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${escaped}\\b`, "i");
+}
+
+function sameParentText(snippet, parent) {
+  const a = String(snippet || "").replace(/\s+/g, " ").trim();
+  const b = String(parent || "").replace(/\s+/g, " ").trim();
+  if (!a || !b) return false;
+  return a === b;
+}
+
+const WEAK_TICKET_SNIPPETS = new Set([
+  "completed the task",
+  "complete the task",
+  "completed",
+  "please close",
+  "please close this",
+  "please close this ticket",
+  "please close the ticket",
+  "kindly close",
+  "request",
+  "change",
+  "change request",
+  "catalog task",
+  "incident",
+  "ticket",
+  "done",
+  "closed",
+  "resolved",
+  "thanks",
+  "thank you",
+  "see above",
+  "see below",
+  "as requested",
+  "as discussed",
+]);
+
+const LEADING_TICKET_BOILERPLATE_RE =
+  /^(please\s+close(?:\s+this(?:\s+(?:ticket|request|item))?)?|kindly\s+close|completed?\s+the\s+task)\b[\s,.:;–—-]*/i;
+
+const COMMENT_TICKETS_HEADING = "Comment tickets:";
+
+function stripCommentTicketsBundle(description) {
+  const text = String(description || "").replace(/\r\n/g, "\n");
+  const idx = text.search(/Comment tickets:\s*/i);
+  if (idx >= 0) return text.slice(0, idx).trim();
+  return text.trim();
+}
+
+function isWeakTicketSnippet(snippet, { parentSummary = "", parentDescription = "" } = {}) {
+  const s = String(snippet || "").replace(/\s+/g, " ").trim();
+  if (!s) return true;
+  if (sameParentText(s, parentSummary) || sameParentText(s, parentDescription)) return true;
+  const compact = s.replace(/[.!?]+$/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (WEAK_TICKET_SNIPPETS.has(compact)) return true;
+  if (/^(request|change|change request|catalog task|incident|ticket)(\s+[—\-].*)?$/i.test(s)) return true;
+  const withoutIds = s
+    .replace(/\b(?:RITM|INC|CHG|CRQ|SCTASK|STASK|PRB|CTASK|PTASK|KB|REQ|RFC|INT|WO|CALL|TASK|CR)\s*\d+\b/gi, " ")
+    .replace(/\b[A-Z][A-Z0-9]{1,9}-\d+\b/g, " ")
+    .replace(/\bnumber\s*=\s*/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!withoutIds) return true;
+  if (withoutIds.length < 12 && /^(also|and|see|for|the|a|an|this|that|with|via)[\s.]*$/i.test(withoutIds)) {
+    return true;
+  }
+  const words = withoutIds.replace(/[.,!?]/g, " ").split(/\s+/).filter(Boolean);
+  if (words.length <= 2 && withoutIds.replace(/[.,!?]/g, "").trim().length < 14) return true;
+  return false;
+}
+
+function tidyTicketSnippet(snippet, key, { parentSummary = "", parentDescription = "" } = {}) {
+  let text = String(snippet || "");
+  if (key) text = text.replace(ticketMentionRegex(key), " ");
+  text = text.replace(
+    /\b(?:RITM|INC|CHG|CRQ|SCTASK|STASK|PRB|CTASK|PTASK|KB|REQ|RFC|INT|WO|CALL|TASK|CR)[\s.\-#]*\d+\b/gi,
+    " "
+  );
+  text = text.replace(/\b[A-Z][A-Z0-9]{1,9}-\d+\b/g, " ");
+  text = text.replace(/\bnumber\s*=\s*[A-Z0-9-]+/gi, " ");
+  text = text.replace(/\s+/g, " ").trim();
+  text = text.replace(LEADING_TICKET_BOILERPLATE_RE, "").trim();
+  text = text.replace(/^[\s:;,\-–—|/]+|[\s:;,\-–—|/]+$/g, "").trim();
+  text = text.replace(/\b(?:is|are|was|were)\s*[.]*$/i, "").trim();
+  text = text.replace(/\s+\./g, ".").replace(/\s+/g, " ").trim();
+  const parentS = String(parentSummary || "").replace(/\s+/g, " ").trim();
+  if (parentS && parentS.length >= 12 && text.includes(parentS)) {
+    text = text.replace(parentS, " ").replace(/\s+/g, " ").trim();
+  }
+  text = text.slice(0, 160).trim();
+  if (isWeakTicketSnippet(text, { parentSummary, parentDescription })) return "";
+  return text;
+}
+
+function sentenceWindowsAround(raw, idx, end) {
+  const before = raw.slice(0, idx);
+  const after = raw.slice(end);
+  const breakBefore = Math.max(
+    before.lastIndexOf("\n"),
+    before.lastIndexOf(". "),
+    before.lastIndexOf("! "),
+    before.lastIndexOf("? ")
+  );
+  const nextBreak = after.search(/[.!?\n]/);
+  const sentenceStart = breakBefore >= 0 ? breakBefore + 1 : Math.max(0, idx - 180);
+  const sentenceEnd = nextBreak >= 0 ? end + nextBreak + 1 : Math.min(raw.length, end + 220);
+  const prevSlice = breakBefore >= 0 ? before.slice(0, Math.max(0, breakBefore)) : "";
+  const prevBreak = Math.max(prevSlice.lastIndexOf("\n"), prevSlice.lastIndexOf(". "), prevSlice.lastIndexOf("! "), prevSlice.lastIndexOf("? "));
+  const prevStart = prevBreak >= 0 ? prevBreak + 1 : Math.max(0, sentenceStart - 180);
+  const afterTail = raw.slice(sentenceEnd);
+  const followingBreak = afterTail.search(/[.!?\n]/);
+  const nextEnd = followingBreak >= 0 ? sentenceEnd + followingBreak + 1 : Math.min(raw.length, sentenceEnd + 180);
+  return [
+    raw.slice(end, sentenceEnd),
+    raw.slice(sentenceStart, sentenceEnd),
+    raw.slice(sentenceEnd, nextEnd),
+    raw.slice(prevStart, sentenceStart),
+    raw.slice(Math.max(0, idx - 160), Math.min(raw.length, end + 200)),
+  ];
+}
+
+/** Deterministic one-line description from comment text around a known ticket id. */
+function extractTicketDescription(text, key, { parentSummary = "", parentDescription = "" } = {}) {
+  const raw = String(text || "");
+  const ticket = String(key || "").trim();
+  if (!raw || !ticket) return "";
+  const re = new RegExp(ticketMentionRegex(ticket).source, "gi");
+  const parent = { parentSummary, parentDescription };
+  for (const match of raw.matchAll(re)) {
+    const windows = sentenceWindowsAround(raw, match.index, match.index + match[0].length);
+    for (const window of windows) {
+      const others = extractTicketRefs(window, { excludeKey: ticket });
+      if (others.length) continue;
+      const snippet = tidyTicketSnippet(window, ticket, parent);
+      if (snippet) return snippet;
+    }
+  }
+  return "";
+}
+
+function relatedTicketKeys(tickets, { parentKey = "" } = {}) {
+  const skip = normalizeScrapedTicketKey(parentKey);
+  const seen = new Set();
+  const keys = [];
+  for (const item of Array.isArray(tickets) ? tickets : []) {
+    const key = String(item?.key || item || "").trim();
+    if (!key) continue;
+    const norm = normalizeScrapedTicketKey(key);
+    if (!norm || seen.has(norm) || (skip && norm === skip)) continue;
+    seen.add(norm);
+    keys.push(key);
+  }
+  return keys;
+}
+
+const ISO_TIMESTAMP_RE = /\b\d{4}-\d{2}-\d{2}T[0-9:.+-]+\b/g;
+
+function scrubCommentSourceLine(line) {
+  return String(line || "")
+    .replace(ISO_TIMESTAMP_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isNoiseSourceLine(line, { parentSummary = "", parentDescription = "" } = {}) {
+  const s = scrubCommentSourceLine(line);
+  if (!s) return true;
+  if (sameParentText(s, parentSummary) || sameParentText(s, parentDescription)) return true;
+  return false;
+}
+
+/** Comment lines that actually mention harvested ticket keys (not the Jira description field). */
+function commentSourceForTickets(
+  commentText,
+  tickets,
+  { parentKey = "", parentSummary = "", parentDescription = "" } = {}
+) {
+  const raw = String(commentText || "").replace(/\r\n/g, "\n");
+  const keys = relatedTicketKeys(tickets, { parentKey });
+  if (!raw || !keys.length) return "";
+  const parent = { parentSummary, parentDescription };
+  const lines = raw.split("\n");
+  const keepIdx = new Set();
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!keys.some((key) => ticketMentionRegex(key).test(line))) continue;
+    if (isNoiseSourceLine(line, parent)) continue;
+    keepIdx.add(i);
+  }
+  const blocks = [];
+  let cur = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!keepIdx.has(i)) {
+      if (cur.length) {
+        blocks.push(cur.join("\n"));
+        cur = [];
+      }
+      continue;
+    }
+    const cleaned = scrubCommentSourceLine(lines[i]);
+    if (cleaned) cur.push(cleaned);
+  }
+  if (cur.length) blocks.push(cur.join("\n"));
+  const seen = new Set();
+  const out = [];
+  for (const block of blocks) {
+    const norm = block.replace(/\s+/g, " ").trim().toLowerCase();
+    if (!norm || seen.has(norm)) continue;
+    if (sameParentText(norm, parentSummary) || sameParentText(norm, parentDescription)) continue;
+    seen.add(norm);
+    out.push(block);
+  }
+  return out.join("\n\n").slice(0, 4000);
+}
+
+function attachCommentSource(issue) {
+  const parentDesc = stripCommentTicketsBundle(issue?.description);
+  const opts = {
+    parentKey: issue?.key,
+    parentSummary: issue?.summary,
+    parentDescription: parentDesc,
+  };
+  issue.commentSource =
+    commentSourceForTickets(issue?.commentBodies, issue?.relatedTickets, opts) ||
+    commentSourceForTickets(issue?.commentText, issue?.relatedTickets, opts);
+  delete issue.commentBodies;
+  return issue;
+}
+
+function formatCommentTicketsBundle(tickets, { parentKey = "", parentSummary = "", parentDescription = "" } = {}) {
+  const skip = normalizeScrapedTicketKey(parentKey);
+  const lines = [];
+  const seen = new Set();
+  for (const item of Array.isArray(tickets) ? tickets : []) {
+    const key = String(item?.key || "").trim();
+    if (!key) continue;
+    const norm = normalizeScrapedTicketKey(key);
+    if (!norm || seen.has(norm) || (skip && norm === skip)) continue;
+    seen.add(norm);
+    const snippet = tidyTicketSnippet(item?.summary, "", {
+      parentSummary,
+      parentDescription,
+    });
+    lines.push(snippet ? `${key} — ${snippet}` : key);
+  }
+  if (!lines.length) return "";
+  return `${COMMENT_TICKETS_HEADING}\n${lines.join("\n")}`;
+}
+
+function bundledTicketLookupQuery(tickets, { parentKey = "" } = {}) {
+  const ops = relatedTicketKeys(tickets, { parentKey }).filter((key) => isOpsTicketKey(key));
+  return snowNumberInQuery(ops);
+}
+
+function bundledParentDescription(issue) {
+  return stripCommentTicketsBundle(issue?.description);
+}
+
+function enrichRelatedTicketsFromComments(issue) {
+  const parentSummary = String(issue?.summary || "").replace(/\s+/g, " ").trim();
+  const parentDesc = stripCommentTicketsBundle(issue?.description).replace(/\s+/g, " ").trim();
+  const parent = { parentSummary, parentDescription: parentDesc };
+  const related = Array.isArray(issue?.relatedTickets) ? issue.relatedTickets : [];
+  issue.relatedTickets = related.map((item) => {
+    const kind = String(item?.kind || "").trim() || ticketKindLabel(item?.key);
+    const autoQuery = String(item?.autoQuery || "").trim() || ticketLookupQuery(item?.key);
+    let summary = String(item?.summary || "").replace(/\s+/g, " ").trim();
+    if (sameParentText(summary, parentSummary) || sameParentText(summary, parentDesc)) summary = "";
+    const ops = isOpsTicketKey(item?.key);
+    const blob = ops
+      ? [issue?.commentText, parentDesc].filter(Boolean).join("\n")
+      : [issue?.commentText, parentDesc, issue?.summary].filter(Boolean).join("\n");
+    const extracted = extractTicketDescription(blob, item?.key, parent);
+    if (ops) {
+      summary = extracted || (isWeakTicketSnippet(summary, parent) ? "" : summary);
+    } else if (!summary && extracted) {
+      summary = extracted;
+    }
+    if (isWeakTicketSnippet(summary, parent)) summary = "";
+    return { ...item, summary, kind, autoQuery };
+  });
+  return issue;
+}
+
+/** Pull RITM / CR / INC / CHG / Jira keys from summary, description, and comments. */
+function extractTicketRefs(text, { excludeKey = "", excludeKeys = [] } = {}) {
+  const raw = String(text || "");
+  const exclude = new Set(
+    [excludeKey, ...(Array.isArray(excludeKeys) ? excludeKeys : [])]
+      .map((value) => normalizeScrapedTicketKey(value))
+      .filter(Boolean)
+  );
+  const seen = new Set();
+  const out = [];
+  const add = (value) => {
+    const key = normalizeScrapedTicketKey(value);
+    if (!key || exclude.has(key) || seen.has(key)) return;
+    if (key.length < 4) return;
+    seen.add(key);
+    out.push({ key });
+  };
+  for (const match of raw.matchAll(SNOW_TICKET_RE)) add(match[1]);
+  for (const match of raw.matchAll(SCTASK_ALIAS_RE)) add(`SCTASK${match[1]}`);
+  for (const match of raw.matchAll(CHG_SEVEN_RE)) add(`CHG${match[1]}`);
+  const siblingRe = new RegExp(
+    `(${TICKET_PREFIX})[\\s.\\-#]*(\\d{2,})((?:\\s*(?:and|,|/|&|;|\\+|\\\\)\\s*(?:(?:${TICKET_PREFIX})[\\s.\\-#]*)?\\d{2,})+)`,
+    "gi"
+  );
+  for (const block of raw.matchAll(siblingRe)) {
+    const prefix = canonicalTicketPrefix(block[1] || "RITM");
+    add(`${prefix}${block[2]}`);
+    const tail = String(block[3] || "");
+    for (const extra of tail.matchAll(/\d{2,}/g)) {
+      const before = tail.slice(Math.max(0, extra.index - 16), extra.index);
+      if (new RegExp(`(?:${TICKET_PREFIX})[\\s.\\-#]*$`, "i").test(before)) continue;
+      add(`${prefix}${extra[0]}`);
+    }
+    for (const prefixed of String(block[0] || "").matchAll(SNOW_TICKET_RE)) add(prefixed[1]);
+  }
+  const changePhraseRe =
+    /\bchange\s*(?:request|number|req|#)?\s*[:=\-]*\s*((?:CHG|CRQ)?[\s.\-#]*\d{4,})/gi;
+  for (const match of raw.matchAll(changePhraseRe)) {
+    const token = String(match[1] || "").replace(/[\s.\-#]+/g, "").toUpperCase();
+    if (!token) continue;
+    add(/^(?:CHG|CRQ)\d+$/.test(token) ? token : `CHG${token}`);
+  }
+  for (const match of raw.matchAll(JIRA_KEY_RE)) add(match[1]);
+  return out;
+}
+
+function ensureOpenSprintJql(jql) {
+  const raw = String(jql || "").trim();
+  if (!raw) return "assignee = currentUser() AND sprint in openSprints() ORDER BY updated ASC";
+  if (/\bsprint\b/i.test(raw)) return raw;
+  const withoutOrder = raw.replace(/\s+ORDER\s+BY\s+.+$/i, "").trim();
+  const orderMatch = raw.match(/\s+(ORDER\s+BY\s+.+)$/i);
+  const order = orderMatch ? orderMatch[1] : "ORDER BY updated ASC";
+  const core = withoutOrder || "assignee = currentUser()";
+  return `${core} AND sprint in openSprints() ${order}`.trim();
+}
+
+function stripOpenSprintFromJql(jql) {
+  let s = String(jql || "").trim();
+  if (!s) return s;
+  s = s.replace(/\s*(AND|OR)?\s*sprint\s+in\s+openSprints\s*(?:\(\s*\))?/gi, "");
+  s = s.replace(/(?<!currentUser)\(\s*\)/gi, "");
+  s = s.replace(/\bAND\s+AND\b/gi, "AND");
+  s = s.replace(/\bOR\s+OR\b/gi, "OR");
+  s = s.replace(/\bAND\s+ORDER\b/gi, "ORDER");
+  s = s.replace(/\bOR\s+ORDER\b/gi, "ORDER");
+  s = s.replace(/^\s*(AND|OR)\s+/i, "");
+  s = s.replace(/\s+(AND|OR)\s*$/i, "");
+  return s.replace(/\s{2,}/g, " ").trim();
+}
+
+function splitJqlOrder(jql) {
+  const raw = String(jql || "").trim();
+  const orderMatch = raw.match(/\s+(ORDER\s+BY\s+.+)$/i);
+  return {
+    core: (orderMatch ? raw.slice(0, orderMatch.index) : raw).trim(),
+    order: orderMatch ? orderMatch[1] : "ORDER BY updated DESC",
+  };
+}
+
+function ensurePastWorkJql(jql) {
+  // Strip openSprints() first — stripDoneExclusionsFromJql also removes empty (),
+  // which would turn openSprints() into openSprints and hide the clause.
+  // Newest first so a ticket closed this session is in the match set.
+  const assigned = pastWorkJqlWithoutSprint(stripOpenSprintFromJql(jql));
+  const { core } = splitJqlOrder(assigned);
+  const body = core || "assignee = currentUser()";
+  return `${body} ORDER BY updated DESC`.trim();
+}
+
+function pastWorkJqlWithoutSprint(jql) {
+  return ensureAssigneeOnlyJql(
+    String(jql || "")
+      .replace(/\s*(AND|OR)?\s*sprint\s+not\s+in\s+openSprints\s*(?:\(\s*\))?/gi, "")
+      .replace(/\s*(AND|OR)?\s*sprint\s+is\s+EMPTY/gi, "")
+  );
+}
+
+/** AND a sanitized phrase search. Never accepts raw AI JQL operators. */
+function applyPastWorkTextQuery(jql, textQuery) {
+  const phrase = sanitizeJqlPhrase(textQuery);
+  const incoming = String(jql || "").trim();
+  const base = incoming || ensurePastWorkJql("");
+  if (!phrase) return ensurePastWorkJql(base);
+  const guarded = ensurePastWorkJql(base);
+  const { core, order } = splitJqlOrder(guarded);
+  if (/\btext\s*~/i.test(core) || /\bsummary\s*~/i.test(core)) return guarded;
+  const clause = `(summary ~ "${phrase}" OR description ~ "${phrase}" OR text ~ "${phrase}")`;
+  return `${core} AND ${clause} ${order}`.trim();
+}
+
+function jqlLooksLikeBadTextQuery(error) {
+  const text = String(error || "").toLowerCase();
+  return (
+    text.includes("unable to parse") ||
+    text.includes("error in the jql") ||
+    (text.includes("text") && (text.includes("does not exist") || text.includes("unknown"))) ||
+    (text.includes("summary") && text.includes("~") && text.includes("error"))
+  );
+}
+
+function sprintListFromField(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.flatMap(sprintListFromField);
+  if (typeof value === "string") {
+    const state = (/state=([A-Za-z]+)/i.exec(value) || [])[1] || "";
+    return [{ state, raw: value }];
+  }
+  if (typeof value === "object") return [value];
+  return [];
+}
+
+function issueInOpenSprint(fieldsOrIssue) {
+  if (fieldsOrIssue?.inOpenSprint === true) return true;
+  const fields =
+    fieldsOrIssue?.fields && fieldsOrIssue.fields.sprint !== undefined
+      ? fieldsOrIssue.fields
+      : fieldsOrIssue;
+  return sprintListFromField(fields?.sprint).some((sprint) => {
+    const state = String(sprint?.state || sprint?.status || "").toLowerCase();
+    return state === "active" || state === "open";
+  });
+}
+
+function issueStatusCategoryKey(issue) {
+  if (!issue || typeof issue !== "object") return "";
+  if (issue.statusCategory && typeof issue.statusCategory === "object") {
+    return String(issue.statusCategory.key || issue.statusCategory.name || "").toLowerCase();
+  }
+  if (issue.status && typeof issue.status === "object") {
+    return String(issue.status.statusCategory?.key || issue.status.statusCategory?.name || "").toLowerCase();
+  }
+  return String(issue.statusCategory || issue.statusCategoryKey || "").toLowerCase();
+}
+
+function issueStatusName(issue) {
+  if (typeof issue === "string") return issue;
+  if (issue?.status && typeof issue.status === "object") return String(issue.status.name || "");
+  return String(issue?.status || "");
+}
+
+/** Done category or Done/Closed/Resolved/Complete — never a Past work sample card. */
+function isPastWorkDoneIssue(issue) {
+  if (issue?.done === true) return true;
+  if (issueStatusCategoryKey(issue) === "done") return true;
+  return isJiraDoneStatus(issueStatusName(issue), issue?.sopStage);
+}
+
+function filterPastWorkIssues(
+  issues,
+  { excludeKeys = [], includeDone = false, includeOpenSprint = false } = {}
+) {
+  const drop = new Set(
+    (Array.isArray(excludeKeys) ? excludeKeys : [])
+      .map((value) => normalizeScrapedTicketKey(value))
+      .filter(Boolean)
+  );
+  return (issues || []).filter((issue) => {
+    const key = normalizeScrapedTicketKey(issue?.key);
+    if (!key) return false;
+    if (drop.has(key)) return false;
+    if (
+      !includeOpenSprint &&
+      (issue?.inOpenSprint === true || issueInOpenSprint(issue))
+    ) {
+      return false;
+    }
+    if (!includeDone && isPastWorkDoneIssue(issue)) return false;
+    return true;
+  });
+}
+
+function withNoCacheQuery(path, enabled) {
+  if (!enabled) return path;
+  const join = String(path).includes("?") ? "&" : "?";
+  return `${path}${join}_=${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function jqlLooksLikeMissingSprint(error) {
+  const text = String(error || "").toLowerCase();
+  return (
+    text.includes("sprint") &&
+    (text.includes("does not exist") ||
+      text.includes("unknown field") ||
+      text.includes("not on the board") ||
+      text.includes("field 'sprint'") ||
+      text.includes('field "sprint"'))
+  );
 }
 
 /** Match queue cards to a Jira key via data[field] or KEY-123 in title. */
@@ -751,12 +1386,15 @@ function isJiraDoneStatus(statusName, sopStage = "") {
 
 function enrichIssues(issues, { statusMap, queueCards, cardKeyField } = {}) {
   const map = normalizeStatusMap(statusMap);
-  return (issues || []).map((issue) => ({
-    ...issue,
-    sopStage: mapSopStage(issue.status, map),
-    linkedCardId: findLinkedCardId(issue.key, queueCards, cardKeyField),
-    done: isJiraDoneStatus(issue.status, mapSopStage(issue.status, map)),
-  }));
+  return (issues || []).map((issue) => {
+    const sopStage = mapSopStage(issue.status, map);
+    const row = { ...issue, sopStage };
+    return {
+      ...row,
+      linkedCardId: findLinkedCardId(issue.key, queueCards, cardKeyField),
+      done: isPastWorkDoneIssue(row) || isJiraDoneStatus(issue.status, sopStage),
+    };
+  });
 }
 
 function foldProjectText(value) {
@@ -1116,7 +1754,192 @@ function searchJqlGetNotSupported(status) {
   return code === 404 || code === 405 || code === 410 || code === 501;
 }
 
-async function searchIssues(config, { maxResults = 50, queueCards = [] } = {}) {
+function mapSearchIssue(c, issue) {
+  const fieldsObj = issue?.fields || {};
+  const { days, score } = scoreIssue(fieldsObj);
+  const stale = days >= c.staleDays;
+  const linkedIssues = parseIssueLinks(fieldsObj.issuelinks);
+  const searchComments = Array.isArray(fieldsObj.comment?.comments)
+    ? fieldsObj.comment.comments
+    : [];
+  const commentText = searchComments
+    .map((row) => commentToScrapeText(row))
+    .filter(Boolean)
+    .join("\n");
+  const issueKey = normalizeScrapedTicketKey(issue.key) || issue.key;
+  return {
+    id: issue.id,
+    key: issueKey,
+    summary: fieldsObj.summary || "(no summary)",
+    description: jiraAdfToText(fieldsObj.description),
+    commentText,
+    status: fieldsObj.status?.name || "—",
+    statusCategory: String(fieldsObj.status?.statusCategory?.key || "").toLowerCase(),
+    priority: fieldsObj.priority?.name || "—",
+    assignee: fieldsObj.assignee?.displayName || fieldsObj.assignee?.emailAddress || "Unassigned",
+    assigneeEmail: fieldsObj.assignee?.emailAddress || "",
+    updated: fieldsObj.updated || null,
+    daysSinceUpdate: Math.round(days * 10) / 10,
+    urgencyScore: score,
+    stale,
+    url: issueBrowseUrl(c.baseUrl, issue.key),
+    issueType: fieldsObj.issuetype?.name || "Issue",
+    labels: Array.isArray(fieldsObj.labels) ? fieldsObj.labels : [],
+    linkedIssues,
+    inOpenSprint: issueInOpenSprint(fieldsObj),
+  };
+}
+
+/** Bounded JQL search used to pick up newly closed similar stories. */
+async function searchIssuesByJql(
+  config,
+  jql,
+  { maxResults = 20, forceRefresh = false, pages = 2 } = {}
+) {
+  const c = normalizeConfig(config);
+  const query = String(jql || "").trim();
+  if (!isConfigured(c) || !query) return [];
+  const cap = Math.min(40, Math.max(1, Number(maxResults) || 20));
+  const pageLimit = Math.max(1, Math.min(3, Number(pages) || 2));
+  const collected = [];
+  let nextPageToken = "";
+  const searchPath = "/rest/api/3/search/jql";
+  const fields = ["summary", "description", "status", "assignee", "updated", "issuetype", "sprint"];
+  for (let page = 0; page < pageLimit && collected.length < cap; page++) {
+    const payload = {
+      jql: query,
+      maxResults: Math.min(50, cap - collected.length),
+      fields,
+    };
+    if (nextPageToken) payload.nextPageToken = nextPageToken;
+    let res;
+    try {
+      const getPath = withNoCacheQuery(buildSearchJqlGetPath(searchPath, payload), forceRefresh);
+      if (getPath.length <= 1800) {
+        res = await jiraFetch(c, getPath, { method: "GET", forceRefresh });
+      }
+      if (!res || searchJqlGetNotSupported(res.status)) {
+        res = await jiraFetch(c, searchPath, {
+          method: "POST",
+          body: JSON.stringify(payload),
+          forceRefresh,
+        });
+      }
+    } catch {
+      break;
+    }
+    const parsed = await parseJiraHttpResponse(res, {
+      baseUrl: c.baseUrl,
+      pathname: searchPath,
+    });
+    if (!parsed.parseOk || !res.ok) break;
+    const pageIssues = Array.isArray(parsed.data?.issues) ? parsed.data.issues : [];
+    collected.push(...pageIssues);
+    nextPageToken = String(parsed.data?.nextPageToken || "").trim();
+    if (parsed.data?.isLast === true || !nextPageToken || !pageIssues.length) break;
+  }
+  return collected.map((issue) => mapSearchIssue(c, issue)).filter((issue) => issue?.key);
+}
+
+function keepSimilarSearchHit(parent, row, tokens = []) {
+  if (storiesAreRelated(parent, row)) return true;
+  if (Array.isArray(tokens) && tokens.length && issueTextHasTokens(row, tokens, 2)) return true;
+  return issueSharesParentTokens(parent, row, 2);
+}
+
+async function findSimilarPastIssues(
+  config,
+  issue,
+  { maxResults = 20, forceRefresh = false, timeoutMs = 4500 } = {}
+) {
+  const parent = {
+    key: issue?.key,
+    summary: issue?.summary,
+    description: issue?.description,
+  };
+  const parentKey = normalizeScrapedTicketKey(issue?.key) || "?";
+  const groups = similarSearchTokenGroups(parent);
+  const work = (async () => {
+    const hits = [];
+    const seen = new Set([parentKey].filter((key) => key && key !== "?"));
+    const jqls = [];
+    const hitKeys = [];
+    const takeRows = (rows, tokens) => {
+      for (const row of rows) {
+        const key = normalizeScrapedTicketKey(row?.key);
+        if (!key || seen.has(key) || !isJiraIssueKey(key)) continue;
+        if (!keepSimilarSearchHit(parent, row, tokens)) continue;
+        seen.add(key);
+        hitKeys.push(key);
+        hits.push({
+          ...row,
+          key,
+          url: row.url || issueBrowseUrl(normalizeConfig(config).baseUrl, key),
+        });
+        if (hits.length >= maxResults) break;
+      }
+    };
+    // Newest assigned tickets in ANY project (MBA, MBQ, DBAB, …), including just-closed.
+    const recentJql = buildRecentAssignedIssueJql({ excludeKey: issue?.key });
+    if (recentJql) {
+      jqls.push(recentJql);
+      const recent = await searchIssuesByJql(config, recentJql, {
+        maxResults: Math.max(30, maxResults),
+        forceRefresh,
+        pages: 1,
+      });
+      takeRows(recent, []);
+    }
+    for (const tokens of groups) {
+      if (hits.length >= maxResults) break;
+      const jql = buildSimilarIssueJql({
+        tokens,
+        excludeKey: issue?.key,
+      });
+      if (!jql) continue;
+      jqls.push(jql);
+      const rows = await searchIssuesByJql(config, jql, {
+        maxResults,
+        forceRefresh,
+        pages: 1,
+      });
+      takeRows(rows, tokens);
+    }
+    console.log(
+      `[livetrack] past similar ${parentKey} jql=${jqls.join(" ; ") || "(none)"} hits=${hitKeys.join(",") || "(none)"}`
+    );
+    return hits.slice(0, maxResults);
+  })();
+  const ms = Math.max(1200, Number(timeoutMs) || 4500);
+  let timer;
+  try {
+    return await Promise.race([
+      work,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("similar search timed out")), ms);
+      }),
+    ]);
+  } catch {
+    console.log(`[livetrack] past similar ${parentKey} jql=(timeout) hits=(none)`);
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function searchIssues(
+  config,
+  {
+    maxResults = 50,
+    queueCards = [],
+    openSprint = false,
+    scrapeTickets = false,
+    pastWork = false,
+    forceRefresh = false,
+    excludeKeys = [],
+    textQuery = "",
+  } = {}
+) {
   const c = normalizeConfig(config);
   if (!isConfigured(c)) {
     return {
@@ -1145,17 +1968,52 @@ async function searchIssues(config, { maxResults = 50, queueCards = [] } = {}) {
     };
   }
 
-  const fields = ["summary", "description", "status", "priority", "assignee", "updated", "issuetype", "labels", "reporter"];
+  let usedOpenSprint = false;
+  let usedPastSprint = false;
+  let usedTextQuery = false;
+  let jqlBeforeText = "";
+  if (pastWork) {
+    const pastJql = ensurePastWorkJql(jql);
+    usedPastSprint = /sprint\s+not\s+in\s+openSprints/i.test(pastJql);
+    jql = pastJql;
+    const phrase = sanitizeJqlPhrase(textQuery);
+    if (phrase) {
+      jqlBeforeText = jql;
+      const withText = applyPastWorkTextQuery(jql, phrase);
+      usedTextQuery = withText !== jql;
+      jql = withText;
+    }
+  } else if (openSprint) {
+    const sprintJql = ensureOpenSprintJql(jql);
+    usedOpenSprint = sprintJql !== jql;
+    jql = sprintJql;
+  }
+
+  const fields = [
+    "summary",
+    "description",
+    "status",
+    "priority",
+    "assignee",
+    "updated",
+    "issuetype",
+    "labels",
+    "reporter",
+    "issuelinks",
+    "comment",
+    "sprint",
+  ];
   const searchPath = "/rest/api/3/search/jql";
-  const pageSize = Math.min(100, maxResults);
+  const cap = Math.max(1, Number(maxResults) || 50);
+  const pageSize = Math.min(100, cap);
   const collected = [];
   let nextPageToken = "";
   let data = {};
 
-  for (let page = 0; page < 10 && collected.length < pageSize; page++) {
+  for (let page = 0; page < 10 && collected.length < cap; page++) {
     const payload = {
       jql,
-      maxResults: pageSize,
+      maxResults: Math.min(pageSize, cap - collected.length),
       fields,
     };
     if (nextPageToken) payload.nextPageToken = nextPageToken;
@@ -1163,14 +2021,21 @@ async function searchIssues(config, { maxResults = 50, queueCards = [] } = {}) {
     let res;
     try {
       // Prefer GET so Classic XSRF (POST + Atlassian cookies) never runs on search.
-      const getPath = buildSearchJqlGetPath(searchPath, payload);
+      const getPath = withNoCacheQuery(
+        buildSearchJqlGetPath(searchPath, payload),
+        forceRefresh
+      );
       if (getPath.length <= 1800) {
-        res = await jiraFetch(c, getPath, { method: "GET" });
+        res = await jiraFetch(c, getPath, {
+          method: "GET",
+          forceRefresh,
+        });
       }
       if (!res || searchJqlGetNotSupported(res.status)) {
         res = await jiraFetch(c, searchPath, {
           method: "POST",
           body: JSON.stringify(payload),
+          forceRefresh,
         });
       }
     } catch (err) {
@@ -1201,10 +2066,35 @@ async function searchIssues(config, { maxResults = 50, queueCards = [] } = {}) {
       };
     }
     if (!res.ok) {
+      const error = formatJiraHttpError(res.status, parseJiraErrorBody(parsed.data));
+      if (openSprint && usedOpenSprint && jqlLooksLikeMissingSprint(error)) {
+        usedOpenSprint = false;
+        jql = jql.replace(/\s*AND\s+sprint\s+in\s+openSprints\s*\(\s*\)/gi, "").replace(/\s{2,}/g, " ").trim();
+        collected.length = 0;
+        nextPageToken = "";
+        page = -1;
+        continue;
+      }
+      if (pastWork && usedPastSprint && jqlLooksLikeMissingSprint(error)) {
+        usedPastSprint = false;
+        jql = pastWorkJqlWithoutSprint(jql);
+        collected.length = 0;
+        nextPageToken = "";
+        page = -1;
+        continue;
+      }
+      if (pastWork && usedTextQuery && jqlBeforeText && jqlLooksLikeBadTextQuery(error)) {
+        usedTextQuery = false;
+        jql = jqlBeforeText;
+        collected.length = 0;
+        nextPageToken = "";
+        page = -1;
+        continue;
+      }
       return {
         ok: false,
         httpStatus: res.status,
-        error: formatJiraHttpError(res.status, parseJiraErrorBody(parsed.data)),
+        error,
         issues: [],
         staleCount: 0,
         sopStages: c.statusMap,
@@ -1218,28 +2108,7 @@ async function searchIssues(config, { maxResults = 50, queueCards = [] } = {}) {
     if (data.isLast === true || !nextPageToken || !pageIssues.length) break;
   }
 
-  let issues = collected.map((issue) => {
-    const fieldsObj = issue.fields || {};
-    const { days, score } = scoreIssue(fieldsObj);
-    const stale = days >= c.staleDays;
-    return {
-      id: issue.id,
-      key: issue.key,
-      summary: fieldsObj.summary || "(no summary)",
-      description: typeof fieldsObj.description === "string" ? fieldsObj.description : "",
-      status: fieldsObj.status?.name || "—",
-      priority: fieldsObj.priority?.name || "—",
-      assignee: fieldsObj.assignee?.displayName || fieldsObj.assignee?.emailAddress || "Unassigned",
-      assigneeEmail: fieldsObj.assignee?.emailAddress || "",
-      updated: fieldsObj.updated || null,
-      daysSinceUpdate: Math.round(days * 10) / 10,
-      urgencyScore: score,
-      stale,
-      url: issueBrowseUrl(c.baseUrl, issue.key),
-      issueType: fieldsObj.issuetype?.name || "Issue",
-      labels: Array.isArray(fieldsObj.labels) ? fieldsObj.labels : [],
-    };
-  });
+  let issues = collected.map((issue) => mapSearchIssue(c, issue));
 
   // Belt-and-suspenders: never show unassigned / other people's tickets
   const me = c.email.toLowerCase();
@@ -1255,6 +2124,71 @@ async function searchIssues(config, { maxResults = 50, queueCards = [] } = {}) {
     cardKeyField: c.cardKeyField,
   });
 
+  if (pastWork) {
+    // Keep done and current-sprint peers so summary matching can find MBA-12.
+    issues = filterPastWorkIssues(issues, {
+      includeDone: true,
+      includeOpenSprint: true,
+    });
+  }
+
+  // openSprints() is often empty (Kanban, closed sprint, no sprint field on the issue).
+  // Fall back to the same assigned-to-me list as the Jira tab — never scrape related tickets there.
+  if (!pastWork && openSprint && usedOpenSprint && issues.length === 0) {
+    return searchIssues(config, {
+      maxResults,
+      queueCards,
+      openSprint: false,
+      scrapeTickets: false,
+      pastWork: false,
+      forceRefresh,
+    });
+  }
+
+  // Only Past work harvests RITM/CHG/MBA keys from comments. Active-sprint / main Jira never does.
+  let catalogIssues = [];
+  if (pastWork && scrapeTickets) {
+    issues = await attachScrapedTickets(c, issues, {
+      forceRefresh: Boolean(forceRefresh),
+      budgetMs: 18000,
+    });
+    catalogIssues = filterPastWorkIssues(issues, {
+      includeDone: true,
+      includeOpenSprint: true,
+    });
+    issues = filterPastWorkIssues(issues, {
+      excludeKeys,
+      includeDone: false,
+      includeOpenSprint: true,
+    });
+  } else if (pastWork) {
+    for (const issue of issues) {
+      issue.relatedTickets = (issue.linkedIssues || []).map((item) => ({
+        key: item.key,
+        summary: item.summary || "",
+        status: item.status || "",
+        url: isJiraIssueKey(item.key) ? issueBrowseUrl(c.baseUrl, item.key) : "",
+        source: "link",
+      }));
+      issue.commentTicketCount = 0;
+    }
+    issues = finalizePastWorkRelated(issues, { baseUrl: c.baseUrl });
+    catalogIssues = filterPastWorkIssues(issues, {
+      includeDone: true,
+      includeOpenSprint: true,
+    });
+    issues = filterPastWorkIssues(issues, {
+      excludeKeys,
+      includeDone: false,
+      includeOpenSprint: true,
+    });
+  } else {
+    for (const issue of issues) {
+      issue.relatedTickets = [];
+      issue.commentTicketCount = 0;
+    }
+  }
+
   // Active work first; Done / closed stories sink to the bottom
   issues = sortIssuesDoneLast(issues);
   const staleCount = issues.filter((i) => i.stale && !i.done).length;
@@ -1262,10 +2196,13 @@ async function searchIssues(config, { maxResults = 50, queueCards = [] } = {}) {
   return {
     ok: true,
     issues,
+    catalogIssues: pastWork ? catalogIssues : undefined,
     staleCount,
     total: data.total ?? issues.length,
     fetchedAt: new Date().toISOString(),
     jql,
+    openSprint: usedOpenSprint,
+    pastWork: Boolean(pastWork),
     sopStages: c.statusMap,
   };
 }
@@ -1354,7 +2291,7 @@ async function fetchIssueByKey(config, issueKey, { queueCards = [] } = {}) {
       id: issue.id,
       key: issue.key,
       summary: fieldsObj.summary || "(no summary)",
-      description: typeof fieldsObj.description === "string" ? fieldsObj.description : "",
+      description: jiraAdfToText(fieldsObj.description),
       status: fieldsObj.status?.name || "—",
       priority: fieldsObj.priority?.name || "—",
       assignee: fieldsObj.assignee?.displayName || fieldsObj.assignee?.emailAddress || "Unassigned",
@@ -1401,6 +2338,1216 @@ function parseIssueLinks(rawLinks) {
     });
   }
   return out;
+}
+
+const RELATED_STOPWORDS = new Set(["sample", "implement", "in", "the", "a"]);
+const DISTINCTIVE_STOPWORDS = new Set([
+  ...RELATED_STOPWORDS,
+  "allow",
+  "allows",
+  "allowed",
+  "user",
+  "users",
+  "view",
+  "views",
+  "their",
+  "there",
+  "this",
+  "that",
+  "them",
+  "they",
+  "then",
+  "with",
+  "from",
+  "using",
+  "into",
+  "onto",
+  "over",
+  "under",
+  "about",
+  "after",
+  "before",
+  "being",
+  "been",
+  "have",
+  "has",
+  "had",
+  "will",
+  "would",
+  "could",
+  "should",
+  "must",
+  "able",
+  "make",
+  "made",
+  "update",
+  "updated",
+  "create",
+  "created",
+  "please",
+  "need",
+  "needs",
+  "want",
+  "wants",
+  "your",
+  "our",
+  "and",
+  "or",
+  "of",
+  "on",
+  "is",
+  "are",
+  "be",
+  "an",
+  "as",
+  "by",
+  "at",
+  "to",
+  "for",
+  "app",
+  "apps",
+  "issue",
+  "issues",
+  "ticket",
+  "tickets",
+  "story",
+  "stories",
+  "task",
+  "tasks",
+  "fix",
+  "bug",
+  "error",
+  "test",
+  "tests",
+  "feature",
+  "request",
+  "requests",
+  "new",
+  "add",
+  "adds",
+  "added",
+]);
+const SIMILAR_JACCARD_MIN = 0.67;
+const SIMILAR_MIN_SIGNIFICANT = 2;
+
+/** Strip sample wrappers so "… in SAMPLE" titles can match the shorter story. */
+function normalizeRelatedStoryText(raw) {
+  return String(raw || "")
+    .replace(/\(sample\)/gi, " ")
+    .replace(/\bin\s+sample\b/gi, " ")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function relatedStoryTokens(raw) {
+  const text = normalizeRelatedStoryText(raw);
+  if (!text) return [];
+  return [...new Set(text.split(" ").filter((tok) => tok && !RELATED_STOPWORDS.has(tok)))];
+}
+
+/** 2–4 rare words for live JQL. Never quote a whole sentence. */
+function distinctiveSimilarTokens(raw) {
+  const out = [];
+  const seen = new Set();
+  for (const tok of relatedStoryTokens(raw)) {
+    if (tok.length < 5 || DISTINCTIVE_STOPWORDS.has(tok) || /^\d+$/.test(tok)) continue;
+    if (seen.has(tok)) continue;
+    seen.add(tok);
+    out.push(tok);
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+function similarSearchTokenGroups(issue) {
+  const groups = [];
+  const seen = new Set();
+  const push = (raw) => {
+    const tokens = distinctiveSimilarTokens(raw);
+    if (tokens.length < 2) return;
+    const key = tokens.join(" ");
+    if (seen.has(key)) return;
+    seen.add(key);
+    groups.push(tokens);
+  };
+  // Visible Past body is description first; still search summary too.
+  push(issue?.description);
+  push(issue?.summary);
+  if (!groups.length) push(`${issue?.summary || ""} ${issue?.description || ""}`);
+  return groups.slice(0, 3);
+}
+
+function issueTextTokenSet(issue) {
+  return new Set(
+    relatedStoryTokens(`${issue?.summary || ""} ${issue?.description || ""}`)
+  );
+}
+
+function issueTextHasTokens(issue, tokens, min = 2) {
+  const wanted = (Array.isArray(tokens) ? tokens : [])
+    .map((tok) => String(tok || "").toLowerCase())
+    .filter(Boolean);
+  if (wanted.length < min) return false;
+  const hay = issueTextTokenSet(issue);
+  let hits = 0;
+  for (const tok of wanted) if (hay.has(tok)) hits += 1;
+  return hits >= Math.min(min, wanted.length);
+}
+
+function issueSummaryHasTokens(issue, tokens) {
+  return issueTextHasTokens(issue, tokens, Array.isArray(tokens) ? tokens.length : 2);
+}
+
+function parentDistinctiveTokens(issue) {
+  const out = new Set();
+  for (const group of similarSearchTokenGroups(issue)) {
+    for (const tok of group) out.add(tok);
+  }
+  if (out.size < 2) {
+    for (const tok of distinctiveSimilarTokens(`${issue?.summary || ""} ${issue?.description || ""}`)) {
+      out.add(tok);
+    }
+  }
+  return [...out];
+}
+
+function issueSharesParentTokens(parent, peer, min = 2) {
+  return issueTextHasTokens(peer, parentDistinctiveTokens(parent), min);
+}
+
+function tokenSetOverlap(aTokens, bTokens) {
+  const a = new Set(aTokens);
+  const b = new Set(bTokens);
+  if (a.size < SIMILAR_MIN_SIGNIFICANT || b.size < SIMILAR_MIN_SIGNIFICANT) return false;
+  let inter = 0;
+  for (const tok of a) if (b.has(tok)) inter += 1;
+  if (inter < SIMILAR_MIN_SIGNIFICANT) return false;
+  const smaller = a.size <= b.size ? a : b;
+  const larger = a.size <= b.size ? b : a;
+  let subset = true;
+  for (const tok of smaller) {
+    if (!larger.has(tok)) {
+      subset = false;
+      break;
+    }
+  }
+  if (subset) return true;
+  const union = a.size + b.size - inter;
+  return union > 0 && inter / union >= SIMILAR_JACCARD_MIN;
+}
+
+/** Containment or high token overlap between two titles/phrases. */
+function storyTextsMatch(leftRaw, rightRaw) {
+  const na = normalizeRelatedStoryText(leftRaw);
+  const nb = normalizeRelatedStoryText(rightRaw);
+  if (!na || !nb) return false;
+  const ta = relatedStoryTokens(leftRaw);
+  const tb = relatedStoryTokens(rightRaw);
+  const shorter = na.length <= nb.length ? na : nb;
+  const longer = na.length <= nb.length ? nb : na;
+  const shortTokens = na.length <= nb.length ? ta : tb;
+  if (shortTokens.length >= SIMILAR_MIN_SIGNIFICANT && longer.includes(shorter)) {
+    return true;
+  }
+  return tokenSetOverlap(ta, tb);
+}
+
+/**
+ * Related Jira stories are summary matches only.
+ * Compare summaries to each other, and one issue's summary to the other's description.
+ * Do not match description-to-description (that false-links comment/catalog peers).
+ */
+function summariesShareDistinctiveToken(leftRaw, rightRaw) {
+  const a = new Set(distinctiveSimilarTokens(leftRaw));
+  const b = new Set(distinctiveSimilarTokens(rightRaw));
+  if (!a.size || !b.size) return false;
+  const shared = [];
+  for (const tok of a) if (b.has(tok)) shared.push(tok);
+  if (shared.some((tok) => tok.length >= 7)) return true;
+  return shared.length >= 2;
+}
+
+function storiesAreSimilar(left, right) {
+  const leftKey = normalizeScrapedTicketKey(left?.key);
+  const rightKey = normalizeScrapedTicketKey(right?.key);
+  if (!leftKey || !rightKey || leftKey === rightKey) return false;
+  const leftSummary = String(left?.summary || "").trim();
+  const rightSummary = String(right?.summary || "").trim();
+  const leftDesc = String(left?.description || "").trim();
+  const rightDesc = String(right?.description || "").trim();
+  if (storyTextsMatch(leftSummary, rightSummary)) return true;
+  if (summariesShareDistinctiveToken(leftSummary, rightSummary)) return true;
+  if (leftSummary && rightDesc && storyTextsMatch(leftSummary, rightDesc)) return true;
+  if (rightSummary && leftDesc && storyTextsMatch(rightSummary, leftDesc)) return true;
+  return similarSearchTokenGroups(left).some((tokens) => issueSummaryHasTokens(right, tokens));
+}
+
+/** Related Jira stories: similar summary/description, never the parent key itself. */
+function storiesAreRelated(left, right) {
+  return storiesAreSimilar(left, right);
+}
+
+function isPinnedSimilarTicket(item) {
+  return String(item?.source || "").toLowerCase() === "similar";
+}
+
+function pinSimilarSearchHits(parent, hits, baseUrl = "") {
+  const pinned = [];
+  const parentKey = normalizeScrapedTicketKey(parent?.key);
+  for (const hit of Array.isArray(hits) ? hits : []) {
+    const row = toRelatedTicketRow({ ...hit, source: "similar" }, "similar", baseUrl);
+    if (!row || !isJiraIssueKey(row.key) || row.key === parentKey) continue;
+    pinned.push({
+      ...row,
+      description: String(hit?.description || "").trim(),
+      source: "similar",
+    });
+  }
+  parent.similarSearchHits = pinned;
+  parent.relatedTickets = mergeRelatedTickets(parent.relatedTickets, pinned);
+  return pinned;
+}
+
+function pastWorkFoldKeys(issue) {
+  const parent = normalizeScrapedTicketKey(issue?.key);
+  const jira = [];
+  const ops = [];
+  const seen = new Set();
+  for (const row of Array.isArray(issue?.relatedTickets) ? issue.relatedTickets : []) {
+    const key = normalizeScrapedTicketKey(row?.key || row);
+    if (!key || key === parent || seen.has(key)) continue;
+    seen.add(key);
+    if (isJiraIssueKey(key)) jira.push(key);
+    else if (isOpsTicketKey(key)) ops.push(key);
+  }
+  jira.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return { jira, ops, all: [...jira, ...ops] };
+}
+
+function pastWorkFoldHtml(issue) {
+  const { jira, ops } = pastWorkFoldKeys(issue);
+  const buttons = jira
+    .map((key) => `<button class="jira-key">${key}</button>`)
+    .join("");
+  const opsText = ops.join(", ");
+  return `${buttons}${opsText ? `(${opsText})` : ""}`;
+}
+
+function toRelatedTicketRow(item, source, baseUrl = "") {
+  const key = normalizeScrapedTicketKey(item?.key || item);
+  if (!key) return null;
+  const summary = String(item?.summary || "").trim();
+  const status = String(item?.status || "").trim();
+  const url =
+    String(item?.url || "").trim() ||
+    (isJiraIssueKey(key) && baseUrl ? issueBrowseUrl(baseUrl, key) : "");
+  return {
+    key,
+    summary,
+    status,
+    url,
+    source: source || String(item?.source || "").trim() || "story",
+    kind: String(item?.kind || "").trim(),
+    autoQuery: String(item?.autoQuery || "").trim(),
+  };
+}
+
+/**
+ * Ops ticket numbers from comments/description always stay.
+ * Related Jira keys must match by summary (or summary vs description), never
+ * because they were mentioned in comments.
+ */
+function selectRelatedTickets(
+  issue,
+  { scraped = [], linked = [], batch = [], hopOps = [], hopStories = [], baseUrl = "" } = {}
+) {
+  const parent = normalizeScrapedTicketKey(issue?.key);
+  const ops = [];
+  for (const item of [...scraped, ...hopOps]) {
+    const row = toRelatedTicketRow(item, item?.source || "comment", baseUrl);
+    if (!row || row.key === parent) continue;
+    if (isJiraIssueKey(row.key)) continue;
+    ops.push(row);
+  }
+  const matchedJira = [];
+  for (const item of linked) {
+    const row = toRelatedTicketRow(item, item?.source || "link", baseUrl);
+    if (!row || row.key === parent || !isJiraIssueKey(row.key)) continue;
+    if (
+      storiesAreRelated(issue, {
+        key: row.key,
+        summary: row.summary,
+        description: String(item?.description || "").trim(),
+      })
+    ) {
+      matchedJira.push({ ...row, source: "similar" });
+    }
+  }
+  const similar = similarRelatedFromIssues(issue, batch, { baseUrl, includeDone: true });
+  const hopRelated = [];
+  for (const other of hopStories) {
+    const key = normalizeScrapedTicketKey(other?.key);
+    if (!key || key === parent || !isJiraIssueKey(key)) continue;
+    if (!storiesAreRelated(issue, other)) continue;
+    hopRelated.push(toRelatedTicketRow({ ...other, key }, "similar", baseUrl));
+  }
+  const searchHits = [];
+  for (const item of issue.similarSearchHits || []) {
+    const row = toRelatedTicketRow({ ...item, source: "similar" }, "similar", baseUrl);
+    if (!row || row.key === parent || !isJiraIssueKey(row.key)) continue;
+    searchHits.push(row);
+  }
+  return mergeRelatedTickets(ops, similar, matchedJira, hopRelated, searchHits).filter(
+    (item) => normalizeScrapedTicketKey(item.key) !== parent
+  );
+}
+
+function similarRelatedFromIssues(issue, allIssues, baseUrlOrOpts = "") {
+  const opts =
+    typeof baseUrlOrOpts === "string"
+      ? { baseUrl: baseUrlOrOpts, includeDone: false }
+      : {
+          baseUrl: String(baseUrlOrOpts?.baseUrl || ""),
+          includeDone: Boolean(baseUrlOrOpts?.includeDone),
+        };
+  const parent = normalizeScrapedTicketKey(issue?.key);
+  const out = [];
+  for (const other of Array.isArray(allIssues) ? allIssues : []) {
+    const key = normalizeScrapedTicketKey(other?.key);
+    if (!key || key === parent || !isJiraIssueKey(key)) continue;
+    if (!opts.includeDone && isPastWorkDoneIssue(other)) continue;
+    if (!storiesAreRelated(issue, other)) continue;
+    out.push({
+      key,
+      summary: String(other.summary || "").trim(),
+      status: String(other.status || "").trim(),
+      url: other.url || (opts.baseUrl ? issueBrowseUrl(opts.baseUrl, key) : ""),
+      source: "similar",
+    });
+  }
+  return out;
+}
+
+function projectKeyFromIssueKey(key) {
+  const match = String(key || "").trim().match(/^([A-Z][A-Z0-9]{1,9})-\d+$/i);
+  return match ? match[1].toUpperCase() : "";
+}
+
+/** Distinctive token groups as phrases (for tests / logs). Never a full sentence. */
+function similarSearchPhrases(issue) {
+  return similarSearchTokenGroups(issue).map((tokens) => tokens.join(" "));
+}
+
+function similarSearchTokensFromPhrase(phrase) {
+  const fromDistinct = distinctiveSimilarTokens(phrase);
+  if (fromDistinct.length >= 2) return fromDistinct;
+  return String(phrase || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((tok) => tok.length >= 5 && !DISTINCTIVE_STOPWORDS.has(tok))
+    .slice(0, 4);
+}
+
+function buildRecentAssignedIssueJql({ excludeKey = "" } = {}) {
+  const parent = normalizeScrapedTicketKey(excludeKey);
+  const notSelf = isJiraIssueKey(parent) ? ` AND key != ${parent}` : "";
+  return `assignee = currentUser()${notSelf} ORDER BY updated DESC`;
+}
+
+function buildSimilarIssueJql({ projectKey = "", phrase = "", tokens = [], excludeKey = "" } = {}) {
+  const safe = [
+    ...new Set(
+      (Array.isArray(tokens) && tokens.length ? tokens : similarSearchTokensFromPhrase(phrase))
+        .map((tok) => sanitizeJqlPhrase(tok).toLowerCase())
+        .filter((tok) => tok.length >= 3)
+    ),
+  ].slice(0, 2);
+  if (safe.length < 2) return "";
+  const summaryAnd = safe.map((tok) => `summary ~ "${tok}"`).join(" AND ");
+  const descAnd = safe.map((tok) => `description ~ "${tok}"`).join(" AND ");
+  const textAnd = safe.map((tok) => `text ~ "${tok}"`).join(" AND ");
+  const text = `((${summaryAnd}) OR (${descAnd}) OR (${textAnd}))`;
+  void projectKey;
+  const parent = normalizeScrapedTicketKey(excludeKey);
+  const notSelf = isJiraIssueKey(parent) ? ` AND key != ${parent}` : "";
+  return `assignee = currentUser() AND ${text}${notSelf} ORDER BY updated DESC`;
+}
+function collectFollowJiraKeys(issue, batch = []) {
+  return similarRelatedFromIssues(issue, batch, { includeDone: true }).map((row) => row.key);
+}
+
+function opsTicketsFromPeerText(text, parentKey, followKey) {
+  return extractTicketRefs(text, {
+    excludeKey: parentKey,
+    excludeKeys: [followKey],
+  })
+    .filter((item) => isOpsTicketKey(item.key))
+    .map((item) => ({
+      key: item.key,
+      summary: "",
+      source: "comment",
+    }));
+}
+
+/**
+ * Keep ops tickets from comments. Keep Jira keys only when summaries match.
+ */
+function filterRelatedTickets(parentIssue, related, allIssues = []) {
+  const parentKey = normalizeScrapedTicketKey(parentIssue?.key);
+  const pinned = new Set(
+    (parentIssue?.similarSearchHits || [])
+      .map((item) => normalizeScrapedTicketKey(item?.key))
+      .filter(Boolean)
+  );
+  return (related || []).filter((item) => {
+    const key = normalizeScrapedTicketKey(item?.key);
+    if (!key || key === parentKey) return false;
+    if (!isJiraIssueKey(key)) return true;
+    if (isPinnedSimilarTicket(item) || pinned.has(key)) return true;
+    const peer = (Array.isArray(allIssues) ? allIssues : []).find(
+      (row) => normalizeScrapedTicketKey(row?.key) === key
+    );
+    return storiesAreRelated(parentIssue, {
+      key,
+      summary: String(peer?.summary || item?.summary || "").trim(),
+      description: String(peer?.description || item?.description || "").trim(),
+    });
+  });
+}
+
+function keepPreviousRelatedJira(parent, item, catalog) {
+  const key = normalizeScrapedTicketKey(item?.key);
+  if (!key || !isJiraIssueKey(key) || key === normalizeScrapedTicketKey(parent?.key)) {
+    return false;
+  }
+  if (isPinnedSimilarTicket(item)) return true;
+  const peer = catalog.get(key);
+  if (!peer) return true;
+  if (storiesAreRelated(parent, peer)) return true;
+  return similarSearchTokenGroups(parent).some((tokens) => issueSummaryHasTokens(peer, tokens));
+}
+
+function catalogByKey(issues) {
+  const map = new Map();
+  for (const issue of Array.isArray(issues) ? issues : []) {
+    const key = normalizeScrapedTicketKey(issue?.key);
+    if (key) map.set(key, issue);
+  }
+  return map;
+}
+
+/**
+ * Rebuild related lists from summary matches + harvested ops.
+ * Keep previously nested Jira keys unless a catalog peer proves they are unrelated
+ * (MBA-1 / MBA-2). Never blank a fold because this scrape omitted MBA-3.
+ */
+function finalizePastWorkRelated(issues, { baseUrl = "" } = {}) {
+  const rows = Array.isArray(issues) ? issues : [];
+  const catalog = catalogByKey(rows);
+  for (const issue of rows) {
+    const prev = Array.isArray(issue.relatedTickets) ? issue.relatedTickets : [];
+    const ops = prev.filter((item) => isOpsTicketKey(item?.key));
+    const similar = similarRelatedFromIssues(issue, rows, {
+      includeDone: true,
+      baseUrl: baseUrl || String(issue?.url || "").replace(/\/browse\/[^/]+$/i, ""),
+    });
+    const keptPrev = prev.filter((item) => keepPreviousRelatedJira(issue, item, catalog));
+    const searchHits = [
+      ...(issue.similarSearchHits || []),
+      ...prev.filter((item) => isPinnedSimilarTicket(item)),
+    ];
+    issue.relatedTickets = mergeRelatedTickets(ops, similar, keptPrev, searchHits);
+  }
+  return rows;
+}
+
+/**
+ * Union live scrape with last-good cache. Empty scrape related/ops must not wipe a fold.
+ */
+function mergeScrapedPastWork(existingIssues, scrapedIssues, { baseUrl = "" } = {}) {
+  const existingByKey = catalogByKey(existingIssues);
+  const scraped = Array.isArray(scrapedIssues) ? scrapedIssues : [];
+  const combined = [];
+  const seen = new Set();
+  for (const incoming of scraped) {
+    const key = normalizeScrapedTicketKey(incoming?.key);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const previous = existingByKey.get(key);
+    const incomingRel = Array.isArray(incoming?.relatedTickets) ? incoming.relatedTickets : [];
+    const previousRel = Array.isArray(previous?.relatedTickets) ? previous.relatedTickets : [];
+    const incomingJira = incomingRel.filter((item) => isJiraIssueKey(item?.key));
+    const incomingOps = incomingRel.filter((item) => isOpsTicketKey(item?.key));
+    const previousJira = previousRel.filter((item) => isJiraIssueKey(item?.key));
+    const previousOps = previousRel.filter((item) => isOpsTicketKey(item?.key));
+    const ops = incomingOps.length
+      ? mergeRelatedTickets(previousOps, incomingOps)
+      : previousOps;
+    const jira = mergeRelatedTickets(previousJira, incomingJira);
+    const relatedTickets = mergeRelatedTickets(ops, jira);
+    const description =
+      String(incoming?.description || "").trim() || String(previous?.description || "").trim();
+    combined.push({
+      ...(previous || {}),
+      ...incoming,
+      description,
+      relatedTickets,
+    });
+  }
+  for (const previous of Array.isArray(existingIssues) ? existingIssues : []) {
+    const key = normalizeScrapedTicketKey(previous?.key);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    combined.push(previous);
+  }
+  return finalizePastWorkRelated(combined, { baseUrl });
+}
+
+function mergeRelatedTickets(...groups) {
+  const byKey = new Map();
+  for (const group of groups) {
+    for (const item of group || []) {
+      const key = normalizeScrapedTicketKey(item?.key || item);
+      if (!key) continue;
+      const prev = byKey.get(key) || {
+        key,
+        summary: "",
+        status: "",
+        url: "",
+        source: "story",
+        kind: "",
+        autoQuery: "",
+      };
+      const nextSummary = String(item?.summary || "").trim();
+      const nextStatus = String(item?.status || "").trim();
+      const nextUrl = String(item?.url || "").trim();
+      const nextSource = String(item?.source || "").trim();
+      const nextKind = String(item?.kind || "").trim();
+      const nextQuery = String(item?.autoQuery || "").trim();
+      byKey.set(key, {
+        key,
+        // Last non-empty wins so a later fetch of THIS key can fill summary
+        // without inheriting another issue's text.
+        summary: nextSummary || prev.summary,
+        status: nextStatus || prev.status,
+        url: nextUrl || prev.url,
+        source: nextSource || prev.source || "story",
+        kind: nextKind || prev.kind,
+        autoQuery: nextQuery || prev.autoQuery,
+      });
+    }
+  }
+  return [...byKey.values()];
+}
+
+async function fetchTicketSummaries(config, keys) {
+  const c = normalizeConfig(config);
+  const map = new Map();
+  const jiraKeys = [
+    ...new Set(
+      keys
+        .flatMap((raw) => {
+          const key = String(raw || "").toUpperCase();
+          const extra = [];
+          const snow = key.match(/^(RITM|INC|CHG|CRQ|SCTASK|PRB|CTASK|PTASK|KB|CR)(\d+)$/);
+          if (snow) extra.push(`${snow[1]}-${snow[2]}`);
+          return [key, ...extra];
+        })
+        .filter(isJiraIssueKey)
+    ),
+  ];
+  const chunkSize = 40;
+  for (let i = 0; i < jiraKeys.length; i += chunkSize) {
+    const chunk = jiraKeys.slice(i, i + chunkSize);
+    const jql = `key in (${chunk.join(",")})`;
+    const payload = { jql, maxResults: chunk.length, fields: ["summary", "status"] };
+    try {
+      const getPath = buildSearchJqlGetPath("/rest/api/3/search/jql", payload);
+      let res =
+        getPath.length <= 1800
+          ? await jiraFetch(c, getPath, { method: "GET" })
+          : null;
+      if (!res || searchJqlGetNotSupported(res.status)) {
+        res = await jiraFetch(c, "/rest/api/3/search/jql", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      }
+      const parsed = await parseJiraHttpResponse(res, {
+        baseUrl: c.baseUrl,
+        pathname: "/rest/api/3/search/jql",
+      });
+      if (!parsed.parseOk || !res.ok) continue;
+      for (const issue of parsed.data?.issues || []) {
+        const key = normalizeScrapedTicketKey(issue?.key);
+        if (!key || !isJiraIssueKey(key)) continue;
+        map.set(key, {
+          key,
+          summary: String(issue.fields?.summary || "").trim(),
+          status: String(issue.fields?.status?.name || "").trim(),
+          url: issueBrowseUrl(c.baseUrl, key),
+        });
+      }
+    } catch {
+      /* skip this chunk */
+    }
+  }
+  return map;
+}
+
+function decodeHrefEntity(value) {
+  return String(value || "")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#(\d+);/g, (_, code) => {
+      const n = Number(code);
+      return Number.isFinite(n) ? String.fromCharCode(n) : " ";
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      const n = parseInt(hex, 16);
+      return Number.isFinite(n) ? String.fromCharCode(n) : " ";
+    });
+}
+
+function decodeHrefText(href) {
+  const raw = decodeHrefEntity(href).replace(/\+/g, " ");
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function htmlToPlain(html) {
+  return decodeHrefEntity(String(html || ""))
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<a\b[^>]*\bhref\s*=\s*(["'])([^"']+)\1[^>]*>/gi, (_, _q, href) => ` ${decodeHrefText(href)} `)
+    .replace(/<a\b[^>]*\bhref\s*=\s*([^\s>"']+)[^>]*>/gi, (_, href) => ` ${decodeHrefText(href)} `)
+    .replace(/<(?:img|source)\b[^>]*(?:src|data-file-name)\s*=\s*["']([^"']+)["'][^>]*>/gi, " $1 ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#(\d+);/g, (_, code) => {
+      const n = Number(code);
+      return Number.isFinite(n) ? String.fromCharCode(n) : " ";
+    })
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const SKIP_SCRAPE_KEYS = new Set([
+  "avatarurls",
+  "iconurl",
+  "self",
+  "accountid",
+  "timezone",
+]);
+
+function collectScrapeText(value, out, depth = 0) {
+  if (depth > 8 || value == null) return;
+  if (typeof value === "string") {
+    if (value) out.push(value);
+    return;
+  }
+  if (typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectScrapeText(item, out, depth + 1);
+    return;
+  }
+  if (value.type && (value.content || value.text || value.marks || value.attrs)) {
+    const adf = jiraAdfToText(value);
+    if (adf) out.push(adf);
+  }
+  for (const [key, nested] of Object.entries(value)) {
+    if (SKIP_SCRAPE_KEYS.has(String(key || "").toLowerCase())) continue;
+    collectScrapeText(nested, out, depth + 1);
+  }
+}
+
+function commentToScrapeText(comment) {
+  const parts = [];
+  parts.push(jiraAdfToText(comment?.body));
+  parts.push(htmlToPlain(comment?.renderedBody));
+  collectScrapeText(comment, parts);
+  return parts.filter(Boolean).join("\n");
+}
+
+function buildIssueCommentPath(issueKey, { startAt, maxResults, orderBy, expand, nextPageToken, bustCache }) {
+  const params = new URLSearchParams();
+  params.set("startAt", String(startAt || 0));
+  params.set("maxResults", String(maxResults || 100));
+  if (orderBy) params.set("orderBy", orderBy);
+  if (expand) params.set("expand", expand);
+  if (nextPageToken) params.set("nextPageToken", String(nextPageToken));
+  return withNoCacheQuery(
+    `/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment?${params.toString()}`,
+    bustCache
+  );
+}
+
+function commentQueryRejected(status, errorText) {
+  const code = Number(status) || 0;
+  if (code !== 400 && code !== 422) return false;
+  const text = String(errorText || "").toLowerCase();
+  return (
+    !text ||
+    text.includes("orderby") ||
+    text.includes("order by") ||
+    text.includes("expand") ||
+    text.includes("renderedbody") ||
+    text.includes("startat")
+  );
+}
+
+async function fetchIssueCommentPages(c, key, { orderBy, expand, forceRefresh, maxPages = 8 } = {}) {
+  const parts = [];
+  const seen = new Set();
+  let startAt = 0;
+  let nextPageToken = "";
+  const pageSize = 100;
+  const pageCap = Math.max(1, Math.min(8, Number(maxPages) || 8));
+  for (let page = 0; page < pageCap; page++) {
+    const path = buildIssueCommentPath(key, {
+      startAt,
+      maxResults: pageSize,
+      orderBy,
+      expand,
+      nextPageToken,
+      bustCache: forceRefresh !== false,
+    });
+    let res;
+    try {
+      res = await jiraFetch(c, path, { method: "GET", forceRefresh: forceRefresh !== false });
+    } catch (err) {
+      return { ok: false, status: 0, error: err?.message || "network", text: parts.join("\n") };
+    }
+    const parsed = await parseJiraHttpResponse(res, {
+      baseUrl: c.baseUrl,
+      pathname: `/rest/api/3/issue/${encodeURIComponent(key)}/comment`,
+    });
+    if (!parsed.parseOk || !res.ok) {
+      return {
+        ok: false,
+        status: res?.status || 0,
+        error: parseJiraErrorBody(parsed.data) || parsed.error || "",
+        text: parts.join("\n"),
+      };
+    }
+    const batch = Array.isArray(parsed.data?.comments)
+      ? parsed.data.comments
+      : Array.isArray(parsed.data?.values)
+        ? parsed.data.values
+        : [];
+    let added = 0;
+    for (const comment of batch) {
+      const id = String(comment?.id || comment?.self || "");
+      if (id && seen.has(id)) continue;
+      if (id) seen.add(id);
+      const text = commentToScrapeText(comment);
+      if (text) {
+        parts.push(text);
+        added += 1;
+      } else if (!id) {
+        parts.push(jiraAdfToText(comment?.body) || htmlToPlain(comment?.renderedBody));
+      }
+    }
+    const total = Number(parsed.data?.total) || 0;
+    const token = String(parsed.data?.nextPageToken || "").trim();
+    if (token) {
+      if (token === nextPageToken) break;
+      nextPageToken = token;
+      startAt += batch.length;
+      continue;
+    }
+    nextPageToken = "";
+    // Advance by returned rows — using maxResults skips newest comments when
+    // Cloud ignores startAt or returns a smaller page than requested.
+    startAt += Math.max(batch.length, 0);
+    if (!batch.length) break;
+    if (total && seen.size >= total) break;
+    if (total && startAt >= total) break;
+    if (!added && batch.length && seen.size > 0) break;
+    if (!total && batch.length < pageSize) break;
+  }
+  return { ok: true, status: 200, text: parts.join("\n") };
+}
+
+async function fetchIssueCommentText(config, issueKey, { forceRefresh = false } = {}) {
+  const c = normalizeConfig(config);
+  const key = String(issueKey || "").trim();
+  if (!key) return "";
+  // Newest-first first so a broken startAt still captures the latest comments.
+  const variants = [
+    { orderBy: "-created", expand: "renderedBody" },
+    { orderBy: "", expand: "" },
+  ];
+  let fallback = "";
+  for (const variant of variants) {
+    const result = await fetchIssueCommentPages(c, key, { ...variant, forceRefresh });
+    if (result.ok) return result.text;
+    if (result.text) fallback = result.text;
+    if (!commentQueryRejected(result.status, result.error)) {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
+async function fetchIssueExtraScrape(config, issueKey, { forceRefresh = false } = {}) {
+  const c = normalizeConfig(config);
+  const key = String(issueKey || "").trim();
+  if (!key) return { text: "", summary: "", status: "", statusCategory: "", key: "" };
+  const parts = [];
+  let summary = "";
+  let status = "";
+  let statusCategory = "";
+  try {
+    const path = withNoCacheQuery(
+      `/rest/api/3/issue/${encodeURIComponent(key)}?fields=description,comment,attachment,issuelinks,summary,status,environment&expand=renderedFields`,
+      forceRefresh
+    );
+    const res = await jiraFetch(c, path, { method: "GET", forceRefresh });
+    const parsed = await parseJiraHttpResponse(res, {
+      baseUrl: c.baseUrl,
+      pathname: `/rest/api/3/issue/${encodeURIComponent(key)}`,
+    });
+    if (parsed.parseOk && res.ok) {
+      const fields = parsed.data?.fields || {};
+      const rendered = parsed.data?.renderedFields || {};
+      summary = String(fields.summary || "").trim();
+      status = String(fields.status?.name || "").trim();
+      statusCategory = String(fields.status?.statusCategory?.key || "").toLowerCase();
+      parts.push(summary);
+      parts.push(jiraAdfToText(fields.description));
+      parts.push(jiraAdfToText(fields.environment));
+      parts.push(htmlToPlain(rendered.description));
+      parts.push(htmlToPlain(rendered.comment));
+      parts.push(htmlToPlain(rendered.environment));
+      collectScrapeText(fields, parts);
+      collectScrapeText(rendered, parts);
+      for (const file of fields.attachment || []) {
+        parts.push(String(file?.filename || file?.name || ""));
+      }
+      for (const link of parseIssueLinks(fields.issuelinks)) {
+        parts.push(`${link.key} ${link.summary || ""}`);
+      }
+      const nestedComments = fields.comment?.comments || [];
+      for (const comment of nestedComments) {
+        parts.push(commentToScrapeText(comment));
+      }
+    }
+  } catch {
+    /* optional */
+  }
+  try {
+    let startAt = 0;
+    for (let page = 0; page < 2; page++) {
+      const path = withNoCacheQuery(
+        `/rest/api/3/issue/${encodeURIComponent(key)}/changelog?startAt=${startAt}&maxResults=100`,
+        forceRefresh
+      );
+      const res = await jiraFetch(c, path, { method: "GET", forceRefresh });
+      const parsed = await parseJiraHttpResponse(res, {
+        baseUrl: c.baseUrl,
+        pathname: `/rest/api/3/issue/${encodeURIComponent(key)}/changelog`,
+      });
+      if (!parsed.parseOk || !res.ok) break;
+      const batch = parsed.data?.values || parsed.data?.histories || [];
+      for (const entry of batch) {
+        for (const item of entry.items || []) {
+          parts.push(String(item.fromString || ""));
+          parts.push(String(item.toString || ""));
+        }
+      }
+      const total = Number(parsed.data?.total) || 0;
+      startAt += batch.length;
+      if (!batch.length || parsed.data?.isLast || (total && startAt >= total)) break;
+    }
+  } catch {
+    /* optional */
+  }
+  try {
+    const res = await jiraFetch(
+      c,
+      withNoCacheQuery(`/rest/api/3/issue/${encodeURIComponent(key)}/remotelink`, forceRefresh),
+      { method: "GET", forceRefresh }
+    );
+    const parsed = await parseJiraHttpResponse(res, {
+      baseUrl: c.baseUrl,
+      pathname: `/rest/api/3/issue/${encodeURIComponent(key)}/remotelink`,
+    });
+    const links = Array.isArray(parsed.data) ? parsed.data : parsed.data?.values || [];
+    for (const link of links) {
+      parts.push(String(link?.object?.title || ""));
+      parts.push(String(link?.object?.url || ""));
+      parts.push(String(link?.relationship || ""));
+    }
+  } catch {
+    /* optional */
+  }
+  return {
+    text: parts.filter(Boolean).join("\n"),
+    summary,
+    status,
+    statusCategory,
+    key: String(key).toUpperCase(),
+  };
+}
+
+async function fetchIssueExtraScrapeText(config, issueKey) {
+  return (await fetchIssueExtraScrape(config, issueKey, { forceRefresh: true })).text;
+}
+
+async function mapPool(items, limit, worker) {
+  const rows = Array.isArray(items) ? items : [];
+  const out = new Array(rows.length);
+  let next = 0;
+  const n = Math.max(1, Math.min(limit || 5, rows.length || 1));
+  await Promise.all(
+    Array.from({ length: Math.min(n, rows.length) }, async () => {
+      while (next < rows.length) {
+        const index = next;
+        next += 1;
+        out[index] = await worker(rows[index], index);
+      }
+    })
+  );
+  return out;
+}
+
+async function attachScrapedTickets(config, issues, { forceRefresh = true, budgetMs = 18000 } = {}) {
+  const c = normalizeConfig(config);
+  const rows = Array.isArray(issues) ? issues : [];
+  const started = Date.now();
+  const budget = Math.max(2000, Number(budgetMs) || 18000);
+  const expired = () => Date.now() - started >= budget;
+  const scrapeCache = new Map();
+  const scrapeKey = (key) => {
+    const norm = normalizeScrapedTicketKey(key) || String(key || "").trim();
+    if (!norm) return Promise.resolve({ comments: "", extra: { text: "" } });
+    if (scrapeCache.has(norm)) return scrapeCache.get(norm);
+    const pending = Promise.all([
+      fetchIssueCommentText(c, key, { forceRefresh }),
+      fetchIssueExtraScrape(c, key, { forceRefresh }),
+    ])
+      .then(([comments, extra]) => ({ comments, extra }))
+      .catch(() => ({ comments: "", extra: { text: "" } }));
+    scrapeCache.set(norm, pending);
+    return pending;
+  };
+  const extraHits = [];
+  const openParents = rows.filter((issue) => issue?.key && !isPastWorkDoneIssue(issue));
+  const similarStarted = Date.now();
+  const similarBudget = Math.min(budget, Math.max(4000, Math.floor(budget * 0.75)));
+  const similarRows = await mapPool(openParents, 3, async (parent) => {
+    const remaining = similarBudget - (Date.now() - similarStarted);
+    if (remaining < 400) return [];
+    try {
+      return await findSimilarPastIssues(c, parent, {
+        maxResults: 20,
+        forceRefresh,
+        timeoutMs: Math.min(4500, remaining),
+      });
+    } catch {
+      return [];
+    }
+  });
+  openParents.forEach((parent, index) => {
+    const hits = Array.isArray(similarRows[index]) ? similarRows[index] : [];
+    pinSimilarSearchHits(parent, hits, c.baseUrl);
+  });
+  for (const hits of similarRows) {
+    if (Array.isArray(hits)) extraHits.push(...hits);
+  }
+  const have = new Set(rows.map((row) => normalizeScrapedTicketKey(row.key)).filter(Boolean));
+  for (const hit of extraHits) {
+    const key = normalizeScrapedTicketKey(hit?.key);
+    if (!key || have.has(key) || !isJiraIssueKey(key)) continue;
+    have.add(key);
+    rows.push(hit);
+  }
+  await mapPool(rows, 3, async (issue) => {
+    if (expired()) return issue;
+    try {
+      const { comments, extra } = await scrapeKey(issue.key);
+      issue.commentBodies = [issue.commentBodies || issue.commentText, comments]
+        .filter(Boolean)
+        .join("\n");
+      issue.commentText = [issue.commentText, comments, extra.text].filter(Boolean).join("\n");
+    } catch {
+      /* keep comments from search */
+    }
+    return issue;
+  });
+  const relatedArgs = (issue, extra = {}) => {
+    const fromStory = extractTicketRefs(`${issue.summary || ""}\n${issue.description || ""}`, {
+      excludeKey: issue.key,
+    }).map((item) => ({ key: item.key, summary: "", source: "story" }));
+    const fromComments = extractTicketRefs(issue.commentText || "", {
+      excludeKey: issue.key,
+    }).map((item) => ({ key: item.key, summary: "", source: "comment" }));
+    const linked = (issue.linkedIssues || []).map((item) => ({
+      key: item.key,
+      summary: item.summary,
+      status: item.status,
+      url: isJiraIssueKey(item.key) ? issueBrowseUrl(c.baseUrl, item.key) : "",
+      source: "link",
+    }));
+    return {
+      scraped: [...fromComments, ...fromStory],
+      linked,
+      batch: rows,
+      baseUrl: c.baseUrl,
+      ...extra,
+    };
+  };
+  for (const issue of rows) {
+    const args = relatedArgs(issue);
+    issue.relatedTickets = selectRelatedTickets(issue, args);
+    issue.commentTicketCount = args.scraped.filter((row) => row.source === "comment").length;
+    issue._mentionedJiraKeys = [
+      ...new Set(
+        args.scraped
+          .map((row) => normalizeScrapedTicketKey(row.key))
+          .filter((key) => isJiraIssueKey(key) && key !== normalizeScrapedTicketKey(issue.key))
+      ),
+    ];
+  }
+  await mapPool(rows, 3, async (issue) => {
+    if (expired()) return issue;
+    const followKeys = collectFollowJiraKeys(issue, rows).slice(0, 8);
+    const hopOps = [];
+    const hopStories = [];
+    for (const followKey of followKeys) {
+      if (expired()) break;
+      try {
+        const peer = rows.find(
+          (row) => normalizeScrapedTicketKey(row.key) === followKey
+        );
+        if (peer) {
+          hopOps.push(
+            ...opsTicketsFromPeerText(
+              `${peer.summary || ""}\n${peer.description || ""}\n${peer.commentText || ""}`,
+              issue.key,
+              followKey
+            )
+          );
+          if (peer.commentText || peer.description || peer.summary) {
+            issue.commentText = [
+              issue.commentText,
+              peer.summary,
+              peer.description,
+              peer.commentText,
+            ]
+              .filter(Boolean)
+              .join("\n");
+          }
+          if (peer.commentBodies || peer.commentText) {
+            issue.commentBodies = [issue.commentBodies, peer.commentBodies || peer.commentText]
+              .filter(Boolean)
+              .join("\n");
+          }
+          if (!isPastWorkDoneIssue(peer)) {
+            hopStories.push({
+              key: followKey,
+              summary: peer.summary || "",
+              status: peer.status || "",
+              statusCategory: peer.statusCategory || "",
+              url: issueBrowseUrl(c.baseUrl, followKey),
+            });
+          }
+          continue;
+        }
+        const { comments, extra } = await scrapeKey(followKey);
+        hopOps.push(
+          ...opsTicketsFromPeerText(`${comments}\n${extra.text}`, issue.key, followKey)
+        );
+        if (comments || extra.text) {
+          issue.commentText = [issue.commentText, comments, extra.text].filter(Boolean).join("\n");
+        }
+        if (comments) {
+          issue.commentBodies = [issue.commentBodies, comments].filter(Boolean).join("\n");
+        }
+        hopStories.push({
+          key: followKey,
+          summary: extra.summary || "",
+          status: extra.status || "",
+          statusCategory: extra.statusCategory || "",
+          url: issueBrowseUrl(c.baseUrl, followKey),
+        });
+      } catch {
+        /* skip this mentioned story; still harvest nothing */
+      }
+    }
+    issue.relatedTickets = selectRelatedTickets(issue, relatedArgs(issue, { hopOps, hopStories }));
+    delete issue._mentionedJiraKeys;
+    return issue;
+  });
+  const wanted = [];
+  for (const issue of rows) {
+    for (const item of issue.relatedTickets || []) wanted.push(item.key);
+  }
+  const summaries = expired() ? new Map() : await fetchTicketSummaries(c, wanted);
+  for (const issue of rows) {
+    const parent = normalizeScrapedTicketKey(issue.key);
+    const parentSummary = String(issue.summary || "").trim();
+    const parentDesc = String(issue.description || "").trim();
+    issue.relatedTickets = (issue.relatedTickets || [])
+      .filter((item) => {
+        const up = normalizeScrapedTicketKey(item.key);
+        if (!up || up === parent) return false;
+        if (!isJiraIssueKey(up)) return true;
+        if (isPinnedSimilarTicket(item)) return true;
+        const sibling = rows.find((row) => normalizeScrapedTicketKey(row.key) === up);
+        return storiesAreRelated(issue, {
+          key: up,
+          summary: sibling?.summary || item.summary || "",
+          description: sibling?.description || item.description || "",
+        });
+      })
+      .map((item) => {
+        const up = normalizeScrapedTicketKey(item.key);
+        const hyphen =
+          up.match(/^(RITM|INC|CHG|CRQ|SCTASK|PRB|CTASK|PTASK|KB|CR)(\d+)$/)
+            ? `${RegExp.$1}-${RegExp.$2}`
+            : "";
+        const hit = summaries.get(up) || (hyphen ? summaries.get(hyphen) : null);
+        const hitKey = normalizeScrapedTicketKey(hit?.key);
+        const ownHit = hit && (hitKey === up || (hyphen && hitKey === hyphen)) ? hit : null;
+        const ownSummary = String(ownHit?.summary || "").trim();
+        const itemSummary = String(item.summary || "").trim();
+        let summary = ownSummary || itemSummary;
+        if (parentSummary && summary === parentSummary) summary = "";
+        if (parentDesc && summary === parentDesc) summary = "";
+        const url =
+          item.url ||
+          ownHit?.url ||
+          (isJiraIssueKey(item.key) ? issueBrowseUrl(c.baseUrl, item.key) : "");
+        return {
+          key: item.key,
+          summary,
+          kind: item.kind || ticketKindLabel(item.key),
+          autoQuery: item.autoQuery || ticketLookupQuery(item.key),
+          status: ownHit?.status || item.status || "",
+          url: ownHit?.url || url,
+          source: item.source || "story",
+        };
+      });
+    issue.relatedTickets = filterRelatedTickets(issue, issue.relatedTickets, rows);
+    enrichRelatedTicketsFromComments(issue);
+    attachCommentSource(issue);
+  }
+  const finalized = finalizePastWorkRelated(rows, { baseUrl: c.baseUrl });
+  for (const issue of finalized) {
+    if (!issue?.key || isPastWorkDoneIssue(issue)) continue;
+    const keys = (issue.relatedTickets || []).map((row) => row.key).join(",");
+    console.log(`[livetrack] past related ${issue.key} relatedTickets=${keys || "(none)"}`);
+  }
+  return finalized;
 }
 
 function sortIssuesDoneLast(issues) {
@@ -1779,17 +3926,110 @@ async function fetchIssueForClone(config, sourceKey) {
   }
 }
 
+let epicLinkFieldCache = "";
+
+async function resolveEpicLinkFieldId(config) {
+  if (epicLinkFieldCache) return epicLinkFieldCache;
+  const c = normalizeConfig(config);
+  try {
+    const res = await jiraFetch(c, "/rest/api/3/field", { method: "GET" });
+    const parsed = await parseJiraHttpResponse(res, {
+      baseUrl: c.baseUrl,
+      pathname: "/rest/api/3/field",
+    });
+    if (!parsed.parseOk || !res.ok) return "";
+    const fields = Array.isArray(parsed.data) ? parsed.data : [];
+    const match = fields.find((field) => {
+      const custom = String(field?.schema?.custom || "");
+      const name = String(field?.name || "").trim().toLowerCase();
+      return custom === "com.pyxis.greenhopper.jira:gh-epic-link" || name === "epic link";
+    });
+    epicLinkFieldCache = String(match?.id || "");
+    return epicLinkFieldCache;
+  } catch {
+    return "";
+  }
+}
+
+async function listProjectEpics(config, projectKey) {
+  const c = normalizeConfig(config);
+  if (!isConfigured(c)) {
+    return { ok: false, error: missingAuthError(c) || "Jira is not configured.", epics: [] };
+  }
+  const resolved = await resolveProjectKey(c, projectKey || c.projectKey);
+  if (!resolved.ok) return { ok: false, error: resolved.error, epics: [] };
+  const projectClause = jqlProjectEquals(resolved.key) || `project = ${resolved.key}`;
+  const jql = `${projectClause} AND issuetype = Epic ORDER BY updated DESC`;
+  const raw = await searchIssuesByJql(c, jql, { maxResults: 50, pages: 2 });
+  const epics = raw
+    .map((issue) => ({
+      key: String(issue?.key || "").trim(),
+      summary: String(issue?.fields?.summary || "").trim(),
+    }))
+    .filter((epic) => epic.key);
+  return { ok: true, epics };
+}
+
+async function linkIssueToEpic(config, issueKey, epicKey) {
+  const c = normalizeConfig(config);
+  const epic = String(epicKey || "").trim().toUpperCase();
+  const key = String(issueKey || "").trim();
+  if (!epic || !key) return { ok: true, skipped: true };
+  if (!isConfigured(c)) {
+    return { ok: false, error: missingAuthError(c) || "Jira is not configured." };
+  }
+  try {
+    const parentRes = await jiraFetch(c, `/rest/api/3/issue/${encodeURIComponent(key)}`, {
+      method: "PUT",
+      body: JSON.stringify({ fields: { parent: { key: epic } } }),
+    });
+    if (parentRes.ok) return { ok: true, via: "parent" };
+
+    const fieldId = await resolveEpicLinkFieldId(c);
+    if (fieldId) {
+      const fieldRes = await jiraFetch(c, `/rest/api/3/issue/${encodeURIComponent(key)}`, {
+        method: "PUT",
+        body: JSON.stringify({ fields: { [fieldId]: epic } }),
+      });
+      if (fieldRes.ok) return { ok: true, via: "epic-link" };
+    }
+
+    const agileRes = await jiraFetch(
+      c,
+      `/rest/agile/1.0/epic/${encodeURIComponent(epic)}/issue`,
+      {
+        method: "POST",
+        body: JSON.stringify({ issues: [key] }),
+      }
+    );
+    if (agileRes.ok) return { ok: true, via: "agile" };
+
+    const parsed = await parseJiraHttpResponse(parentRes, {
+      baseUrl: c.baseUrl,
+      pathname: `/rest/api/3/issue/${encodeURIComponent(key)}`,
+    });
+    const detail = parsed.parseOk ? parseJiraErrorBody(parsed.data) : parsed.error;
+    return {
+      ok: false,
+      error: formatJiraHttpError(parentRes.status, detail) || "Could not set the epic link.",
+    };
+  } catch (err) {
+    return { ok: false, error: err?.message || "Could not set the epic link." };
+  }
+}
+
 /**
  * POST a new issue copied from source. Never updates or attaches to the source ticket.
  */
-async function cloneIssue(config, { sourceKey, extraNote, acceptanceCriteria } = {}) {
+async function cloneIssue(config, { sourceKey, summary, description, extraNote, acceptanceCriteria } = {}) {
   const source = await fetchIssueForClone(config, sourceKey);
   if (!source.ok) return source;
+  const title = String(summary || "").trim() || source.summary;
+  const body = String(description || "").trim() || source.description;
+  const note = String(extraNote || "").trim();
   const created = await createIssue(config, {
-    summary: source.summary,
-    description: extraNote
-      ? [source.description, extraNote].filter(Boolean).join("\n\n")
-      : source.description,
+    summary: title,
+    description: note ? [body, note].filter(Boolean).join("\n\n") : body,
     acceptanceCriteria,
     issueType: source.issueType,
     projectKey: source.projectKey,
@@ -1964,6 +4204,47 @@ module.exports = {
   isConfigured,
   testConnection,
   searchIssues,
+  extractTicketRefs,
+  extractTicketDescription,
+  commentSourceForTickets,
+  attachCommentSource,
+  enrichRelatedTicketsFromComments,
+  bundledParentDescription,
+  bundledTicketLookupQuery,
+  formatCommentTicketsBundle,
+  relatedTicketKeys,
+  stripCommentTicketsBundle,
+  ticketKindLabel,
+  ticketLookupQuery,
+  ensureOpenSprintJql,
+  ensurePastWorkJql,
+  applyPastWorkTextQuery,
+  filterPastWorkIssues,
+  isPastWorkDoneIssue,
+  issueInOpenSprint,
+  mergeRelatedTickets,
+  normalizeRelatedStoryText,
+  relatedStoryTokens,
+  storiesAreSimilar,
+  storiesAreRelated,
+  similarRelatedFromIssues,
+  similarSearchPhrases,
+  similarSearchTokenGroups,
+  distinctiveSimilarTokens,
+  buildSimilarIssueJql,
+  buildRecentAssignedIssueJql,
+  findSimilarPastIssues,
+  pinSimilarSearchHits,
+  pastWorkFoldKeys,
+  pastWorkFoldHtml,
+  collectFollowJiraKeys,
+  selectRelatedTickets,
+  filterRelatedTickets,
+  finalizePastWorkRelated,
+  mergeScrapedPastWork,
+  isJiraIssueKey,
+  isOpsTicketKey,
+  attachScrapedTickets,
   enrichIssues,
   mapSopStage,
   findLinkedCardId,
@@ -1991,6 +4272,8 @@ module.exports = {
   extractJqlProjectRefs,
   normalizeProjectRef,
   cloneIssue,
+  listProjectEpics,
+  linkIssueToEpic,
   fetchIssueForClone,
   attachFile,
   buildCreateIssuePayload,
@@ -2001,6 +4284,7 @@ module.exports = {
   formatJiraHttpError,
   parseJiraErrorBody,
   jiraAdfToText,
+  htmlToPlain,
   appendJiraAction,
   recentJiraActions,
   createdDeskTickets,

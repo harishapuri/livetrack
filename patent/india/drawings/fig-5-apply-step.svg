@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="700" viewBox="0 0 720 700">
+  <rect width="720" height="700" fill="#ffffff"/>
+  <text x="24" y="32" font-family="Arial, sans-serif" font-size="16" font-weight="700">FIG. 5</text>
+  <g font-family="Arial, sans-serif" font-size="13">
+    <rect x="190" y="52" width="340" height="44" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="360" y="80" text-anchor="middle">60  Run-card 52 or apply-step 54</text>
+    <line x1="360" y1="96" x2="360" y2="118" stroke="#000000" stroke-width="1.5"/>
+    <polygon points="360,118 354,106 366,106" fill="#000000"/>
+    <rect x="170" y="118" width="380" height="44" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="360" y="146" text-anchor="middle">62  Is form tab visible to operator 15?</text>
+    <line x1="170" y1="140" x2="70" y2="190" stroke="#000000" stroke-width="1.5"/>
+    <polygon points="70,190 78,176 90,184" fill="#000000"/>
+    <text x="90" y="170" font-size="12">No</text>
+    <rect x="16" y="190" width="200" height="70" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="116" y="216" text-anchor="middle">Wait. Do not write.</text>
+    <text x="116" y="236" text-anchor="middle">Stop at 60 seconds.</text>
+    <line x1="550" y1="140" x2="640" y2="118" stroke="#000000" stroke-width="1.5"/>
+    <text x="560" y="124" font-size="12">Yes</text>
+    <line x1="360" y1="162" x2="360" y2="186" stroke="#000000" stroke-width="1.5"/>
+    <polygon points="360,186 354,174 366,174" fill="#000000"/>
+    <rect x="160" y="186" width="400" height="44" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="360" y="214" text-anchor="middle">64  Run state paused 76?</text>
+    <line x1="160" y1="208" x2="80" y2="290" stroke="#000000" stroke-width="1.5"/>
+    <text x="90" y="250" font-size="12">Yes: wait about 120 ms. Do not write.</text>
+    <line x1="360" y1="230" x2="360" y2="254" stroke="#000000" stroke-width="1.5"/>
+    <polygon points="360,254 354,242 366,242" fill="#000000"/>
+    <text x="370" y="248" font-size="12">No</text>
+    <rect x="180" y="254" width="360" height="44" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="360" y="282" text-anchor="middle">66  Matcher 34 binds control 30</text>
+    <line x1="360" y1="298" x2="360" y2="322" stroke="#000000" stroke-width="1.5"/>
+    <polygon points="360,322 354,310 366,310" fill="#000000"/>
+    <rect x="150" y="322" width="420" height="56" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="360" y="346" text-anchor="middle">68  Fill, select, click, or check</text>
+    <text x="360" y="364" text-anchor="middle">Highlight or wait does not complete a field step</text>
+    <line x1="360" y1="378" x2="360" y2="402" stroke="#000000" stroke-width="1.5"/>
+    <polygon points="360,402 354,390 366,390" fill="#000000"/>
+    <rect x="170" y="402" width="380" height="44" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="360" y="430" text-anchor="middle">70  Step-update message 56</text>
+    <rect x="80" y="490" width="560" height="150" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+    <text x="360" y="522" text-anchor="middle">Value check uses the effective value.</text>
+    <text x="360" y="546" text-anchor="middle">Empty or wrong value: step is not marked complete.</text>
+    <text x="360" y="570" text-anchor="middle">Hidden tab or hidden frame: block 62 fails.</text>
+    <text x="360" y="594" text-anchor="middle">Browser unavailable: bridge 32 does not apply the step.</text>
+    <text x="360" y="618" text-anchor="middle">Extension 26 on computer 11</text>
+  </g>
+</svg>

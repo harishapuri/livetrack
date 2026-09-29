@@ -6,15 +6,18 @@
  * prior capture clickstreams (form refs, steps, values).
  */
 const { extractJiraKey } = require("./dashboard-stats");
-const { getJiraConfig, isConfigured, fetchIssueByKey } = require("./jira");
+const { getJiraConfig, isConfigured, fetchIssueByKey, searchIssues } = require("./jira");
 const {
   findSimilarCaptures,
   formatCaptureHistoryBlock,
   matchConfidencePercent,
   confidenceLabel,
 } = require("./capture-forward");
+const { lookupPastWork, formatStoredPastWorkBlock, issueToRow } = require("./past-work-store");
+const { applyRankToPastWorkRows } = require("./past-work-ai");
 
 const CONTEXT_BUDGET_MS = 2500;
+const AI_PAST_WORK_MS = 8000;
 
 function withTimeout(promise, ms = CONTEXT_BUDGET_MS) {
   let timer;
@@ -90,13 +93,7 @@ function formatTicketHistoryPreamble({ issueKey, ticket, intent, linkedKeys }) {
   }
   const linked = (Array.isArray(linkedKeys) ? linkedKeys : []).filter(Boolean);
   if (linked.length) {
-    const label =
-      intent === "vuln"
-        ? "Similar / linked CRs"
-        : intent === "deploy_cr"
-          ? "Linked tickets"
-          : "Linked issues";
-    lines.push(`${label}: ${linked.slice(0, 6).join(", ")}`);
+    lines.push(`Related tickets: ${linked.slice(0, 8).join(", ")}`);
   }
   return lines.join("\n");
 }
@@ -157,6 +154,117 @@ function overallExplainConfidence({
   return Math.max(20, Math.min(98, Math.round(base)));
 }
 
+function mergePastWorkRows(base, extra) {
+  const byKey = new Map();
+  for (const row of [...(Array.isArray(base) ? base : []), ...(Array.isArray(extra) ? extra : [])]) {
+    const key = String(row?.jira_key || "")
+      .trim()
+      .toUpperCase();
+    if (!key) continue;
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, row);
+      continue;
+    }
+    const nextScore = Number(row.matchScore) || 0;
+    const prevScore = Number(prev.matchScore) || 0;
+    byKey.set(key, nextScore >= prevScore ? { ...prev, ...row } : { ...row, ...prev });
+  }
+  return [...byKey.values()];
+}
+
+function relatedCandidatesFromRows(rows, extraKeys = []) {
+  const out = [];
+  const seen = new Set();
+  const add = (key, summary, source) => {
+    const k = String(key || "").trim();
+    if (!k) return;
+    const norm = k.toUpperCase().replace(/[\s.#]+/g, "");
+    if (!norm || seen.has(norm)) return;
+    seen.add(norm);
+    out.push({ key: k, summary: String(summary || "").trim(), source: source || "" });
+  };
+  for (const row of Array.isArray(rows) ? rows : []) {
+    add(row.jira_key, row.summary, "story");
+    const rels = Array.isArray(row.relatedTickets)
+      ? row.relatedTickets
+      : String(row.related_tickets || "").split(/[,;]+/);
+    for (const rel of rels) add(rel?.key || rel, rel?.summary || "", "related");
+  }
+  for (const key of extraKeys) add(key, "", "link");
+  return out;
+}
+
+async function enhancePastWorkWithAi({
+  issueKey = "",
+  ticket = null,
+  snippet = "",
+  title = "",
+  storedMatches = [],
+  linkedKeys = [],
+  jiraConfig = null,
+} = {}) {
+  let matches = Array.isArray(storedMatches) ? [...storedMatches] : [];
+  const { getOpenAiConfig } = require("./settings");
+  if (!getOpenAiConfig().hasKey) return matches;
+  const { proposePastWorkSearch, rankPastWorkRelated } = require("./openai-chat");
+  const search = await withTimeout(
+    proposePastWorkSearch({
+      issueKey,
+      summary: ticket?.summary || title,
+      description: ticket?.description || "",
+      snippet,
+    }),
+    AI_PAST_WORK_MS
+  );
+  const textQuery = String(search?.textQuery || "").trim();
+  const config = jiraConfig || getJiraConfig();
+  if (textQuery && isConfigured(config)) {
+    try {
+      const result = await withTimeout(
+        searchIssues(config, {
+          maxResults: 25,
+          queueCards: [],
+          openSprint: false,
+          scrapeTickets: false,
+          pastWork: true,
+          forceRefresh: false,
+          excludeKeys: issueKey ? [issueKey] : [],
+          textQuery,
+        }),
+        AI_PAST_WORK_MS
+      );
+      if (result?.ok) {
+        const extra = (result.issues || [])
+          .map((issue) => {
+            const row = issueToRow(issue);
+            if (!row) return null;
+            return { ...row, matchScore: 80, relatedTickets: row.related_tickets ? String(row.related_tickets).split(/[,;]+/).map((p) => p.trim()).filter(Boolean) : [] };
+          })
+          .filter(Boolean);
+        matches = mergePastWorkRows(matches, extra);
+      }
+    } catch {
+      /* keep catalog matches */
+    }
+  }
+  const candidates = relatedCandidatesFromRows(matches, linkedKeys);
+  const ranked = await withTimeout(
+    rankPastWorkRelated({
+      issueKey,
+      summary: ticket?.summary || title,
+      description: ticket?.description || "",
+      snippet,
+      candidates,
+    }),
+    AI_PAST_WORK_MS
+  );
+  if (ranked?.usedAi && ranked.related?.length) {
+    matches = applyRankToPastWorkRows(matches, ranked, { issueKey });
+  }
+  return matches;
+}
+
 /**
  * Build a compact history block for explainPage.
  * @returns {{ ok: boolean, issueKey: string, intent: string, ticket: object|null, captures: array, historyBlock: string }}
@@ -188,11 +296,48 @@ async function resolveExplainPastWork({
     historyBlock: "",
   };
 
+  let storedMatches = [];
+  try {
+    storedMatches =
+      (await withTimeout(
+        lookupPastWork({ issueKey, snippet, pageTitle: title, pageUrl: url }, { limit: 5 }),
+      )) || [];
+  } catch {
+    storedMatches = [];
+  }
+  const storedHit =
+    storedMatches.find(
+      (row) => String(row.jira_key || "").toUpperCase() === String(issueKey || "").toUpperCase(),
+    ) ||
+    (!issueKey ? storedMatches[0] : null) ||
+    null;
+
   let ticket = null;
   let linkedKeys = [];
   let labels = [];
 
-  if (issueKey) {
+  if (storedHit) {
+    ticket = {
+      key: storedHit.jira_key,
+      summary: storedHit.summary || "",
+      status: storedHit.status || "",
+      issueType: storedHit.issue_type || "",
+      description: storedHit.description || "",
+    };
+    linkedKeys = [
+      ...new Set(
+        [
+          ...(Array.isArray(storedHit.relatedTickets) ? storedHit.relatedTickets : []),
+          ...String(storedHit.related_tickets || "")
+            .split(/[,;]+/)
+            .map((part) => part.trim())
+            .filter(Boolean),
+        ].map((key) => String(key || "").trim()).filter(Boolean)
+      ),
+    ];
+  }
+
+  if (issueKey && !ticket) {
     try {
       const config = jiraConfig || getJiraConfig();
       if (isConfigured(config)) {
@@ -207,6 +352,51 @@ async function resolveExplainPastWork({
         ? ticket.linkedIssues.map((l) => l.key).filter(Boolean)
         : [];
     labels = Array.isArray(ticket?.labels) ? ticket.labels : [];
+  }
+
+  try {
+    storedMatches = await enhancePastWorkWithAi({
+      issueKey,
+      ticket,
+      snippet,
+      title,
+      storedMatches,
+      linkedKeys,
+      jiraConfig,
+    });
+  } catch {
+    /* keep rule-based matches */
+  }
+  const rankedHit =
+    storedMatches.find(
+      (row) => String(row.jira_key || "").toUpperCase() === String(issueKey || "").toUpperCase(),
+    ) ||
+    storedMatches[0] ||
+    storedHit;
+  if (rankedHit) {
+    if (!ticket) {
+      ticket = {
+        key: rankedHit.jira_key,
+        summary: rankedHit.summary || "",
+        status: rankedHit.status || "",
+        issueType: rankedHit.issue_type || "",
+        description: rankedHit.description || "",
+      };
+    }
+    linkedKeys = [
+      ...new Set(
+        [
+          ...linkedKeys,
+          ...(Array.isArray(rankedHit.relatedTickets) ? rankedHit.relatedTickets : []),
+          ...String(rankedHit.related_tickets || "")
+            .split(/[,;]+/)
+            .map((part) => part.trim())
+            .filter(Boolean),
+        ]
+          .map((key) => String(key || "").trim())
+          .filter(Boolean)
+      ),
+    ];
   }
 
   const intent = detectExplainIntent({
@@ -235,7 +425,7 @@ async function resolveExplainPastWork({
     captures = [];
   }
 
-  if (!issueKey && !captures.length) {
+  if (!issueKey && !captures.length && !storedMatches.length) {
     const confidence = overallExplainConfidence({
       hasSnippet: Boolean(String(snippet || "").trim() || url || title),
     });
@@ -249,14 +439,23 @@ async function resolveExplainPastWork({
 
   const matches = buildMatchSummaries(captures);
   const parts = [];
-  if (issueKey) {
-    parts.push(formatTicketHistoryPreamble({ issueKey, ticket, intent, linkedKeys }));
+  const storedBlock = formatStoredPastWorkBlock(storedMatches);
+  if (issueKey || rankedHit || storedHit) {
+    parts.push(
+      formatTicketHistoryPreamble({
+        issueKey: issueKey || rankedHit?.jira_key || storedHit?.jira_key || "",
+        ticket,
+        intent,
+        linkedKeys,
+      })
+    );
   } else {
     parts.push(formatFormHistoryPreamble({ title, url, intent, captures }));
   }
+  if (storedBlock) parts.push(storedBlock);
   parts.push(formatCaptureHistoryBlock(captures));
   const confidence = overallExplainConfidence({
-    issueKey,
+    issueKey: issueKey || rankedHit?.jira_key || storedHit?.jira_key || "",
     ticket,
     captures,
     hasSnippet: Boolean(String(snippet || "").trim() || url || title),
@@ -265,24 +464,26 @@ async function resolveExplainPastWork({
   parts.unshift(confLine);
 
   const historyBlock = parts.filter((p) => String(p || "").trim()).join("\n");
+  const resolvedKey = issueKey || rankedHit?.jira_key || storedHit?.jira_key || "";
   return {
     ok: true,
-    issueKey,
+    issueKey: resolvedKey,
     intent,
     ticket: ticket
       ? {
-          key: ticket.key || issueKey,
+          key: ticket.key || resolvedKey,
           summary: ticket.summary || "",
           status: ticket.status || "",
           issueType: ticket.issueType || "",
           labels,
           linkedKeys,
         }
-      : issueKey
-        ? { key: issueKey, summary: "", status: "", issueType: "", labels: [], linkedKeys: [] }
+      : resolvedKey
+        ? { key: resolvedKey, summary: "", status: "", issueType: "", labels: [], linkedKeys: [] }
         : null,
     captures,
     matches,
+    storedMatches,
     confidence,
     confidenceLabel: confidenceLabel(confidence),
     historyBlock,

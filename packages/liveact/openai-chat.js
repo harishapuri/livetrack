@@ -668,15 +668,26 @@ function primaryQuestValue(step, questData) {
       : data && step?.id != null && Object.prototype.hasOwnProperty.call(data, step.id)
         ? step.id
         : null;
-  if (key && data && data[key] != null) {
+  if (key && data && data[key] != null && data[key] !== "") {
     const v = data[key];
     if (Array.isArray(v)) {
-      return v.map((x) => String(x ?? "").trim()).find(Boolean) || "";
+      const first = v.map((x) => String(x ?? "").trim()).find(Boolean);
+      if (first) return first;
+    } else {
+      const scalar = String(v).trim();
+      if (scalar) return scalar;
     }
-    return String(v).trim();
   }
   if (step?.value != null && String(step.value).trim()) return String(step.value).trim();
-  return "";
+  const quoted = quotedReplyValue(step?.explanation) || quotedReplyValue(step?.label);
+  return quoted || "";
+}
+
+function quotedReplyValue(text) {
+  const match = String(text || "").match(
+    /\b(?:reply|respond|answer|enter|type|confirm)\s+with\s+["“']([^"”']{1,80})["”']/i
+  );
+  return match ? String(match[1] || "").trim() : "";
 }
 
 /**
@@ -698,17 +709,30 @@ function buildLocalAgentProposals(steps, questData) {
         : data && step?.id != null && Object.prototype.hasOwnProperty.call(data, step.id)
           ? step.id
           : step?.valueFrom || step?.id || null;
+    const choices = Array.isArray(step?.allowedValues)
+      ? step.allowedValues.map((v) => String(v ?? "").trim()).filter(Boolean)
+      : [];
+    const explanation = String(step?.explanation || "").replace(/\s+/g, " ").trim();
+    const reason = explanation
+      ? explanation
+      : !value && mandatory
+        ? "Mandatory — enter a value before approving."
+        : choices.length > 1
+          ? "Pick one of the SME choices."
+          : choices.length === 1
+            ? "From the SME fill value."
+            : mandatory
+              ? "From case data for this mandatory field."
+              : "Mapped from this case’s data for autofill.";
     proposals.push({
       stepId: String(step.id || ""),
       label: String(step.label || step.id || "Field").trim(),
       value: value || "",
       valueKey: valueKey != null ? String(valueKey) : null,
       mandatory,
-      reason: !value && mandatory
-        ? "Mandatory — enter a value before approving."
-        : mandatory
-          ? "From case data for this mandatory field."
-          : "Mapped from this case’s data for autofill.",
+      choices,
+      reason,
+      smeExplanation: Boolean(explanation),
     });
   }
   return proposals.filter((p) => p.stepId && (p.value || p.mandatory));
@@ -805,8 +829,9 @@ async function proposeAgentFill({
 
     const proposals = local.map((p) => {
       const ai = byId.get(p.stepId);
-      const reason = ai?.reason || p.reason;
-      // Keep known case value; ignore AI value rewrites
+      // SME explanation stays; AI only fills a reason when the step has none.
+      // Keep the known value; ignore AI value rewrites.
+      const reason = p.smeExplanation ? p.reason : ai?.reason || p.reason;
       return { ...p, reason: reason || p.reason };
     });
 
@@ -1809,6 +1834,217 @@ async function polishJiraCommentDraft({
   }
 }
 
+async function polishTeamsChatDraft({ draft, conversation, signal } = {}) {
+  const text = String(draft || "").trim();
+  if (!text) {
+    return { ok: false, error: "empty_draft" };
+  }
+
+  const { model, hasKey } = getOpenAiConfig();
+  if (!hasKey) {
+    return {
+      ok: true,
+      polished: text,
+      usedAi: false,
+      note: "Returned draft as-is (add OpenAI key in Settings to polish with AI).",
+    };
+  }
+
+  try {
+    const json = await openaiJson({
+      body: {
+        model,
+        temperature: 0.3,
+        messages: [
+          {
+            role: "system",
+            content: getAiPrompt("teamsChat"),
+          },
+          {
+            role: "user",
+            content: [
+              conversation ? `Teams conversation: ${conversation}` : "Teams conversation: (unknown)",
+              "",
+              "Draft message to send:",
+              text,
+            ].join("\n"),
+          },
+        ],
+      },
+      signal,
+      feature: "teams_chat_refine",
+    });
+    const polished = String(json.choices?.[0]?.message?.content || "")
+      .trim()
+      .replace(/^["']|["']$/g, "");
+    if (!polished) {
+      return {
+        ok: true,
+        polished: text,
+        usedAi: false,
+        note: "AI returned empty; using draft.",
+      };
+    }
+    return { ok: true, polished, usedAi: true, model };
+  } catch (err) {
+    return {
+      ok: true,
+      polished: text,
+      usedAi: false,
+      note: err?.message || "AI polish failed; using draft.",
+    };
+  }
+}
+
+async function proposePastWorkSearch({
+  issueKey = "",
+  summary = "",
+  description = "",
+  snippet = "",
+  signal,
+} = {}) {
+  const { parsePastWorkSearchJson } = require("./past-work-ai");
+  const empty = { ok: true, usedAi: false, textQuery: "", keywords: [] };
+  const { model, hasKey } = getOpenAiConfig();
+  if (!hasKey) return empty;
+  const story = [issueKey, summary, description, snippet].map((p) => String(p || "").trim()).filter(Boolean);
+  if (!story.length) return empty;
+  try {
+    const json = await openaiJson({
+      body: {
+        model,
+        temperature: 0.1,
+        messages: [
+          { role: "system", content: getAiPrompt("pastWorkJql") },
+          {
+            role: "user",
+            content: [
+              issueKey ? `Current ticket: ${issueKey}` : "Current ticket: (unknown)",
+              summary ? `Summary: ${String(summary).slice(0, 240)}` : "",
+              description ? `Description: ${String(description).slice(0, 600)}` : "",
+              snippet ? `Screen/snippet: ${String(snippet).slice(0, 400)}` : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          },
+        ],
+      },
+      signal,
+      feature: "past_work_jql",
+    });
+    const parsed = parsePastWorkSearchJson(json.choices?.[0]?.message?.content || "");
+    return { ok: true, usedAi: Boolean(parsed.textQuery), ...parsed, model };
+  } catch {
+    return empty;
+  }
+}
+
+async function rankPastWorkRelated({
+  issueKey = "",
+  summary = "",
+  description = "",
+  snippet = "",
+  candidates = [],
+  signal,
+} = {}) {
+  const { parsePastWorkRankJson } = require("./past-work-ai");
+  const list = (Array.isArray(candidates) ? candidates : [])
+    .map((item) => ({
+      key: String(item?.key || item || "").trim(),
+      summary: String(item?.summary || "").trim().slice(0, 160),
+      source: String(item?.source || "").trim(),
+    }))
+    .filter((item) => item.key)
+    .slice(0, 24);
+  const empty = { ok: true, usedAi: false, related: [] };
+  if (!list.length) return empty;
+  const { model, hasKey } = getOpenAiConfig();
+  if (!hasKey) return empty;
+  try {
+    const json = await openaiJson({
+      body: {
+        model,
+        temperature: 0.1,
+        messages: [
+          { role: "system", content: getAiPrompt("pastWorkRank") },
+          {
+            role: "user",
+            content: [
+              issueKey ? `Current ticket: ${issueKey}` : "Current ticket: (unknown)",
+              summary ? `Summary: ${String(summary).slice(0, 240)}` : "",
+              description ? `Description: ${String(description).slice(0, 500)}` : "",
+              snippet ? `Screen/snippet: ${String(snippet).slice(0, 300)}` : "",
+              "Candidates (use only these keys):",
+              JSON.stringify(list),
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          },
+        ],
+      },
+      signal,
+      feature: "past_work_rank",
+    });
+    const parsed = parsePastWorkRankJson(json.choices?.[0]?.message?.content || "", list);
+    return { ok: true, usedAi: parsed.related.length > 0, related: parsed.related, model };
+  } catch {
+    return empty;
+  }
+}
+
+async function summarizePastWorkCommentTickets({
+  jiraKey = "",
+  summary = "",
+  description = "",
+  commentText = "",
+  tickets = [],
+  signal,
+} = {}) {
+  const { parsePastWorkTicketSummaryJson, commentSnippetsForTickets } = require("./past-work-ai");
+  const list = (Array.isArray(tickets) ? tickets : [])
+    .map((item) => String(item?.key || item || "").trim())
+    .filter(Boolean)
+    .slice(0, 40);
+  const empty = { ok: true, usedAi: false, tickets: [] };
+  if (!list.length) return empty;
+  const { model, hasKey } = getOpenAiConfig();
+  if (!hasKey) return { ok: false, error: "Add an API key in Settings to refine past-work summaries.", tickets: [] };
+  const snippets = commentSnippetsForTickets(commentText, list);
+  try {
+    const json = await openaiJson({
+      body: {
+        model,
+        temperature: 0.1,
+        messages: [
+          { role: "system", content: getAiPrompt("pastWorkTicketSummary") },
+          {
+            role: "user",
+            content: [
+              `Jira ticket: ${jiraKey || "(unknown)"}`,
+              summary ? `Jira summary: ${String(summary).slice(0, 240)}` : "",
+              description ? `Jira description: ${String(description).slice(0, 500)}` : "",
+              `Comment ticket numbers: ${list.join(", ")}`,
+              snippets.some((row) => row.snippet)
+                ? `Comment snippets:\n${JSON.stringify(snippets)}`
+                : commentText
+                  ? `Comments: ${String(commentText).slice(0, 2500)}`
+                  : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          },
+        ],
+      },
+      signal,
+      feature: "past_work_ticket_summary",
+    });
+    const parsed = parsePastWorkTicketSummaryJson(json.choices?.[0]?.message?.content || "", list);
+    return { ok: true, usedAi: parsed.tickets.length > 0, tickets: parsed.tickets, model };
+  } catch (err) {
+    return { ok: false, error: err?.message || "Could not refine comment ticket summaries.", tickets: [] };
+  }
+}
+
 async function refineMeetingMinutes({ transcript, meeting } = {}) {
   const raw = String(transcript || "").trim();
   if (!raw) {
@@ -1894,6 +2130,111 @@ async function readTeamsMeetingFrame({ dataUrl } = {}) {
   }
 }
 
+function parseMailActionsJson(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return [];
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  let candidate = (fenced ? fenced[1] : raw).trim();
+  const tryParse = (value) => {
+    try {
+      const obj = JSON.parse(value);
+      const rows = Array.isArray(obj)
+        ? obj
+        : Array.isArray(obj?.items)
+          ? obj.items
+          : Array.isArray(obj?.actions)
+            ? obj.actions
+            : [];
+      return rows
+        .map((row) => {
+          if (!row || typeof row !== "object") return null;
+          const title = String(row.title || row.task || row.requestedAction || "").trim();
+          if (!title) return null;
+          const due = String(row.dueKind || row.due || "week").trim().toLowerCase();
+          return {
+            messageId: String(row.messageId || row.id || "").trim(),
+            title,
+            owner: String(row.owner || "").trim(),
+            dueKind: due === "today" || due === "none" || due === "week" ? due : "week",
+            subject: String(row.subject || "").trim(),
+            from: String(row.from || row.sender || "").trim(),
+            webLink: String(row.webLink || "").trim(),
+            receivedDateTime: String(row.receivedDateTime || row.date || "").trim(),
+          };
+        })
+        .filter(Boolean);
+    } catch {
+      return null;
+    }
+  };
+  const direct = tryParse(candidate);
+  if (direct) return direct;
+  const braced = candidate.match(/\{[\s\S]*\}/);
+  if (braced) {
+    const nested = tryParse(braced[0]);
+    if (nested) return nested;
+  }
+  return [];
+}
+
+function compactMailForModel(messages = []) {
+  return (messages || [])
+    .slice(0, 40)
+    .map((msg, i) => {
+      const body = String(msg.body || "").replace(/\s+/g, " ").trim().slice(0, 700);
+      return [
+        `[${i + 1}] messageId=${msg.id || ""}`,
+        `From: ${msg.fromName || ""} <${msg.fromAddress || ""}>`,
+        `Date: ${msg.receivedDateTime || ""}`,
+        `Subject: ${msg.subject || ""}`,
+        `Flagged: ${msg.flagged ? "yes" : "no"} Importance: ${msg.importance || ""} Unread: ${msg.isRead ? "no" : "yes"}`,
+        `Body: ${body}`,
+      ].join("\n");
+    })
+    .join("\n\n");
+}
+
+async function extractMailActionItems({ messages = [], accountName = "" } = {}) {
+  const rows = Array.isArray(messages) ? messages : [];
+  if (!rows.length) return { ok: true, usedAi: false, items: [] };
+  const { model, hasKey } = getOpenAiConfig();
+  if (!hasKey) return { ok: true, usedAi: false, items: [] };
+  try {
+    const who = String(accountName || "").trim() || "the operator";
+    const json = await openaiJson({
+      body: {
+        model,
+        stream: false,
+        temperature: 0,
+        max_tokens: 1400,
+        messages: [
+          { role: "system", content: getAiPrompt("mailActions") },
+          {
+            role: "user",
+            content: `Operator: ${who}\n\nInbox mail:\n\n${compactMailForModel(rows)}`,
+          },
+        ],
+      },
+      feature: "mail_actions",
+    });
+    const items = parseMailActionsJson(json.choices?.[0]?.message?.content || "");
+    const byId = new Map(rows.map((m) => [m.id, m]));
+    const filled = items.map((item) => {
+      const src = byId.get(item.messageId) || {};
+      return {
+        ...item,
+        subject: item.subject || src.subject || "",
+        from: item.from || src.fromName || src.fromAddress || "",
+        webLink: item.webLink || src.webLink || "",
+        receivedDateTime: item.receivedDateTime || src.receivedDateTime || "",
+      };
+    });
+    return { ok: true, usedAi: true, items: filled, model };
+  } catch (err) {
+    return { ok: false, usedAi: false, items: [], error: err?.message || "Mail extract failed." };
+  }
+}
+
 module.exports = {
   streamChat,
   buildChatSystemPrompt,
@@ -1911,6 +2252,10 @@ module.exports = {
   repairFailedStep,
   judgeValueMatch,
   polishJiraCommentDraft,
+  polishTeamsChatDraft,
+  proposePastWorkSearch,
+  rankPastWorkRelated,
+  summarizePastWorkCommentTickets,
   attachRecordedActivity,
   explainPage,
   getExplainPageSystem,
@@ -1937,5 +2282,7 @@ module.exports = {
   formatMailStoryBlock,
   formatMailComment,
   fallbackMailDraft,
+  extractMailActionItems,
+  parseMailActionsJson,
   AGENT_TOOLS,
 };

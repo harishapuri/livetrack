@@ -1,0 +1,42 @@
+{
+  "id": "servicenow-change-request-search",
+  "name": "ServiceNow — Search change requests",
+  "description": "On the logged-in ServiceNow tab, open the change request list filtered by CHG number or keywords. Does not call the ServiceNow Table API.",
+  "targetType": "web",
+  "formMatch": [
+    "service-now.com",
+    "servicenow.com",
+    "change_request",
+    "ServiceNow"
+  ],
+  "steps": [
+    {
+      "id": "search-query",
+      "action": "fill",
+      "label": "Change request number or keywords",
+      "selector": "#sysparm_search, input[name='sysparm_search']",
+      "selectors": [
+        "#sysparm_search",
+        "input[name='sysparm_search']",
+        "input[aria-label='Search' i]",
+        "input[placeholder*='Search' i]"
+      ],
+      "findByLabel": ["Search"],
+      "valueFrom": "query",
+      "mandatory": true,
+      "fallbackNavigate": "servicenow-change-request",
+      "navigates": true,
+      "waitAfter": {
+        "urlIncludes": "change_request",
+        "timeoutMs": 20000
+      }
+    },
+    {
+      "id": "highlight-results",
+      "action": "highlight",
+      "label": "Review matching change requests",
+      "selector": "table[id*='change_request'] tbody tr a, table.list_table tbody tr a, a[href*='change_request.do']",
+      "optional": true
+    }
+  ]
+}

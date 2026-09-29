@@ -26,6 +26,8 @@ let focusCardKey = null;
 let studioMode = "edit";
 /** Original card identity while editing (before rename/move) */
 let editingKey = null; // "LOB/id"
+/** Step indexes currently expanded in the SOP editor */
+let openSteps = new Set();
 
 function apiBase() {
   if (location.protocol === "http:" || location.protocol === "https:") {
@@ -84,7 +86,10 @@ function writeDataJson(obj) {
 
 function renderFieldEditor(data) {
   const el = document.getElementById("fieldEditor");
-  const keys = Object.keys(data || {});
+  const keys = Object.keys(data || {}).filter((k) => {
+    const v = data[k];
+    return v == null || typeof v !== "object";
+  });
   if (!keys.length) {
     el.innerHTML = "";
     return;
@@ -151,8 +156,58 @@ function parseCsv(raw) {
     .filter(Boolean);
 }
 
+function cleanedChoiceList(values) {
+  if (!Array.isArray(values)) return [];
+  return values.map((v) => String(v ?? "").trim()).filter(Boolean);
+}
+
+function fillModeOf(step) {
+  if (step?.fillMode === "several" || step?.fillMode === "one") return step.fillMode;
+  return cleanedChoiceList(step?.allowedValues).length >= 2 ? "several" : "one";
+}
+
+function oneFillValue(step) {
+  const choices = cleanedChoiceList(step?.allowedValues);
+  if (choices.length) return choices[0];
+  return step?.value != null ? String(step.value) : "";
+}
+
+function fillChoicesMarkup(step, index) {
+  const mode = fillModeOf(step);
+  const oneValue = mode === "one" ? oneFillValue(step) : "";
+  const rows = Array.isArray(step.allowedValues) ? step.allowedValues.map((v) => String(v ?? "")) : [];
+  const choiceRows = rows.length ? rows : [""];
+  const several = mode === "several"
+    ? `<div class="choice-list">
+        ${choiceRows
+          .map(
+            (value, rowIndex) => `<div class="choice-row">
+              <input data-choice-index="${rowIndex}" value="${esc(value)}" placeholder="Choice ${rowIndex + 1}" />
+              <button type="button" class="btn-ghost btn-sm" data-choice-remove="${rowIndex}" title="Remove choice">Remove</button>
+            </div>`
+          )
+          .join("")}
+        <button type="button" class="btn-ghost btn-sm" data-choice-add>Add choice</button>
+      </div>`
+    : `<label><span>Value</span><input data-fill-one value="${esc(oneValue)}" placeholder="Value to fill" /></label>`;
+  return `<div class="fill-choices">
+      <span class="fill-choices-title">Choices</span>
+      <p class="hint">LiveTrack fills the first choice. Renaming the field keeps these. Leave empty to use case data.</p>
+      <div class="fill-mode">
+        <label class="check-inline"><input type="radio" name="fill-mode-${index}" data-fill-mode="one" ${
+          mode === "one" ? "checked" : ""
+        } /> One value</label>
+        <label class="check-inline"><input type="radio" name="fill-mode-${index}" data-fill-mode="several" ${
+          mode === "several" ? "checked" : ""
+        } /> Several choices</label>
+      </div>
+      ${several}
+    </div>`;
+}
+
 function renderSteps() {
   const list = document.getElementById("stepsList");
+  syncRemoveChecksButtons();
   if (!steps.length) {
     list.innerHTML = `<p class="hint">No steps loaded — pick an SOP and click Reload, or add a step.</p>`;
     return;
@@ -161,12 +216,23 @@ function renderSteps() {
   list.innerHTML = steps
     .map((step, index) => {
       const action = step.action || "click";
+      const shotQs = new URLSearchParams();
+      if (step.screenshotPath) shotQs.set("path", step.screenshotPath);
+      const lob = document.getElementById("cardLob")?.value?.trim();
+      const cardId = document.getElementById("cardId")?.value?.trim();
+      if (lob) shotQs.set("lob", lob);
+      if (cardId) shotQs.set("cardId", cardId);
+      const thumb = step.screenshotPath
+        ? `<img class="step-thumb" alt="" src="${esc(`${apiBase()}/api/step-shots?${shotQs}`)}" />`
+        : "";
       return `
-    <div class="step-row" data-index="${index}">
+    <div class="step-row${openSteps.has(index) ? " is-open" : ""}" data-index="${index}">
       <div class="step-head">
+        ${thumb}
+        <button type="button" class="fold-btn" data-toggle-step aria-expanded="${openSteps.has(index) ? "true" : "false"}" title="${openSteps.has(index) ? "Collapse step" : "Expand step"}"></button>
         <span class="num">#${index + 1}</span>
         <select data-k="action">
-          ${["click", "fill", "check", "highlight", "wait"]
+          ${["click", "fill", "check", "select", "highlight", "wait"]
             .map(
               (a) =>
                 `<option value="${a}" ${action === a ? "selected" : ""}>${a}</option>`
@@ -192,9 +258,19 @@ function renderSteps() {
         <label><span>findByLabel</span><input data-k="findByLabel" value="${esc(
           step.findByLabel || ""
         )}" placeholder="Email" /></label>
-        <label><span>value (literal)</span><input data-k="value" value="${esc(
-          step.value == null ? "" : String(step.value)
-        )}" placeholder="optional fixed value" /></label>
+        <label class="span-2"><span>finder</span><input data-k="finder" value="${esc(
+          step.finder || ""
+        )}" placeholder="Website label if the LiveTrack name does not match" /></label>
+        <label class="span-2"><span>GUI id</span><input data-k="guiId" value="${esc(
+          step.guiId || ""
+        )}" placeholder="#fieldId or [name=&quot;field&quot;]" /></label>
+        ${
+          action === "fill" || action === "check" || action === "select"
+            ? fillChoicesMarkup(step, index)
+            : `<label><span>value (literal)</span><input data-k="value" value="${esc(
+                step.value == null ? "" : String(step.value)
+              )}" placeholder="optional fixed value" /></label>`
+        }
         <label class="check-inline"><input type="checkbox" data-k="mandatory" ${
           step.mandatory ? "checked" : ""
         } /> mandatory</label>
@@ -204,6 +280,9 @@ function renderSteps() {
         <label class="check-inline"><input type="checkbox" data-k="navigates" ${
           step.navigates ? "checked" : ""
         } /> navigates</label>
+        <label class="span-2"><span>LiveTrack explanation</span><textarea data-k="explanation" rows="2" placeholder="What to say for this step">${esc(
+          step.explanation || ""
+        )}</textarea></label>
       </div>
     </div>`;
     })
@@ -211,6 +290,17 @@ function renderSteps() {
 
   list.querySelectorAll(".step-row").forEach((row) => {
     const index = Number(row.getAttribute("data-index"));
+    row.querySelector("[data-toggle-step]")?.addEventListener("click", () => {
+      if (openSteps.has(index)) openSteps.delete(index);
+      else openSteps.add(index);
+      const open = openSteps.has(index);
+      row.classList.toggle("is-open", open);
+      const btn = row.querySelector("[data-toggle-step]");
+      if (btn) {
+        btn.setAttribute("aria-expanded", open ? "true" : "false");
+        btn.title = open ? "Collapse step" : "Expand step";
+      }
+    });
     row.querySelectorAll("[data-k]").forEach((el) => {
       const apply = () => {
         const key = el.getAttribute("data-k");
@@ -221,9 +311,78 @@ function renderSteps() {
         }
         markSopDirty();
         if (key === "action") renderSteps();
+        if (key === "mandatory") syncMasterMandatory();
       };
       el.addEventListener("input", apply);
       el.addEventListener("change", apply);
+    });
+    row.querySelectorAll("[data-fill-mode]").forEach((el) => {
+      el.addEventListener("change", () => {
+        const mode = el.getAttribute("data-fill-mode") === "several" ? "several" : "one";
+        const current = cleanedChoiceList(steps[index].allowedValues);
+        steps[index].fillMode = mode;
+        if (mode === "several") {
+          const seed = current.length ? current : oneFillValue(steps[index]).trim() ? [oneFillValue(steps[index]).trim()] : [];
+          steps[index].allowedValues = seed.length ? [...seed, ""] : [""];
+        } else {
+          const first = current[0] || "";
+          steps[index].value = first;
+          steps[index].allowedValues = first ? [first] : [];
+        }
+        markSopDirty();
+        renderSteps();
+        const next = document
+          .getElementById("stepsList")
+          ?.querySelector(`.step-row[data-index="${index}"] [data-fill-one], .step-row[data-index="${index}"] [data-choice-index]`);
+        next?.focus();
+      });
+    });
+    row.querySelector("[data-fill-one]")?.addEventListener("input", (event) => {
+      const text = String(event.target.value || "");
+      steps[index].fillMode = "one";
+      steps[index].value = text;
+      steps[index].allowedValues = text.trim() ? [text] : [];
+      markSopDirty();
+    });
+    row.querySelectorAll("[data-choice-index]").forEach((el) => {
+      el.addEventListener("input", () => {
+        const rowIndex = Number(el.getAttribute("data-choice-index"));
+        const rows = Array.isArray(steps[index].allowedValues)
+          ? [...steps[index].allowedValues]
+          : [];
+        while (rows.length <= rowIndex) rows.push("");
+        rows[rowIndex] = el.value;
+        steps[index].fillMode = "several";
+        steps[index].allowedValues = rows;
+        steps[index].value = cleanedChoiceList(rows)[0] || "";
+        markSopDirty();
+      });
+    });
+    row.querySelector("[data-choice-add]")?.addEventListener("click", () => {
+      const rows = Array.isArray(steps[index].allowedValues) ? [...steps[index].allowedValues] : [];
+      rows.push("");
+      steps[index].fillMode = "several";
+      steps[index].allowedValues = rows;
+      markSopDirty();
+      openSteps.add(index);
+      renderSteps();
+      const inputs = document
+        .getElementById("stepsList")
+        ?.querySelectorAll(`.step-row[data-index="${index}"] [data-choice-index]`);
+      inputs?.[inputs.length - 1]?.focus();
+    });
+    row.querySelectorAll("[data-choice-remove]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const rowIndex = Number(btn.getAttribute("data-choice-remove"));
+        const rows = Array.isArray(steps[index].allowedValues) ? [...steps[index].allowedValues] : [];
+        rows.splice(rowIndex, 1);
+        steps[index].fillMode = "several";
+        steps[index].allowedValues = rows.length ? rows : [""];
+        steps[index].value = cleanedChoiceList(steps[index].allowedValues)[0] || "";
+        markSopDirty();
+        openSteps.add(index);
+        renderSteps();
+      });
     });
   });
 
@@ -252,6 +411,27 @@ function renderSteps() {
       renderSteps();
     });
   });
+  syncMasterMandatory();
+}
+
+function syncMasterMandatory() {
+  const el = document.getElementById("chkAllMandatory");
+  const btn = document.getElementById("btnUncheckMandatory");
+  const total = steps.length;
+  const on = steps.filter((s) => s.mandatory).length;
+  if (el) {
+    el.checked = total > 0 && on === total;
+    el.indeterminate = on > 0 && on < total;
+  }
+  if (btn) btn.disabled = on === 0;
+}
+
+function setAllMandatory(on) {
+  steps.forEach((s) => {
+    s.mandatory = Boolean(on);
+  });
+  markSopDirty();
+  renderSteps();
 }
 
 function markSopDirty() {
@@ -262,6 +442,8 @@ function markSopDirty() {
 }
 
 function normalizeStepsForSave() {
+  const impl = globalThis.LtNormalizeSteps?.normalizeStepsForSave;
+  if (typeof impl === "function") return impl(steps);
   return steps.map((s, i) => {
     const action = s.action || "click";
     const id = slugify(s.id || s.label || `step-${i + 1}`) || `step-${i + 1}`;
@@ -271,33 +453,105 @@ function normalizeStepsForSave() {
       label: String(s.label || id).trim() || id,
     };
     if (s.selector) step.selector = String(s.selector).trim();
-    if (action === "fill" && s.valueFrom) step.valueFrom = String(s.valueFrom).trim();
+    const keepsChoices = action === "fill" || action === "check" || action === "select";
+    if (keepsChoices && s.valueFrom) step.valueFrom = String(s.valueFrom).trim();
     if (action === "click") {
       const texts = parseFindByText(s.findByText);
       if (texts.length) step.findByText = texts;
     }
-    if (s.findByLabel) step.findByLabel = String(s.findByLabel).trim();
-    if (s.value != null && s.value !== "") step.value = s.value;
+    const labelHints = Array.isArray(s.findByLabel)
+      ? s.findByLabel.map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+    if (labelHints.length) step.findByLabel = labelHints[0];
+    else if (s.findByLabel) step.findByLabel = String(s.findByLabel).trim();
+    const finder =
+      String(s.finder || "").replace(/\s+/g, " ").trim() ||
+      labelHints.find((item) => item.toLowerCase() !== String(step.label || "").trim().toLowerCase()) ||
+      "";
+    if (finder && finder.toLowerCase() !== String(step.label || "").trim().toLowerCase()) {
+      step.finder = finder;
+    }
+    const guiId = String(s.guiId || s.selector || "").trim();
+    if (
+      guiId &&
+      (guiId.startsWith("#") || /\[(name|id|data-automation-id|data-testid|data-test)=/i.test(guiId)) &&
+      !/^(input|select|textarea|button)\[type=/i.test(guiId)
+    ) {
+      step.guiId = guiId;
+      step.selector = guiId;
+    }
+    const allowed = Array.isArray(s.allowedValues)
+      ? s.allowedValues.map((v) => String(v ?? "").trim()).filter(Boolean)
+      : null;
+    if (keepsChoices && allowed) {
+      if (allowed.length) {
+        step.allowedValues = allowed;
+        step.value = allowed[0];
+      }
+    } else if (keepsChoices && s.value != null && String(s.value).trim()) {
+      const literal = String(s.value).trim();
+      step.allowedValues = [literal];
+      step.value = literal;
+    } else if (s.value != null && s.value !== "") {
+      step.value = s.value;
+    }
     if (s.waitAfter && typeof s.waitAfter === "object") step.waitAfter = s.waitAfter;
     if (s.navigates) step.navigates = true;
     if (s.mandatory) step.mandatory = true;
     if (s.optional) step.optional = true;
-    if (Array.isArray(s.allowedValues) && s.allowedValues.length) {
-      step.allowedValues = s.allowedValues;
-    }
+    const explanation = String(s.explanation || "").replace(/\s+/g, " ").trim();
+    if (explanation) step.explanation = explanation;
+    const screenshotPath = String(s.screenshotPath || "").trim();
+    if (screenshotPath) step.screenshotPath = screenshotPath;
     return step;
   });
 }
 
+function scalarCaseValue(data, key) {
+  if (!data || key == null || key === "") return "";
+  if (!Object.prototype.hasOwnProperty.call(data, key)) return "";
+  const raw = data[key];
+  if (raw == null || typeof raw === "object") return "";
+  return String(raw).trim();
+}
+
 function applySopDraft(sop) {
   sopDraft = sop ? { ...sop } : null;
+  openSteps = new Set();
+  let caseData = {};
+  try {
+    caseData = parseDataJson();
+  } catch {
+    caseData = {};
+  }
+  const sample = sop?.sampleData && typeof sop.sampleData === "object" ? sop.sampleData : {};
   steps = Array.isArray(sop?.steps)
-    ? sop.steps.map((s) => ({
-        ...s,
-        findByText: Array.isArray(s.findByText)
-          ? s.findByText.join(", ")
-          : s.findByText || "",
-      }))
+    ? sop.steps.map((s) => {
+        const action = s.action || "click";
+        const choices = cleanedChoiceList(s.allowedValues);
+        const literal = s.value != null ? String(s.value).trim() : "";
+        const keepsChoices = action === "fill" || action === "check" || action === "select";
+        const recorded =
+          scalarCaseValue(caseData, s.id) ||
+          scalarCaseValue(sample, s.id) ||
+          scalarCaseValue(caseData, s.valueFrom) ||
+          scalarCaseValue(sample, s.valueFrom) ||
+          literal;
+        const allowedValues = keepsChoices
+          ? choices.length
+            ? choices
+            : recorded
+              ? [recorded]
+              : []
+          : s.allowedValues;
+        return {
+          ...s,
+          findByText: Array.isArray(s.findByText) ? s.findByText.join(", ") : s.findByText || "",
+          fillMode: keepsChoices && allowedValues.length >= 2 ? "several" : "one",
+          allowedValues,
+          value: keepsChoices && allowedValues.length ? allowedValues[0] : s.value,
+        };
+      })
     : [];
   document.getElementById("newSopName").value = sop?.name || "";
   if (!document.getElementById("newSopId").value && sop?.id) {
@@ -319,6 +573,31 @@ async function loadSopById(sopId) {
     if (!document.getElementById("cardFormUrl").value && sop.formUrl) {
       document.getElementById("cardFormUrl").value = sop.formUrl;
     }
+    if (sop.sampleData && typeof sop.sampleData === "object") {
+      let current = {};
+      try {
+        current = parseDataJson();
+      } catch {
+        current = {};
+      }
+      const clicks = Array.isArray(current.clicks) ? current.clicks : [];
+      if (!clicks.length && Array.isArray(sop.sampleData.clicks)) {
+        writeDataJson({
+          ...sop.sampleData,
+          ...current,
+          ticket: current.ticket || sop.sampleData.ticket || null,
+          startUrl: current.startUrl || sop.sampleData.startUrl || sop.formUrl || "",
+          clicks: sop.sampleData.clicks,
+        });
+      } else if (!current.ticket && !current.startUrl) {
+        writeDataJson({
+          ticket: sop.sampleData.ticket || sop.ticket || null,
+          startUrl: sop.sampleData.startUrl || sop.formUrl || "",
+          clicks: clicks.length ? clicks : sop.sampleData.clicks || [],
+          ...current,
+        });
+      }
+    }
     setStatus(status, `Loaded ${sop.steps?.length || 0} steps from ${sop.id}`, "ok");
   } catch (err) {
     applySopDraft(null);
@@ -336,6 +615,9 @@ function addStep(action) {
       selector: "",
       valueFrom: "",
       findByText: "",
+      fillMode: "one",
+      allowedValues: [],
+      value: "",
     });
   } else if (action === "check") {
     steps.push({
@@ -357,8 +639,139 @@ function addStep(action) {
     });
   }
   markSopDirty();
+  openSteps.add(steps.length - 1);
   renderSteps();
   setStatus(document.getElementById("sopStatus"), `Added ${action} step`, "ok");
+}
+
+function isCheckStep(step) {
+  const action = String(step?.action || "").toLowerCase();
+  if (action === "check") return true;
+  const labels = []
+    .concat(step?.findCheckboxByLabel || [])
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+  return labels.length > 0;
+}
+
+function syncRemoveChecksButtons() {
+  const busy = Boolean(document.getElementById("btnRemoveChecksTop")?.dataset.busy);
+  for (const id of ["btnRemoveChecks", "btnRemoveChecksTop"]) {
+    const el = document.getElementById(id);
+    if (el && !busy) el.disabled = false;
+  }
+}
+
+function setRemoveChecksStatus(msg, kind) {
+  setStatus(document.getElementById("studioTopStatus"), msg, kind);
+  setStatus(document.getElementById("sopStatus"), msg, kind);
+}
+
+function setRemoveChecksBusy(busy) {
+  for (const id of ["btnRemoveChecks", "btnRemoveChecksTop"]) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.disabled = Boolean(busy);
+    if (busy) el.dataset.busy = "1";
+    else delete el.dataset.busy;
+  }
+}
+
+async function ensureStudioCardLoaded() {
+  if (steps.length && (editingKey || studioMode === "create")) return true;
+  const sel = document.getElementById("sourceCard")?.value;
+  if (sel) {
+    await loadSelectedSource();
+    return steps.length > 0 || Boolean(editingKey);
+  }
+  const sopId = document.getElementById("cardSopId")?.value;
+  if (sopId) {
+    await loadSopById(sopId);
+    return steps.length > 0;
+  }
+  return false;
+}
+
+function dropCheckValuesFromData(removed) {
+  const keys = new Set(
+    removed
+      .map((s) => String(s.valueFrom || s.id || "").trim())
+      .filter(Boolean)
+  );
+  if (!keys.size) return;
+  let data;
+  try {
+    data = parseDataJson();
+  } catch {
+    return;
+  }
+  let changed = false;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(data, key)) {
+      delete data[key];
+      changed = true;
+    }
+  }
+  if (changed) writeDataJson(data);
+}
+
+async function removeCheckStepsAndPublish() {
+  setRemoveChecksBusy(true);
+  try {
+    if (typeof window.dashNavigate === "function") {
+      const hash = String(location.hash || "");
+      if (!hash.includes("/studio")) window.dashNavigate("studio", { push: true });
+    }
+    const ready = await ensureStudioCardLoaded();
+    if (!ready && !steps.length) {
+      setRemoveChecksStatus("Load a queue card first, then remove checks", "err");
+      return;
+    }
+    const checks = steps.filter(isCheckStep);
+    if (!checks.length) {
+      setRemoveChecksStatus("No check (Yes/No) steps to remove", "ok");
+      return;
+    }
+    const kept = steps.filter((s) => !isCheckStep(s));
+    if (!kept.length) {
+      setRemoveChecksStatus(
+        "That would remove every step. Keep at least one fill, click, or navigate step.",
+        "err"
+      );
+      return;
+    }
+    const n = checks.length;
+    if (
+      !confirm(
+        `Remove ${n} Yes/No check step${n === 1 ? "" : "s"} and keep ${kept.length} other step${
+          kept.length === 1 ? "" : "s"
+        }? This will save and publish the SOP.`
+      )
+    ) {
+      return;
+    }
+    steps = kept;
+    openSteps = new Set();
+    dropCheckValuesFromData(checks);
+    const mode = document.getElementById("sopSaveMode");
+    if (mode) mode.value = studioMode === "edit" && editingKey ? "update" : "new";
+    markSopDirty();
+    renderSteps();
+    setRemoveChecksStatus(`Removed ${n} check step${n === 1 ? "" : "s"} — publishing…`, "ok");
+    if (studioMode === "edit" && editingKey) {
+      await saveExistingCard({ publish: true });
+    } else {
+      await createCard({ publish: true });
+    }
+    const createStatus = document.getElementById("createStatus");
+    setRemoveChecksStatus(
+      createStatus?.textContent || "Published",
+      createStatus?.classList.contains("err") ? "err" : "ok"
+    );
+  } finally {
+    setRemoveChecksBusy(false);
+    syncRemoveChecksButtons();
+  }
 }
 
 function suggestNewSopId() {
@@ -370,6 +783,7 @@ function suggestNewSopId() {
 }
 
 function setMode(mode) {
+  resetDeleteArm();
   studioMode = mode === "create" ? "create" : "edit";
   document.getElementById("modeEdit").classList.toggle("active", studioMode === "edit");
   document.getElementById("modeCreate").classList.toggle("active", studioMode === "create");
@@ -591,11 +1005,19 @@ async function openCard(key, { asCopy }) {
     }
   }
   await fillFormFromCard(card, { asCopy });
-  document.getElementById("sourceCard").value = key;
+  const resolvedKey = `${card.lob}/${card.id}`;
+  const sel = document.getElementById("sourceCard");
+  if (![...sel.options].some((o) => o.value === resolvedKey)) {
+    const opt = document.createElement("option");
+    opt.value = resolvedKey;
+    opt.textContent = `${card.lob} / ${card.id} — ${card.title || card.id}`;
+    sel.appendChild(opt);
+  }
+  sel.value = resolvedKey;
   document.getElementById("sourceMeta").hidden = false;
   document.getElementById("sourceMeta").innerHTML = `${
     asCopy ? "Template" : "Editing"
-  } <strong>${esc(card.title || id)}</strong> · <code>${esc(key)}</code>`;
+  } <strong>${esc(card.title || card.id)}</strong> · <code>${esc(asCopy ? key : resolvedKey)}</code>`;
   setStatus(
     document.getElementById("sourceStatus"),
     asCopy ? "Loaded as clone template — change id, then Create" : "Loaded for edit — Save changes",
@@ -636,10 +1058,31 @@ function fillSopSelect(sops) {
   if (keep) sel.value = keep;
 }
 
+async function retargetFocusCard(cards) {
+  if (!focusCardKey) return;
+  if (cards.some((c) => `${c.lob}/${c.id}` === focusCardKey)) return;
+  const slash = focusCardKey.indexOf("/");
+  if (slash <= 0) return;
+  const lob = focusCardKey.slice(0, slash);
+  const id = focusCardKey.slice(slash + 1);
+  try {
+    const res = await api(
+      `/api/queue-cards/${encodeURIComponent(lob)}/${encodeURIComponent(id)}`
+    );
+    const resolved = `${res.card.lob}/${res.card.id}`;
+    if (!cards.some((c) => `${c.lob}/${c.id}` === resolved)) return;
+    focusCardKey = resolved;
+    if (editingKey && editingKey !== resolved) editingKey = resolved;
+  } catch {
+    /* keep the empty-state message */
+  }
+}
+
 async function refreshLists() {
   const [queue, sops] = await Promise.all([api("/api/queue-cards"), api("/api/sops")]);
   cardsCache = queue.cards || [];
   sopsCache = sops.sops || [];
+  await retargetFocusCard(cardsCache);
   fillSourceSelect(cardsCache);
   fillSopSelect(sopsCache);
   renderCardsTable(cardsCache);
@@ -658,9 +1101,20 @@ async function loadSelectedSource() {
   await openCard(val, { asCopy: studioMode === "create" });
 }
 
+function offlinePublishMessage(text) {
+  return /not running|not open/i.test(String(text || ""));
+}
+
 async function publishLiveAct() {
   try {
     const res = await api("/api/publish-liveact", { method: "POST", body: "{}" });
+    if (res.offline) {
+      return {
+        ok: true,
+        offline: true,
+        message: res.note || "LiveTrack is not open; it will load this update when it starts.",
+      };
+    }
     if (!res.ok && res.liveAct === false) {
       return { ok: false, message: res.error || "LiveTrack not updated" };
     }
@@ -673,16 +1127,28 @@ async function publishLiveAct() {
     }
     return { ok: true, message, cardIds: res.cardIds || [] };
   } catch (err) {
-    return { ok: false, message: err.message || "Publish failed" };
+    const message = err.message || "Publish failed";
+    if (offlinePublishMessage(message)) {
+      return {
+        ok: true,
+        offline: true,
+        message: "LiveTrack is not open; it will load this update when it starts.",
+      };
+    }
+    return { ok: false, message };
   }
 }
 
+let cardSaveInFlight = false;
+
 async function saveExistingCard({ publish = false } = {}) {
   const status = document.getElementById("createStatus");
+  if (cardSaveInFlight) return;
   if (!editingKey) {
     setStatus(status, "Load a card in Edit mode first", "err");
     return;
   }
+  cardSaveInFlight = true;
   setStatus(status, publish ? "Saving & publishing…" : "Saving…");
   try {
     const [fromLob, fromId] = editingKey.split("/");
@@ -702,6 +1168,10 @@ async function saveExistingCard({ publish = false } = {}) {
     focusCardKey = editingKey;
     setMode("edit");
 
+    const savedLine = `Saved ${res.lob}/${res.id}${res.moved ? " (moved)" : ""}${sopMsg}`;
+    // The card is already on disk. LiveTrack's reload can take a while after the app has updated.
+    setStatus(status, savedLine, "ok");
+
     let pubMsg = "";
     if (publish) {
       const pub = await publishLiveAct();
@@ -709,13 +1179,8 @@ async function saveExistingCard({ publish = false } = {}) {
       if (pub.ok && Array.isArray(pub.cardIds) && !pub.cardIds.includes(res.id)) {
         pubMsg += ` · note: ${res.id} is not in your LiveTrack list (assignees)`;
       }
+      setStatus(status, `${savedLine}${pubMsg}`, pubMsg.includes("but") ? "err" : "ok");
     }
-
-    setStatus(
-      status,
-      `Saved ${res.lob}/${res.id}${res.moved ? " (moved)" : ""}${sopMsg}${pubMsg}`,
-      publish && pubMsg.includes("but") ? "err" : "ok"
-    );
     await refreshLists();
     const updated = cardsCache.find((c) => c.lob === res.lob && c.id === res.id);
     if (updated) await fillFormFromCard(updated, { asCopy: false });
@@ -725,11 +1190,15 @@ async function saveExistingCard({ publish = false } = {}) {
     )}</strong> · <code>${esc(editingKey)}</code>`;
   } catch (err) {
     setStatus(status, err.message, "err");
+  } finally {
+    cardSaveInFlight = false;
   }
 }
 
 async function createCard({ publish = false } = {}) {
   const status = document.getElementById("createStatus");
+  if (cardSaveInFlight) return;
+  cardSaveInFlight = true;
   setStatus(status, publish ? "Creating & publishing…" : "Creating…");
   try {
     const payload = collectCardPayload();
@@ -744,6 +1213,9 @@ async function createCard({ publish = false } = {}) {
     focusCardKey = `${res.lob}/${res.id}`;
     editingKey = focusCardKey;
 
+    const savedLine = `Created ${res.lob}/${res.id}${sopMsg}`;
+    setStatus(status, savedLine, "ok");
+
     let pubMsg = "";
     if (publish) {
       const pub = await publishLiveAct();
@@ -751,9 +1223,8 @@ async function createCard({ publish = false } = {}) {
       if (pub.ok && Array.isArray(pub.cardIds) && !pub.cardIds.includes(res.id)) {
         pubMsg += ` · note: ${res.id} is not in your LiveTrack list (assignees)`;
       }
+      setStatus(status, `${savedLine}${pubMsg}`, pubMsg.includes("but") ? "err" : "ok");
     }
-
-    setStatus(status, `Created ${res.lob}/${res.id}${sopMsg}${pubMsg}`, publish && pubMsg.includes("but") ? "err" : "ok");
     await refreshLists();
     const created = cardsCache.find((c) => c.lob === res.lob && c.id === res.id);
     if (created) await fillFormFromCard(created, { asCopy: false });
@@ -764,6 +1235,8 @@ async function createCard({ publish = false } = {}) {
     )}</strong> · <code>${esc(focusCardKey)}</code>`;
   } catch (err) {
     setStatus(status, err.message, "err");
+  } finally {
+    cardSaveInFlight = false;
   }
 }
 
@@ -775,19 +1248,39 @@ async function saveAsCopy() {
   await createCard({ publish: true });
 }
 
+let deleteArmedKey = null;
+
+function resetDeleteArm() {
+  deleteArmedKey = null;
+  const btn = document.getElementById("btnDelete");
+  if (btn) btn.textContent = "Delete card";
+}
+
 async function deleteCard() {
   const status = document.getElementById("createStatus");
   if (!editingKey) {
+    resetDeleteArm();
     setStatus(status, "Load a card in Edit mode first", "err");
     return;
   }
   const [lob, id] = editingKey.split("/");
-  if (!confirm(`Delete queue card ${lob}/${id}? This cannot be undone.`)) return;
+  if (deleteArmedKey !== editingKey) {
+    deleteArmedKey = editingKey;
+    const btn = document.getElementById("btnDelete");
+    if (btn) btn.textContent = "Confirm delete";
+    setStatus(status, `Click Confirm delete to remove ${lob}/${id}. This cannot be undone.`, "err");
+    return;
+  }
+  resetDeleteArm();
   setStatus(status, "Deleting…");
   try {
     await api(`/api/queue-cards/${encodeURIComponent(lob)}/${encodeURIComponent(id)}`, {
       method: "DELETE",
     });
+    const removed = `${lob}/${id}`;
+    cardsCache = cardsCache.filter((c) => `${c.lob}/${c.id}` !== removed);
+    fillSourceSelect(cardsCache);
+    renderCardsTable(cardsCache);
     editingKey = null;
     focusCardKey = null;
     setMode("edit");
@@ -797,8 +1290,9 @@ async function deleteCard() {
     document.getElementById("cardTitle").value = "";
     document.getElementById("sourceMeta").hidden = true;
     document.getElementById("editBanner").hidden = true;
+    document.getElementById("queueRootHint").textContent = `Root: ${cardsCache.length} cards`;
     setStatus(status, `Deleted ${lob}/${id}`, "ok");
-    await refreshLists();
+    refreshLists().catch((err) => setStatus(status, err.message, "err"));
   } catch (err) {
     setStatus(status, err.message, "err");
   }
@@ -839,6 +1333,27 @@ function bind() {
   document.getElementById("btnAddClick").addEventListener("click", () => addStep("click"));
   document.getElementById("btnAddFill").addEventListener("click", () => addStep("fill"));
   document.getElementById("btnAddCheck").addEventListener("click", () => addStep("check"));
+  const onRemoveChecks = () => {
+    removeCheckStepsAndPublish().catch((err) =>
+      setStatus(document.getElementById("sopStatus"), err.message, "err")
+    );
+  };
+  document.getElementById("btnRemoveChecks")?.addEventListener("click", onRemoveChecks);
+  document.getElementById("btnRemoveChecksTop")?.addEventListener("click", onRemoveChecks);
+  document.getElementById("chkAllMandatory")?.addEventListener("change", (event) => {
+    setAllMandatory(Boolean(event.target.checked));
+  });
+  document.getElementById("btnUncheckMandatory")?.addEventListener("click", () => {
+    setAllMandatory(false);
+  });
+  document.getElementById("btnExpandSteps")?.addEventListener("click", () => {
+    openSteps = new Set(steps.map((_, i) => i));
+    renderSteps();
+  });
+  document.getElementById("btnCollapseSteps")?.addEventListener("click", () => {
+    openSteps = new Set();
+    renderSteps();
+  });
   document.getElementById("cardSopId").addEventListener("change", () => {
     const id = document.getElementById("cardSopId").value;
     if (id) loadSopById(id);
@@ -948,7 +1463,11 @@ async function openRecordedSop(sopId) {
   document.getElementById("newSopId").value = sop.id;
   document.getElementById("newSopName").value = title;
   document.getElementById("sopSaveMode").value = "update";
-  writeDataJson(sop.sampleData && typeof sop.sampleData === "object" ? sop.sampleData : {});
+  writeDataJson(
+    sop.sampleData && typeof sop.sampleData === "object"
+      ? sop.sampleData
+      : { ticket: sop.ticket || null, startUrl: sop.formUrl || "", clicks: [] }
+  );
   document.getElementById("sourceMeta").hidden = false;
   document.getElementById("sourceMeta").innerHTML = `Recorded process <strong>${esc(
     sop.name || sop.id
@@ -962,6 +1481,12 @@ async function openFromHashQuery(detailQuery) {
   const query = detailQuery
     ? new URLSearchParams(detailQuery)
     : studioQueryFromHash();
+  const cardKey = String(query.get("card") || "").trim();
+  if (cardKey.includes("/")) {
+    setMode("edit");
+    await openCard(cardKey, { asCopy: false });
+    return;
+  }
   const sopId = query.get("sop") || query.get("sopId") || "";
   if (!sopId) return;
   await openRecordedSop(sopId);

@@ -46,20 +46,41 @@ function captureLooksLikeChoiceValue(text) {
   if (captureLooksLikeOpaqueToken(t)) return false;
   if (captureLooksLikePlaceholderValue(t)) return false;
   if (/[?]/.test(t)) return false;
-  if (
-    /^(save and continue|submit|next|continue|back|cancel|apply|sign in|search|upload|remove|add|edit|delete)$/i.test(
-      t,
-    )
-  ) {
-    return false;
-  }
+  if (isNavigationClickLabel(t)) return false;
   if (t.length <= 40 && !/\.\s/.test(t) && /^[\w .,'\-+/&()]+$/i.test(t)) return true;
+  return false;
+}
+
+function isNavigationClickLabel(text) {
+  const t = captureNormalizeText(text);
+  if (!t || t.length > 48) return false;
+  return /^(save and continue|save & continue|submit|next|continue|back|previous|cancel|apply|add another|add|sign in|search|upload|remove|edit|delete)$/i.test(
+    t,
+  );
+}
+
+function isNavigationSelector(selector) {
+  return /pageFooterNextButton|add-button|signInSubmitButton|bottom-navigation|wizardNext|continueButton/i.test(
+    String(selector || ""),
+  );
+}
+
+/** React Select live-region copy and generated listbox ids are not field names. */
+function captureLooksLikeWidgetChrome(text) {
+  const t = captureNormalizeText(text);
+  if (!t) return false;
+  if (/^react-select-\d+/i.test(t)) return true;
+  if (/react-select-\d+-(listbox|input|option|live-region|placeholder)/i.test(t)) return true;
+  if (/use up and down to choose/i.test(t)) return true;
+  if (/press enter to select/i.test(t) && /press (escape|tab)/i.test(t)) return true;
+  if (/press tab to select the option/i.test(t)) return true;
   return false;
 }
 
 function captureLooksLikeJunkFieldKey(text) {
   const t = captureNormalizeText(text);
   if (!t) return true;
+  if (captureLooksLikeWidgetChrome(t)) return true;
   if (captureLooksLikeOpaqueToken(t)) return true;
   if (/^(input|select|textarea|field|button|div|span)$/i.test(t)) return true;
   if (/^#?(primaryQuestionnaire--|wd-|ember\d)/i.test(t)) return true;
@@ -200,20 +221,55 @@ function installLiveTrackPageCapture() {
     if (captureLooksLikeOpaqueToken(t)) return false;
     if (captureLooksLikePlaceholderValue(t)) return false;
     if (/[?]/.test(t)) return false;
-    if (
-      /^(save and continue|submit|next|continue|back|cancel|apply|sign in|search|upload|remove|add|edit|delete)$/i.test(
-        t,
-      )
-    ) {
-      return false;
-    }
+    if (isNavigationClickLabel(t)) return false;
     if (t.length <= 40 && !/\.\s/.test(t) && /^[\w .,'\-+/&()]+$/i.test(t)) return true;
+    return false;
+  }
+
+  function isNavigationClickLabel(text) {
+    const t = captureNormalizeText(text);
+    if (!t || t.length > 48) return false;
+    return /^(save and continue|save & continue|submit|next|continue|back|previous|cancel|apply|add another|add|sign in|search|upload|remove|edit|delete)$/i.test(
+      t,
+    );
+  }
+
+  function isNavigationSelector(selector) {
+    return /pageFooterNextButton|add-button|signInSubmitButton|bottom-navigation|wizardNext|continueButton/i.test(
+      String(selector || ""),
+    );
+  }
+
+  function emitNavigationClick(el, name) {
+    const label = captureNormalizeText(name).slice(0, 80);
+    if (!label) return;
+    postCaptureEvent({
+      action: "click",
+      pageUrl: location.href,
+      pageTitle: document.title || "",
+      tag: (el?.tagName || "button").toLowerCase(),
+      selector: captureSelectorFor(el),
+      fieldName: label,
+      label,
+      value: label,
+    });
+  }
+
+  function captureLooksLikeWidgetChrome(text) {
+    const t = captureNormalizeText(text);
+    if (!t) return false;
+    if (/^react-select-\d+/i.test(t)) return true;
+    if (/react-select-\d+-(listbox|input|option|live-region|placeholder)/i.test(t)) return true;
+    if (/use up and down to choose/i.test(t)) return true;
+    if (/press enter to select/i.test(t) && /press (escape|tab)/i.test(t)) return true;
+    if (/press tab to select the option/i.test(t)) return true;
     return false;
   }
 
   function captureLooksLikeJunkFieldKey(text) {
     const t = captureNormalizeText(text);
     if (!t) return true;
+    if (captureLooksLikeWidgetChrome(t)) return true;
     if (captureLooksLikeOpaqueToken(t)) return true;
     if (/^(input|select|textarea|field|button|div|span)$/i.test(t)) return true;
     if (/^#?(primaryQuestionnaire--|wd-|ember\d)/i.test(t)) return true;
@@ -233,6 +289,8 @@ function installLiveTrackPageCapture() {
     // like concatenated codes (e.g. a checkbox group's id built by joining
     // each option's short code, "s6s7s63s65s66s24no"), not a real word.
     if (!/[\s_-]/.test(t) && t.length > 12 && (t.match(/\d+/g) || []).length >= 2) return true;
+    if (/__/.test(t) && (t.match(/[_-]/g) || []).length >= 2) return true;
+    if (/^[A-Z0-9]+(?:_[A-Z0-9]+)+$/.test(t)) return true;
     return false;
   }
 
@@ -361,6 +419,35 @@ function installLiveTrackPageCapture() {
     }
     if (blob.length >= 12 && blob.length <= 240 && captureIsUsefulQuestionLabel(blob, optionText)) {
       return blob.split("\n")[0].trim();
+    }
+    return "";
+  }
+
+  /** Visible caption above a control. Skips sibling options and widget chrome. */
+  function captureCaptionAbove(el, optionText) {
+    if (!el) return "";
+    const own = captureNormalizeText(el.getAttribute?.("name") || el.name || el.id || "").toLowerCase();
+    let node = el;
+    for (let depth = 0; depth < 9 && node; depth += 1) {
+      let sib = node.previousElementSibling;
+      for (let i = 0; i < 6 && sib; i += 1) {
+        const hasControl = sib.querySelector?.(
+          "input, textarea, select, [role='listbox'], [role='option'], [role='radio'], [role='checkbox']",
+        );
+        const text = captureNormalizeText(sib.innerText || sib.textContent || "").split("\n")[0].trim();
+        if (
+          !hasControl &&
+          text &&
+          text.length <= 240 &&
+          text.toLowerCase() !== own &&
+          !captureLooksLikeWidgetChrome(text) &&
+          captureIsUsefulQuestionLabel(text, optionText)
+        ) {
+          return text.replace(/[*:\s]+$/g, "").trim();
+        }
+        sib = sib.previousElementSibling;
+      }
+      node = node.parentElement;
     }
     return "";
   }
@@ -533,21 +620,56 @@ function installLiveTrackPageCapture() {
     const opt = captureNormalizeText(optionLabel).slice(0, 80);
     if (!opt) return;
     if (captureLooksLikeOpaqueToken(opt) || captureLooksLikePlaceholderValue(opt)) return;
+    const selector = captureSelectorFor(el);
+    const guiId = captureGuiId(el);
+    if (isNavigationClickLabel(opt) || isNavigationSelector(selector)) {
+      emitNavigationClick(el, isNavigationClickLabel(opt) ? opt : captureNormalizeText(el?.innerText || opt));
+      return;
+    }
     const question =
       resolveFieldQuestion(el, opt) ||
       captureWorkdayQuestion(el, opt) ||
       captureParseOptionAriaQuestion(el.getAttribute?.("aria-label") || "", opt) ||
       pendingComboboxQuestion();
-    const q =
+    let q =
       question && !captureLooksLikeOptionOnly(question) && !captureLooksLikeJunkFieldKey(question)
         ? question
         : "";
+    if (captureLooksLikeWidgetChrome(q)) q = "";
+    if (!q || q.toLowerCase() === opt.toLowerCase()) {
+      const fromLabel = captureCaptionAbove(el, opt) || captureFieldLabel(el);
+      if (
+        fromLabel &&
+        fromLabel.toLowerCase() !== opt.toLowerCase() &&
+        !captureLooksLikeJunkFieldKey(fromLabel) &&
+        !captureLooksLikeWidgetChrome(fromLabel)
+      ) {
+        q = fromLabel;
+      }
+    }
+    if (
+      q &&
+      opt &&
+      captureLooksLikeChoiceValue(q) &&
+      captureLooksLikeChoiceValue(opt) &&
+      q.toLowerCase() !== opt.toLowerCase()
+    ) {
+      const hostQ = captureHostLabel(captureControlHost(el)) || captureHostLabel(el) || pendingComboboxQuestion();
+      q =
+        hostQ &&
+        hostQ.toLowerCase() !== opt.toLowerCase() &&
+        hostQ.toLowerCase() !== q.toLowerCase() &&
+        !captureLooksLikeJunkFieldKey(hostQ)
+          ? hostQ
+          : "";
+    }
     postCaptureEvent({
       action: "check",
       pageUrl: location.href,
       pageTitle: document.title || "",
       tag: (el.tagName || "").toLowerCase(),
-      selector: captureSelectorFor(el),
+      selector: guiId || selector,
+      ...(guiId ? { guiId } : {}),
       fieldName: q || "",
       label: q || opt,
       value: opt,
@@ -582,20 +704,222 @@ function installLiveTrackPageCapture() {
   let pendingCombobox = null;
 
   function rememberComboboxOpen(el) {
-    const question = resolveFieldQuestion(el, "") || captureWorkdayQuestion(el, "");
-    pendingCombobox = { el, question: question || "", ts: Date.now() };
+    const caption = captureCaptionAbove(el, "");
+    const question = caption || resolveFieldQuestion(el, "") || captureWorkdayQuestion(el, "");
+    pendingCombobox = {
+      el,
+      question: question && !captureLooksLikeWidgetChrome(question) ? question : "",
+      ts: Date.now(),
+    };
   }
 
   function pendingComboboxQuestion() {
     if (!pendingCombobox) return "";
     if (Date.now() - pendingCombobox.ts > 15000) return "";
-    return pendingCombobox.question;
+    const q = pendingCombobox.question;
+    return q && !captureLooksLikeWidgetChrome(q) ? q : "";
+  }
+
+  function owningCombobox(el) {
+    const list = el?.closest?.("[role='listbox']") || (el?.getAttribute?.("role") === "listbox" ? el : null);
+    const listId = String(list?.id || "");
+    if (listId) {
+      try {
+        const owner = document.querySelector(
+          `[aria-controls="${CSS.escape(listId)}"], [aria-owns="${CSS.escape(listId)}"]`,
+        );
+        if (owner) return owner;
+      } catch {
+        /* ignore */
+      }
+    }
+    if (pendingCombobox?.el && Date.now() - pendingCombobox.ts < 15000) return pendingCombobox.el;
+    return null;
+  }
+
+  function comboboxShownValue(combo) {
+    if (!combo) return "";
+    const root = combo.closest?.("[class*='container']") || combo.parentElement || combo;
+    const single = root.querySelector?.("[class*='singleValue'], [class*='single-value']");
+    const shown = captureNormalizeText(single?.textContent || "");
+    if (shown && !captureLooksLikeWidgetChrome(shown) && !captureLooksLikePlaceholderValue(shown)) {
+      return shown.slice(0, 80);
+    }
+    const val = captureNormalizeText(typeof combo.value === "string" ? combo.value : "");
+    if (val && !captureLooksLikeWidgetChrome(val) && !captureLooksLikePlaceholderValue(val)) return val.slice(0, 80);
+    return "";
+  }
+
+  let comboCommitTimer = null;
+  function scheduleComboboxCommit(optionEl, fallbackOpt) {
+    const combo = owningCombobox(optionEl) || pendingCombobox?.el || null;
+    if (comboCommitTimer) clearTimeout(comboCommitTimer);
+    comboCommitTimer = setTimeout(() => {
+      comboCommitTimer = null;
+      const shown = comboboxShownValue(combo) || captureNormalizeText(fallbackOpt).slice(0, 80);
+      if (!shown || captureLooksLikeWidgetChrome(shown) || captureLooksLikePlaceholderValue(shown)) return;
+      const question =
+        (combo && captureCaptionAbove(combo, shown)) ||
+        pendingComboboxQuestion() ||
+        (combo && resolveFieldQuestion(combo, shown)) ||
+        captureCaptionAbove(optionEl, shown) ||
+        "";
+      const q =
+        question && !captureLooksLikeWidgetChrome(question) && !captureLooksLikeJunkFieldKey(question)
+          ? question
+          : "";
+      const guiSource = combo || optionEl;
+      const guiId = captureGuiId(guiSource);
+      postCaptureEvent({
+        action: "select",
+        pageUrl: location.href,
+        pageTitle: document.title || "",
+        tag: (guiSource?.tagName || "select").toLowerCase(),
+        selector: guiId || captureSelectorFor(guiSource),
+        ...(guiId ? { guiId } : {}),
+        fieldName: q || shown,
+        label: q || shown,
+        value: shown,
+        selectedText: shown,
+      });
+      if (q) rememberField(guiSource, q, "choice");
+      pendingCombobox = null;
+    }, 60);
+  }
+
+  function captureAccessibleName(node) {
+    if (!node || node.nodeType !== 1) return "";
+    const labelledBy = node.getAttribute?.("aria-labelledby");
+    if (labelledBy) {
+      const text = captureNormalizeText(
+        String(labelledBy)
+          .split(/\s+/)
+          .map((id) => document.getElementById(id)?.textContent || "")
+          .join(" "),
+      );
+      if (text && text.length <= 180 && !captureLooksLikeOpaqueToken(text) && !captureLooksLikeWidgetChrome(text)) return text;
+    }
+    const named = captureNormalizeText(
+      node.getAttribute?.("aria-label") ||
+        node.getAttribute?.("title") ||
+        node.getAttribute?.("alt") ||
+        (typeof node.value === "string" && /^(button|submit|reset|image)$/i.test(String(node.type || ""))
+          ? node.value
+          : "") ||
+        "",
+    );
+    if (named && named.length <= 180 && !captureLooksLikeOpaqueToken(named) && !captureLooksLikeWidgetChrome(named)) return named;
+    const text = captureNormalizeText(node.innerText || node.textContent || "");
+    if (text && text.length <= 180 && !captureLooksLikeOpaqueToken(text) && !captureLooksLikeWidgetChrome(text)) return text;
+    const first = captureNormalizeText(String(node.innerText || node.textContent || "").split("\n")[0] || "");
+    if (first && first.length <= 180 && !captureLooksLikeOpaqueToken(first) && !captureLooksLikeWidgetChrome(first)) return first;
+    return "";
+  }
+
+  function isChoiceControl(node) {
+    if (!node?.matches) return false;
+    return (
+      node.matches(
+        "input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox'], [role='option'], [role='switch'], [data-automation-id*='promptOption']",
+      ) ||
+      (node.matches("label") &&
+        node.querySelector?.("input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox']"))
+    );
+  }
+
+  function isActionControl(node) {
+    if (!node?.matches || isChoiceControl(node) || isTextEntryTarget(node)) return false;
+    if (
+      node.matches(
+        "button, a[href], summary, [role='button'], [role='link'], [role='tab'], [role='menuitem'], input[type='button'], input[type='submit'], input[type='reset'], input[type='image']",
+      )
+    ) {
+      return true;
+    }
+    const tag = String(node.tagName || "");
+    if (tag.includes("-") && !node.querySelector?.("input, textarea, select, [role='radio'], [role='checkbox']")) {
+      return true;
+    }
+    if (node.hasAttribute?.("onclick") || node.hasAttribute?.("jsaction")) return true;
+    try {
+      const cursor = window.getComputedStyle?.(node)?.cursor;
+      if (cursor === "pointer") {
+        const box = node.getBoundingClientRect?.();
+        const small = !box || (box.width > 0 && box.width <= 520 && box.height > 0 && box.height <= 120);
+        const hasField = node.querySelector?.("input, textarea, select, [role='radio'], [role='checkbox']");
+        if (small && !hasField) return true;
+      }
+    } catch {
+      /* ignore */
+    }
+    return false;
+  }
+
+  function captureVisibleClickLabel(node) {
+    return captureAccessibleName(node);
+  }
+
+  function isTextEntryTarget(node) {
+    if (!node?.matches) return false;
+    return node.matches(
+      'input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea, [contenteditable="true"]',
+    );
+  }
+
+  function genericClickFromEvent(event) {
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    const nodes = path.length ? path : [event.target];
+    for (const node of nodes) {
+      if (!node || node.nodeType !== 1) continue;
+      if (isTextEntryTarget(node)) return null;
+      const label = captureVisibleClickLabel(node);
+      if (label) return { el: node, label };
+    }
+    return null;
+  }
+
+  function emitPlainClick(el, label) {
+    const text = captureNormalizeText(label).slice(0, 180);
+    if (!text || captureLooksLikeWidgetChrome(text)) return;
+    if (el?.getAttribute?.("role") === "listbox" || el?.closest?.("[role='listbox']")) return;
+    if (isNavigationClickLabel(text)) {
+      emitNavigationClick(el, text);
+      return;
+    }
+    const guiId = captureGuiId(el);
+    postCaptureEvent({
+      action: "click",
+      pageUrl: location.href,
+      pageTitle: document.title || "",
+      tag: (el?.tagName || "button").toLowerCase(),
+      selector: guiId || captureSelectorFor(el),
+      ...(guiId ? { guiId } : {}),
+      fieldName: el?.name || el?.id || text,
+      label: text,
+      value: text,
+    });
   }
 
   function onCaptureClick(event) {
-    const el = event.target?.closest?.(
-      "button, a[href], [role='button'], [role='tab'], [role='option'], [role='radio'], [role='menuitem'], [role='checkbox'], input[type='submit'], input[type='button'], input[type='radio'], input[type='checkbox'], label, [data-automation-id*='primaryQuestionnaire'], [data-automation-id*='promptOption'], [data-automation-id*='optionRenderer']",
-    );
+    const clickSel =
+      "button, a[href], [role='button'], [role='tab'], [role='option'], [role='radio'], [role='menuitem'], [role='checkbox'], input[type='submit'], input[type='button'], input[type='radio'], input[type='checkbox'], label, [data-automation-id*='primaryQuestionnaire'], [data-automation-id*='promptOption'], [data-automation-id*='optionRenderer']";
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    let el = null;
+    for (const node of path) {
+      if (node?.matches?.(clickSel)) {
+        el = node;
+        break;
+      }
+    }
+    if (!el) el = event.target?.closest?.(clickSel) || null;
+    if (!el) {
+      for (const node of path) {
+        if (node?.nodeType === 1 && isActionControl(node)) {
+          el = node;
+          break;
+        }
+      }
+    }
     if (!el) {
       // Workday often paints option text on a nested span — climb to questionnaire control
       const raw = event.target;
@@ -603,8 +927,10 @@ function installLiveTrackPageCapture() {
         raw?.closest?.("[id*='primaryQuestionnaire'], [data-automation-id*='primaryQuestionnaire']") || null;
       if (climb) {
         const opt = optionTextFromControl(climb) || captureNormalizeText(raw?.textContent || "").slice(0, 40);
-        if (opt && captureLooksLikeChoiceValue(opt)) emitChoiceCapture(climb, opt);
-        return;
+        if (opt && captureLooksLikeChoiceValue(opt)) {
+          emitChoiceCapture(climb, opt);
+          return;
+        }
       }
       // No Workday-shaped markup matched at all. If a combobox popup was just
       // opened, this click almost certainly lands on that popup's chosen
@@ -613,12 +939,29 @@ function installLiveTrackPageCapture() {
       if (raw && pendingComboboxQuestion()) {
         const opt = captureNormalizeText((raw.innerText || raw.textContent || "").split("\n")[0]).slice(0, 64);
         if (opt && captureLooksLikeChoiceValue(opt)) emitChoiceCapture(raw, opt);
+        else {
+          const generic = genericClickFromEvent(event);
+          if (generic) emitPlainClick(generic.el, generic.label);
+        }
+        return;
       }
+      const generic = genericClickFromEvent(event);
+      if (generic) emitPlainClick(generic.el, generic.label);
       return;
     }
 
     if (isComboboxTrigger(el)) {
       rememberComboboxOpen(el);
+      return;
+    }
+
+    if (
+      el.getAttribute?.("role") === "option" ||
+      el.getAttribute?.("role") === "listbox" ||
+      el.closest?.("[role='listbox']")
+    ) {
+      const opt = optionTextFromControl(el);
+      if (opt && !captureLooksLikeWidgetChrome(opt)) scheduleComboboxCommit(el, opt);
       return;
     }
 
@@ -638,16 +981,29 @@ function installLiveTrackPageCapture() {
             "input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox']",
           ) || el;
       const optionLabel = optionTextFromControl(input) || optionTextFromControl(el);
+      const selector = captureSelectorFor(input);
+      if (isNavigationSelector(selector) || isNavigationClickLabel(optionLabel)) {
+        emitNavigationClick(input, optionLabel || captureNormalizeText(input.innerText || ""));
+        return;
+      }
       if (optionLabel) {
         emitChoiceCapture(input, optionLabel);
         setTimeout(() => {
           const payload = captureDescribe(input, "check");
           if (payload) postCaptureEvent(payload);
         }, 0);
+        return;
       }
-      return;
     }
     if (el.matches?.("label") && el.querySelector?.("input, textarea, select")) return;
+    if (isActionControl(el)) {
+      const name = captureAccessibleName(el);
+      if (name && !captureLooksLikePlaceholderValue(name)) {
+        emitPlainClick(el, name);
+        return;
+      }
+    }
+    const selector = captureSelectorFor(el);
     const label = captureNormalizeText(
       el.innerText ||
         el.value ||
@@ -657,38 +1013,81 @@ function installLiveTrackPageCapture() {
         el.name ||
         "",
     );
-    if (!label || label.length > 120) return;
-    // A combobox trigger not caught by isComboboxTrigger() still shows its OLD
-    // value ("Select One" etc.) at click time — never record that as an answer.
-    if (captureLooksLikePlaceholderValue(label) || captureLooksLikeOpaqueToken(label)) return;
-    if (captureLooksLikeChoiceValue(label) || captureParseOptionAriaQuestion(label, "")) {
-      const optionValue = captureLooksLikeChoiceValue(label)
-        ? label.split(/\s+/).slice(0, 4).join(" ").slice(0, 64)
-        : captureLooksLikeChoiceValue(captureNormalizeText(el.innerText || "").slice(0, 48))
-          ? captureNormalizeText(el.innerText || "").slice(0, 48)
-          : /^(yes|no)\b/i.test(label)
-            ? label.match(/^(yes|no)/i)[1]
-            : label.slice(0, 64);
-      emitChoiceCapture(el, optionValue);
+    if (!label || label.length > 120) {
+      const generic = genericClickFromEvent(event);
+      if (generic) emitPlainClick(generic.el, generic.label);
       return;
     }
+    if (isNavigationClickLabel(label) || isNavigationSelector(selector)) {
+      emitNavigationClick(el, isNavigationClickLabel(label) ? label : label.split("\n")[0]);
+      return;
+    }
+    // A combobox trigger not caught by isComboboxTrigger() still shows its OLD
+    // value ("Select One" etc.) at click time — never record that as an answer.
+    if (captureLooksLikePlaceholderValue(label) || captureLooksLikeOpaqueToken(label)) {
+      const generic = genericClickFromEvent(event);
+      if (
+        generic &&
+        !captureLooksLikePlaceholderValue(generic.label) &&
+        !captureLooksLikeOpaqueToken(generic.label)
+      ) {
+        emitPlainClick(generic.el, generic.label);
+      }
+      return;
+    }
+    const name = captureAccessibleName(el) || label;
+    if (captureLooksLikeWidgetChrome(name) || captureLooksLikeWidgetChrome(label)) return;
+    const guiId = captureGuiId(el);
+    const idName = el.name || el.id || "";
     postCaptureEvent({
       action: "click",
       pageUrl: location.href,
       pageTitle: document.title || "",
       tag: (el.tagName || "").toLowerCase(),
-      selector: captureSelectorFor(el),
-      fieldName: el.name || el.id || label,
-      label,
-      value: label,
+      selector: guiId || selector,
+      ...(guiId ? { guiId } : {}),
+      fieldName: !idName || captureLooksLikeJunkFieldKey(idName) ? name : idName,
+      label: name,
+      value: name,
     });
+  }
+
+  function captureHostLabel(node) {
+    if (!node || node.nodeType !== 1) return "";
+    const raw = node.getAttribute?.("label") || (typeof node.label === "string" ? node.label : "");
+    const t = captureNormalizeText(String(raw || ""));
+    if (!t || captureLooksLikeJunkFieldKey(t) || captureLooksLikeOptionOnly(t)) return "";
+    return t.split("\n")[0].trim().slice(0, 180);
+  }
+
+  function captureIdIsUnique(id) {
+    if (!id) return false;
+    try {
+      return document.querySelectorAll(`[id="${CSS.escape(id)}"]`).length === 1;
+    } catch {
+      return false;
+    }
+  }
+
+  function captureControlHost(el) {
+    try {
+      const host = el?.getRootNode?.()?.host;
+      if (host && host.nodeType === 1) return host;
+    } catch {
+      /* ignore */
+    }
+    return null;
   }
 
   function captureFieldLabel(el) {
     if (!el) return "";
-    if (el.id) {
+    const host = captureControlHost(el);
+    const hostLabel = captureHostLabel(host) || captureHostLabel(el);
+    if (hostLabel) return hostLabel;
+    const labelTarget = host?.id && captureIdIsUnique(host.id) ? host : el.id && captureIdIsUnique(el.id) ? el : null;
+    if (labelTarget?.id) {
       try {
-        const byFor = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+        const byFor = document.querySelector(`label[for="${CSS.escape(labelTarget.id)}"]`);
         const t = captureNormalizeText(byFor?.textContent || "");
         if (t && !captureLooksLikeOptionOnly(t) && !captureLooksLikeJunkFieldKey(t)) {
           return t.split("\n")[0].trim();
@@ -724,7 +1123,7 @@ function installLiveTrackPageCapture() {
       const t = captureNormalizeText(heading.textContent || "");
       if (t && !captureLooksLikeJunkFieldKey(t)) return t;
     }
-    let node = el.previousElementSibling;
+    let node = (captureControlHost(el) || el).previousElementSibling;
     let hops = 0;
     while (node && hops < 3) {
       const t = captureNormalizeText(node.textContent || "");
@@ -740,8 +1139,10 @@ function installLiveTrackPageCapture() {
 
   function captureSelectorFor(el) {
     if (!el) return "";
-    if (el.id) return `#${el.id}`;
-    const auto = el.getAttribute?.("data-automation-id");
+    const host = captureControlHost(el);
+    if (el.id && captureIdIsUnique(el.id)) return `#${el.id}`;
+    if (host?.id && captureIdIsUnique(host.id)) return `#${host.id}`;
+    const auto = el.getAttribute?.("data-automation-id") || host?.getAttribute?.("data-automation-id");
     if (auto) return `[data-automation-id="${auto}"]`;
     if (el.name) return `[name="${el.name}"]`;
     const tag = (el.tagName || "").toLowerCase();
@@ -750,10 +1151,65 @@ function installLiveTrackPageCapture() {
     return tag;
   }
 
+  function captureLooksLikeGeneratedId(id) {
+    const s = String(id || "").trim();
+    if (!s || s.length < 2) return true;
+    if (/^(ember\d+|react-select-|mui-|:r[0-9a-z]+:|headlessui-)/i.test(s)) return true;
+    if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(s)) return true;
+    if (/^[a-f0-9]{16,}$/i.test(s)) return true;
+    if (/^\d+$/.test(s)) return true;
+    return false;
+  }
+
+  function captureCssAttr(name, value) {
+    const v = String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    return `[${name}="${v}"]`;
+  }
+
+  function captureGuiId(el) {
+    if (!el || el.nodeType !== 1) return "";
+    const host = captureControlHost(el);
+    const inner = el.matches?.("input, select, textarea, [role='radio'], [role='checkbox'], [role='combobox']")
+      ? null
+      : el.querySelector?.("input, select, textarea, [role='radio'], [role='checkbox']");
+    const nodes = [inner, el, host].filter((node) => node && node.nodeType === 1);
+    for (const node of nodes) {
+      const id = String(node.id || "").trim();
+      if (
+        id &&
+        !captureLooksLikeGeneratedId(id) &&
+        !captureLooksLikeJunkFieldKey(id) &&
+        captureIdIsUnique(id)
+      ) {
+        const ident = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(id) : id;
+        return `#${ident}`;
+      }
+    }
+    for (const node of nodes) {
+      const testid = node.getAttribute?.("data-testid") || node.getAttribute?.("data-test") || "";
+      if (testid && !captureLooksLikeGeneratedId(testid)) {
+        return captureCssAttr(node.getAttribute?.("data-testid") ? "data-testid" : "data-test", testid);
+      }
+    }
+    for (const node of nodes) {
+      const auto = node.getAttribute?.("data-automation-id") || "";
+      if (auto && !captureLooksLikeJunkFieldKey(auto) && !captureLooksLikeGeneratedId(auto)) {
+        return captureCssAttr("data-automation-id", auto);
+      }
+    }
+    for (const node of nodes) {
+      const name = String(node.getAttribute?.("name") || node.name || "").trim();
+      if (name && !captureLooksLikeJunkFieldKey(name) && !captureLooksLikeGeneratedId(name)) {
+        return captureCssAttr("name", name);
+      }
+    }
+    return "";
+  }
+
   function inventoryKeysFor(el) {
     const keys = [];
     if (!el) return keys;
-    if (el.id) keys.push(`id:${el.id}`);
+    if (el.id && captureIdIsUnique(el.id)) keys.push(`id:${el.id}`);
     const auto = el.getAttribute?.("data-automation-id");
     if (auto) keys.push(`auto:${auto}`);
     if (el.name) keys.push(`name:${el.name}`);
@@ -793,33 +1249,43 @@ function installLiveTrackPageCapture() {
   function lookupInventory(el) {
     const map = window.__ltFieldInventory;
     if (!map || !el) return "";
-    for (const k of inventoryKeysFor(el)) {
+    const keys = inventoryKeysFor(el);
+    const ordered = [
+      ...keys.filter((k) => k.startsWith("name:")),
+      ...keys.filter((k) => !k.startsWith("name:") && !k.startsWith("group:")),
+    ];
+    for (const k of ordered) {
       const hit = map.get(k);
       if (hit?.label && captureIsUsefulQuestionLabel(hit.label, "")) return hit.label;
-    }
-    const group =
-      el.closest?.(
-        '[role="radiogroup"], [role="group"], fieldset, [data-automation-id*="formField"], [data-automation-id*="question"], [data-automation-id*="questionnaire"]',
-      ) || null;
-    if (group) {
-      const ctrls = group.querySelectorAll?.(
-        "input, textarea, select, button, [role='radio'], [role='checkbox'], [role='button'], [data-automation-id]",
-      );
-      for (const ctrl of ctrls || []) {
-        for (const k of inventoryKeysFor(ctrl)) {
-          const hit = map.get(k);
-          if (hit?.label && captureIsUsefulQuestionLabel(hit.label, "")) return hit.label;
-        }
-      }
     }
     return "";
   }
 
   function resolveFieldQuestion(el, optionHint) {
+    const caption = captureCaptionAbove(el, optionHint);
+    const own = captureNormalizeText(el?.getAttribute?.("name") || el?.name || el?.id || "");
+    if (caption && (/[?*]/.test(caption) || caption.length >= 8) && !captureLooksLikeWidgetChrome(caption)) {
+      return caption;
+    }
     const inventoried = lookupInventory(el);
-    if (inventoried) return inventoried;
+    if (
+      inventoried &&
+      inventoried.toLowerCase() !== own.toLowerCase() &&
+      !captureLooksLikeWidgetChrome(inventoried)
+    ) {
+      return inventoried;
+    }
+    if (caption && !captureLooksLikeWidgetChrome(caption)) return caption;
     const live = captureQuestionLabel(el, optionHint) || captureFieldLabel(el);
-    if (live && captureIsUsefulQuestionLabel(live, optionHint)) return live;
+    if (
+      live &&
+      live.toLowerCase() !== own.toLowerCase() &&
+      !captureLooksLikeWidgetChrome(live) &&
+      captureIsUsefulQuestionLabel(live, optionHint)
+    ) {
+      return live;
+    }
+    if (inventoried && !captureLooksLikeWidgetChrome(inventoried)) return inventoried;
     return "";
   }
 
@@ -929,13 +1395,14 @@ function installLiveTrackPageCapture() {
   window.__ltScanFieldInventory = scanPageFieldInventory;
   window.__ltLookupFieldInventory = lookupInventory;
 
-  function captureDescribe(el, action) {
+  function captureDescribe(el, action, labelHint) {
     if (!el || el.nodeType !== 1) return null;
     const tag = (el.tagName || "").toLowerCase();
     const type = (el.getAttribute("type") || tag).toLowerCase();
     const role = String(el.getAttribute("role") || "").toLowerCase();
+    const customEl = tag.includes("-");
     if (type === "password" || type === "hidden") return null;
-    if (el.readOnly && type !== "radio" && type !== "checkbox" && tag !== "select") return null;
+    if (el.readOnly && !customEl && type !== "radio" && type !== "checkbox" && tag !== "select" && type !== "tel") return null;
     if (el.disabled && type !== "radio" && type !== "checkbox") return null;
 
     let value = el.value != null ? String(el.value) : "";
@@ -943,6 +1410,7 @@ function installLiveTrackPageCapture() {
     if (value.length > 200) value = value.slice(0, 200);
     let selectedText = "";
 
+    if (role === "listbox" && captureLooksLikeWidgetChrome(el.id || el.getAttribute?.("aria-label") || "")) return null;
     if (tag === "select" || role === "listbox" || role === "combobox") {
       action = "select";
       const opt = el.selectedOptions && el.selectedOptions[0];
@@ -956,7 +1424,7 @@ function installLiveTrackPageCapture() {
       if (!selectedText) return null;
       value = selectedText;
       // Still on the unselected placeholder option — nothing was actually chosen.
-      if (captureLooksLikePlaceholderValue(selectedText)) return null;
+      if (captureLooksLikePlaceholderValue(selectedText) || captureLooksLikeWidgetChrome(selectedText)) return null;
     } else if (type === "checkbox" || type === "radio" || role === "checkbox" || role === "radio") {
       action = "check";
       const on =
@@ -997,6 +1465,12 @@ function installLiveTrackPageCapture() {
         }
       }
       if (captureLooksLikeOpaqueToken(selectedText)) selectedText = "";
+      if (/^(true|false|on|off)$/i.test(selectedText)) {
+        const visible = captureNormalizeText(String(el.innerText || el.textContent || "").split("\n")[0]);
+        if (visible && visible.length <= 48 && !/[?]/.test(visible) && !/^(true|false|on|off)$/i.test(visible)) {
+          selectedText = visible;
+        }
+      }
       if (!selectedText) selectedText = "true";
       value = selectedText;
     }
@@ -1011,8 +1485,53 @@ function installLiveTrackPageCapture() {
     }
 
     const optionHint = selectedText || value;
-    const question = resolveFieldQuestion(el, optionHint);
-    const label = question || captureFieldLabel(el);
+    function captureFinderTag(liveName, websiteLabel) {
+      const site = captureNormalizeText(websiteLabel).replace(/[*:\s]+$/g, "").trim();
+      const live = captureNormalizeText(liveName);
+      if (!site || !live) return "";
+      if (captureLooksLikeOptionOnly(site) || captureLooksLikeJunkFieldKey(site)) return "";
+      const compact = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+      if (!compact(site) || compact(site) === compact(live)) return "";
+      return site;
+    }
+
+    const ownName = (function captureOwnFieldName(node) {
+      const name = captureNormalizeText(node?.name || "");
+      if (name && !captureLooksLikeJunkFieldKey(name)) {
+        const bare = name.replace(/[*:\s]+$/g, "");
+        if (bare.length >= 2 && !captureLooksLikeOpaqueToken(bare)) return name;
+      }
+      const kind = String(node?.getAttribute?.("type") || "").toLowerCase();
+      if (kind === "tel") return "Phone";
+      if (kind === "email") return "Email";
+      return "";
+    })(el);
+    const hint = captureHostLabel(el) || captureNormalizeText(labelHint || "");
+    const visibleQuestion = (function captureVisibleQuestion() {
+      const caption = captureCaptionAbove(el, optionHint);
+      if (caption && captureIsUsefulQuestionLabel(caption, optionHint) && !captureLooksLikeWidgetChrome(caption)) {
+        return caption;
+      }
+      const live = captureQuestionLabel(el, optionHint) || captureFieldLabel(el);
+      if (
+        live &&
+        live.toLowerCase() !== captureNormalizeText(el.name || el.id || "").toLowerCase() &&
+        captureIsUsefulQuestionLabel(live, optionHint) &&
+        !captureLooksLikeOptionOnly(live) &&
+        !captureLooksLikeWidgetChrome(live)
+      ) {
+        return live;
+      }
+      if (hint && captureIsUsefulQuestionLabel(hint, optionHint) && !captureLooksLikeOptionOnly(hint)) {
+        return hint;
+      }
+      return "";
+    })();
+    const question =
+      (visibleQuestion && captureIsUsefulQuestionLabel(visibleQuestion, optionHint) ? visibleQuestion : "") ||
+      ownName ||
+      (hint && captureIsUsefulQuestionLabel(hint, optionHint) ? hint : "");
+    const label = question || captureFieldLabel(el) || hint;
     let fieldName = String(
       (question && !captureLooksLikeOptionOnly(question) ? question : "") ||
         (label && !captureLooksLikeJunkFieldKey(label) ? label : "") ||
@@ -1026,52 +1545,184 @@ function installLiveTrackPageCapture() {
     if (question && captureIsUsefulQuestionLabel(question, optionHint)) {
       rememberField(el, question, action === "check" || action === "select" ? "choice" : "field");
     }
+    const shown =
+      (question && !captureLooksLikeOptionOnly(question) ? question : "") || label || fieldName;
+    const finder = captureFinderTag(shown, visibleQuestion);
+    const guiId = captureGuiId(el);
     return {
       action,
       pageUrl: location.href,
       pageTitle: document.title || "",
       tag: tag || role || "field",
-      selector: captureSelectorFor(el),
+      selector: guiId || captureSelectorFor(el),
+      ...(guiId ? { guiId } : {}),
       fieldName: fieldName || label,
       fieldId: el.id || "",
-      label: (question && !captureLooksLikeOptionOnly(question) ? question : "") || label || fieldName,
+      label: shown,
+      ...(finder ? { finder } : {}),
       value,
       selectedText,
+      elementRect: (function captureElementRect(node) {
+        if (!node || typeof node.getBoundingClientRect !== "function") return null;
+        const r = node.getBoundingClientRect();
+        if (!r || (r.width < 2 && r.height < 2)) return null;
+        return {
+          x: r.x,
+          y: r.y,
+          width: r.width,
+          height: r.height,
+          dpr: window.devicePixelRatio || 1,
+        };
+      })(el),
     };
   }
 
-  function onCaptureInput(event) {
-    const el = event.target;
-    if (!el?.matches) return;
-    if (
-      !el.matches(
-        "input:not([type=password]):not([type=hidden]):not([type=submit]):not([type=button]), textarea, select, [contenteditable='true']",
-      )
-    ) {
-      return;
+  const CAPTURE_TEXT_SEL =
+    'input:not([type="password"]):not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select, [contenteditable="true"]';
+  const CAPTURE_WIDGET_SEL =
+    "[role='checkbox'], [role='radio'], [role='combobox'], [role='listbox'], [role='option']";
+
+  function captureCustomHost(event, el) {
+    const path = typeof event?.composedPath === "function" ? event.composedPath() : [];
+    for (const node of path) {
+      if (String(node?.tagName || "").includes("-")) return node;
     }
-    const payload = captureDescribe(el, "input");
+    try {
+      const parent = el?.getRootNode?.()?.host;
+      if (parent && String(parent.tagName || "").includes("-")) return parent;
+    } catch {
+      /* ignore */
+    }
+    if (String(el?.tagName || "").includes("-")) return el;
+    return null;
+  }
+
+  function captureControlFromEvent(event, includeWidgets) {
+    const path = typeof event?.composedPath === "function" ? event.composedPath() : [];
+    const hostTarget = event?.target && event.target.nodeType === 1 ? event.target : null;
+    let inner = null;
+    for (const node of path) {
+      if (node?.matches?.(CAPTURE_TEXT_SEL) || (includeWidgets && node?.matches?.(CAPTURE_WIDGET_SEL))) {
+        inner = node;
+        break;
+      }
+    }
+    if (!inner && hostTarget?.matches?.(CAPTURE_TEXT_SEL)) inner = hostTarget;
+    if (!inner && includeWidgets && hostTarget?.matches?.(CAPTURE_WIDGET_SEL)) inner = hostTarget;
+    if (!inner && hostTarget?.shadowRoot) {
+      try {
+        inner = hostTarget.shadowRoot.querySelector(includeWidgets ? `${CAPTURE_TEXT_SEL}, ${CAPTURE_WIDGET_SEL}` : CAPTURE_TEXT_SEL);
+      } catch {
+        /* ignore */
+      }
+    }
+    const custom = captureCustomHost(event, inner || hostTarget);
+    const innerValue = inner && inner.value != null && typeof inner.value !== "object" ? String(inner.value).trim() : "";
+    const hostValue =
+      custom && custom.value != null && typeof custom.value !== "object" ? String(custom.value).trim() : "";
+    if (custom && hostValue && !innerValue) return { el: custom, host: custom };
+    if (inner) return { el: inner, host: custom || hostTarget };
+    for (const node of path) {
+      if (!node || node.nodeType !== 1) continue;
+      const tag = String(node.tagName || "").toLowerCase();
+      if (!tag || tag === "html" || tag === "body" || tag === "button" || tag === "a") continue;
+      if (node.matches?.("[role='button'], [role='link']")) continue;
+      const nodeValue = node.value != null && typeof node.value !== "object" ? String(node.value).trim() : "";
+      if (nodeValue || node.isContentEditable || captureHostLabel(node)) return { el: node, host: custom || node };
+    }
+    return null;
+  }
+
+  function captureTelFromEvent(event) {
+    const path = typeof event?.composedPath === "function" ? event.composedPath() : [];
+    const nodes = path.length ? path : [event?.target];
+    for (const node of nodes) {
+      if (node?.matches?.("input[type='tel'], input[inputmode='tel']")) return node;
+    }
+    const target = event?.target;
+    const root =
+      target?.closest?.(".iti, [class*='intl'], [class*='phone'], [class*='Phone']") || target?.parentElement;
+    return root?.querySelector?.("input[type='tel'], input[inputmode='tel']") || null;
+  }
+
+  let phoneCaptureTimer = 0;
+  let phoneCaptureEl = null;
+  function schedulePhoneCapture(el) {
+    if (!el) return;
+    phoneCaptureEl = el;
+    if (phoneCaptureTimer) clearTimeout(phoneCaptureTimer);
+    phoneCaptureTimer = setTimeout(() => {
+      phoneCaptureTimer = 0;
+      const target = phoneCaptureEl;
+      phoneCaptureEl = null;
+      if (!target) return;
+      const payload = captureDescribe(target, "input");
+      if (payload) postCaptureEvent(payload);
+    }, 350);
+  }
+
+  function onCapturePhoneInput(event) {
+    const tel = captureTelFromEvent(event);
+    if (tel) schedulePhoneCapture(tel);
+  }
+
+  function onCaptureInput(event) {
+    const found = captureControlFromEvent(event, false);
+    if (!found) return;
+    const hint = captureHostLabel(found.host) || captureHostLabel(found.el);
+    const payload = captureDescribe(found.el, "input", hint);
     if (payload) postCaptureEvent(payload);
   }
 
   function onCaptureChange(event) {
-    let el = event.target;
-    if (!el || el.nodeType !== 1) return;
-    if (el.matches?.("option")) el = el.closest("select") || el;
-    if (
-      !el.matches?.(
-        "input, textarea, select, [contenteditable='true'], [role='checkbox'], [role='radio'], [role='combobox'], [role='listbox']",
-      )
-    ) {
-      return;
+    const found = captureControlFromEvent(event, true);
+    let el = found?.el || null;
+    if (!el) {
+      el = event.target;
+      if (!el || el.nodeType !== 1) return;
+      if (el.matches?.("option")) el = el.closest("select") || el;
+      if (
+        !el.matches?.(
+          "input, textarea, select, [contenteditable='true'], [role='checkbox'], [role='radio'], [role='combobox'], [role='listbox']",
+        )
+      ) {
+        const missed = captureTelFromEvent(event);
+        if (missed) {
+          const phone = captureDescribe(missed, "change");
+          if (phone) postCaptureEvent(phone);
+        }
+        return;
+      }
     }
-    const payload = captureDescribe(el, "change");
+    const hint = captureHostLabel(found?.host) || captureHostLabel(el);
+    const payload = captureDescribe(el, "change", hint);
     if (payload) postCaptureEvent(payload);
+    const tel = captureTelFromEvent(event);
+    if (tel && tel !== el) {
+      const phone = captureDescribe(tel, "change");
+      if (phone) postCaptureEvent(phone);
+    }
   }
 
-  document.addEventListener("input", onCaptureInput, true);
   document.addEventListener("change", onCaptureChange, true);
+  document.addEventListener("focusout", onCaptureChange, true);
+  document.addEventListener("input", onCapturePhoneInput, true);
   document.addEventListener("click", onCaptureClick, true);
+  if (!window.__ltValueHook && EventTarget?.prototype?.dispatchEvent) {
+    const origDispatch = EventTarget.prototype.dispatchEvent;
+    EventTarget.prototype.dispatchEvent = function ltCaptureDispatch(event) {
+      try {
+        const type = String(event?.type || "");
+        if (/(change|commit)$/i.test(type) && !/input$/i.test(type) && !/^(change|focusout|blur)$/i.test(type) && !/selection/i.test(type)) {
+          onCaptureChange(event);
+        }
+      } catch {
+        /* ignore */
+      }
+      return origDispatch.call(this, event);
+    };
+    window.__ltValueHook = true;
+  }
   setupFieldInventoryObservers();
   return "installed";
 }
@@ -1102,6 +1753,8 @@ module.exports = {
   captureLooksLikeOpaqueToken,
   captureLooksLikePlaceholderValue,
   captureLooksLikeJunkFieldKey,
+  isNavigationClickLabel,
+  isNavigationSelector,
   captureIsUsefulQuestionLabel,
   capturePickQuestionCandidate,
   captureParseOptionAriaQuestion,

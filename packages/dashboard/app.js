@@ -482,7 +482,7 @@ function renderCaptureTransactions(payload) {
     } else if (payload?.recording) {
       hint.textContent = `Capture agent is recording · ${rows.length} transaction${
         rows.length === 1 ? "" : "s"
-      } · one JSON object per row`;
+      } · values + clicks + Playwright locators`;
     } else {
       hint.textContent = "One JSON object per capture-agent transaction";
     }
@@ -495,18 +495,43 @@ function renderCaptureTransactions(payload) {
     .map((txn) => {
       const json = JSON.stringify(txn, null, 2);
       const ticket = txn.ticket || "";
+      const clickN = Array.isArray(txn.clicks) ? txn.clicks.length : 0;
+      const stepN = txn.playwright?.steps?.length || 0;
       return `
     <tr class="${txn.live ? "capture-txn-live" : ""}">
       <td class="nowrap">${fmtWhen(txn.completedAt)}</td>
       <td><strong>${esc(txn.user || "—")}</strong></td>
       <td class="nowrap"><button type="button" class="ticket-copy" data-ticket="${esc(ticket)}">${esc(ticket || "—")}</button></td>
-      <td><pre class="capture-json">${esc(json)}</pre></td>
+      <td>
+        <div class="capture-json-tools">
+          <span class="muted">${stepN} Playwright step${stepN === 1 ? "" : "s"} · ${clickN} click${clickN === 1 ? "" : "s"}</span>
+          <button type="button" class="ticket-copy" data-copy-json="1">Copy JSON</button>
+        </div>
+        <pre class="capture-json">${esc(json)}</pre>
+      </td>
     </tr>`;
     })
     .join("");
 }
 
 document.getElementById("captureTxnBody")?.addEventListener("click", async (event) => {
+  const copyJson = event.target.closest("[data-copy-json]");
+  if (copyJson) {
+    const pre = copyJson.closest("td")?.querySelector(".capture-json");
+    const text = pre?.textContent || "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      const prev = copyJson.textContent;
+      copyJson.textContent = "Copied";
+      setTimeout(() => {
+        copyJson.textContent = prev;
+      }, 1200);
+    } catch {
+      copyJson.textContent = "Copy failed";
+    }
+    return;
+  }
   const btn = event.target.closest("[data-ticket]");
   if (!btn) return;
   const ticket = btn.getAttribute("data-ticket") || "";

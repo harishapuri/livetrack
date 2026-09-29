@@ -27,6 +27,16 @@ const FALLBACK = {
     "You repair a single failed LiveTrack SOP step. Reply JSON only.",
   momRefine:
     "You are LiveTrack Minutes of Meeting. Speaker labels come from Teams on-screen tiles, not from names said in the conversation. Do not rename anyone from phrases like this is Matten. Drop small talk. Do not invent owners. Output plain text with sections: Meeting, Discussed, Decisions, Action items (owner — task), Open questions.",
+  mailActions:
+    'You extract personal to-dos from inbox mail. Return JSON only with key "items": [{ "messageId","title","owner","dueKind","subject","from" }]. Include a mail ONLY if it tags the operator first (Hi <name>, @name, or "Harish and Praveen") AND then asks a pointed question (Can you…, Please…, check…). Skip mail whose first tagged name is someone else. Skip newsletters. No markdown. If none, {"items":[]}.',
+  teamsChat:
+    "You rewrite a Microsoft Teams chat draft. Keep the author's meaning and facts. Fix grammar, spelling, and tone for work chat. Do not add a greeting unless the draft had one. Output only the message body — no quotes, no preamble, no markdown.",
+  pastWorkJql:
+    'Return JSON only: {"textQuery":"two to five words","keywords":["word"]}. No JQL operators, quotes, or assignee/sprint clauses. Distinctive nouns from the ticket. Empty textQuery if nothing useful.',
+  pastWorkRank:
+    'Return JSON only: {"related":[{"key":"MBA-3","keep":true,"score":85}]}. Use only candidate keys. keep true only for the same problem, a linked CR/RITM/INC, or a peer story. Drop coincidental mentions. Never invent keys.',
+  pastWorkTicketSummary:
+    'Return JSON only: {"tickets":[{"key":"RITM0203030","summary":"one line"}]}. Use only listed comment ticket numbers. One short summary per key from the Jira comments. Never invent keys or copy the parent Jira summary onto every row.',
   askPreamble: "",
 };
 
@@ -51,6 +61,18 @@ const HEADING_TO_KEY = {
   "minutes of meeting": "momRefine",
   "meeting minutes": "momRefine",
   mom: "momRefine",
+  "outlook mail action items": "mailActions",
+  "mail action items": "mailActions",
+  "inbox action items": "mailActions",
+  "teams chat": "teamsChat",
+  "teams chat refine": "teamsChat",
+  "microsoft teams chat": "teamsChat",
+  "past work jql": "pastWorkJql",
+  "past work search": "pastWorkJql",
+  "past work relatedness": "pastWorkRank",
+  "past work rank": "pastWorkRank",
+  "past work ticket summary": "pastWorkTicketSummary",
+  "past work comment tickets": "pastWorkTicketSummary",
 };
 
 const APPEND_SHARED = new Set(["explainPage", "jiraComment", "generalChat", "formAssistant"]);

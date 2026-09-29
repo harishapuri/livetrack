@@ -580,14 +580,13 @@
       if (names.some((name) => isSamePerson(name, label))) return;
       names.push(label);
     };
+    add(operator);
+    for (const person of inviteeNames(meeting, operatorName)) add(person);
     for (const tile of tiles) add(tile);
-    const givenHits = names.filter((name) => isSamePerson(name, operator) || sharesGivenName(name, operator));
-    if (!givenHits.length) add(operator);
     for (const turn of Array.isArray(turns) ? turns : []) {
       if (looksNamed(turn?.speaker)) add(turn.speaker);
     }
-    const localName = names.find((name) => isSamePerson(name, operator))
-      || (givenHits.length === 1 ? givenHits[0] : "");
+    const localName = names.find((name) => isSamePerson(name, operator)) || operator;
     const active = String(activeSpeaker || "").trim();
     return names.map((name) => {
       const local = Boolean(localName) && isSamePerson(name, localName);

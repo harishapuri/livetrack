@@ -19,6 +19,7 @@
     "dist": "npm run dist -w @coact/liveact",
     "dist:mac": "npm run dist:mac -w @coact/liveact",
     "dist:win": "npm run dist:win -w @coact/liveact",
+    "dist:win:uninstaller": "npm run dist:win:uninstaller -w @coact/liveact",
     "extension:path": "node -e \"console.log(require('path').resolve('packages/extension'))\""
   },
   "engines": {

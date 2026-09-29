@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="480" viewBox="0 0 760 480">
+  <rect width="760" height="480" fill="#ffffff"/>
+  <text x="24" y="32" font-family="Arial, sans-serif" font-size="16" font-weight="700">FIG. 3</text>
+  <rect x="60" y="180" width="140" height="56" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+  <text x="108" y="214" font-family="Arial, sans-serif" font-size="14" text-anchor="middle">Idle 72</text>
+  <rect x="310" y="80" width="160" height="56" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+  <text x="390" y="114" font-family="Arial, sans-serif" font-size="14" text-anchor="middle">Running 74</text>
+  <rect x="310" y="300" width="160" height="56" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+  <text x="390" y="334" font-family="Arial, sans-serif" font-size="14" text-anchor="middle">Paused 76</text>
+  <line x1="200" y1="200" x2="310" y2="120" stroke="#000000" stroke-width="1.5"/>
+  <polygon points="310,120 296,118 302,130" fill="#000000"/>
+  <text x="220" y="150" font-family="Arial, sans-serif" font-size="12">Start card</text>
+  <line x1="390" y1="136" x2="390" y2="300" stroke="#000000" stroke-width="1.5"/>
+  <polygon points="390,300 384,286 396,286" fill="#000000"/>
+  <text x="400" y="220" font-family="Arial, sans-serif" font-size="12">Control 55 pause</text>
+  <path d="M310 328 C 220 328, 220 220, 310 108" fill="none" stroke="#000000" stroke-width="1.5"/>
+  <polygon points="310,108 296,112 300,124" fill="#000000"/>
+  <text x="168" y="270" font-family="Arial, sans-serif" font-size="12">Resume at first</text>
+  <text x="168" y="286" font-family="Arial, sans-serif" font-size="12">incomplete step 78</text>
+  <line x1="470" y1="108" x2="620" y2="190" stroke="#000000" stroke-width="1.5"/>
+  <polygon points="620,190 606,180 612,194" fill="#000000"/>
+  <line x1="200" y1="220" x2="140" y2="300" stroke="#000000" stroke-width="1.5"/>
+  <text x="500" y="150" font-family="Arial, sans-serif" font-size="12">Stop or done</text>
+  <rect x="560" y="200" width="150" height="50" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+  <text x="635" y="230" font-family="Arial, sans-serif" font-size="13" text-anchor="middle">Return to idle 72</text>
+  <text x="48" y="420" font-family="Arial, sans-serif" font-size="13">While paused 76, form 28 stays with operator 15. Cursor 20 is kept in controller 12.</text>
+  <text x="48" y="444" font-family="Arial, sans-serif" font-size="13">No second form session is opened for takeover.</text>
+</svg>

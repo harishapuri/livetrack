@@ -14,6 +14,7 @@ function createBridge({
   onError,
   onReloadQueue,
   onCaptureEvent,
+  onHeartbeat,
 }) {
   const clients = new Map();
   const pendingSnippets = new Map();
@@ -210,6 +211,37 @@ function createBridge({
   let focusEmitTimer = null;
   let lastEmittedFocus = null;
   let lastEmittedConnected = null;
+  let lastHeartbeatKey = "";
+
+  function lastSeenTimes() {
+    const list = connected();
+    let lastStatusAt = 0;
+    let lastPongAt = 0;
+    for (const [, client] of list) {
+      if (Number(client.lastStatusAt) > lastStatusAt)
+        lastStatusAt = Number(client.lastStatusAt);
+      if (Number(client.lastPongAt) > lastPongAt)
+        lastPongAt = Number(client.lastPongAt);
+    }
+    return {
+      connected: list.length > 0,
+      clients: list.length,
+      lastStatusAt,
+      lastPongAt,
+    };
+  }
+
+  function emitHeartbeat(extra = {}) {
+    const seen = lastSeenTimes();
+    const key = `${seen.connected ? 1 : 0}|${seen.clients}|${seen.lastStatusAt}|${seen.lastPongAt}|${extra.capture ? 1 : 0}`;
+    if (key === lastHeartbeatKey && !extra.force && !extra.capture) return;
+    lastHeartbeatKey = key;
+    onHeartbeat?.({
+      ...seen,
+      capture: Boolean(extra.capture),
+      at: Date.now(),
+    });
+  }
   function emitFocusStatus(extra = {}) {
     if (focusEmitTimer) clearTimeout(focusEmitTimer);
     const delay = extra.activated || extra.force ? 0 : 120;
@@ -262,11 +294,13 @@ function createBridge({
       clients.set(socket, client);
       lastEmittedFocus = null;
       emitFocusStatus({ force: true, reconnected: true });
+      emitHeartbeat({ force: true });
     } else if (clientId) {
       const changed = client.clientId !== clientId;
       client.clientId = clientId;
       client.lastPongAt = Date.now();
       if (changed) emitFocusStatus({ force: true, reconnected: true });
+      emitHeartbeat({ force: true });
     }
     return client;
   }
@@ -277,6 +311,7 @@ function createBridge({
     clients.delete(socket);
     lastEmittedFocus = null;
     emitFocusStatus({ force: true });
+    emitHeartbeat({ force: true });
   }
 
   function normalizeUrl(url) {
@@ -569,6 +604,7 @@ function createBridge({
       if (msg.type === MessageType.PONG) {
         const client = clients.get(socket);
         if (client) client.lastPongAt = Date.now();
+        emitHeartbeat();
         return;
       }
       if (!clients.has(socket)) {
@@ -603,7 +639,10 @@ function createBridge({
             force: Boolean(msg.activated),
           });
         }
+        emitHeartbeat();
       } else if (msg.type === MessageType.STEP_UPDATE) {
+        client.lastStatusAt = Date.now();
+        client.lastActivityAt = Date.now();
         onStepUpdate({ ...msg, clientId: client.clientId });
         if (
           ["run_complete", "run_failed", "run_cancelled"].includes(msg.status)
@@ -617,13 +656,17 @@ function createBridge({
             clientId: client.clientId,
           });
         }
+        emitHeartbeat();
       } else if (msg.type === MessageType.CAPTURE_EVENT) {
         const event = msg.event && typeof msg.event === "object" ? msg.event : msg;
+        client.lastStatusAt = Date.now();
+        client.lastActivityAt = Date.now();
         try {
           onCaptureEvent?.(event);
         } catch {
           /* capture is optional */
         }
+        emitHeartbeat({ capture: true, force: true });
       } else if (msg.type === MessageType.SNIPPET) {
         const pending = pendingSnippets.get(msg.requestId);
         if (!pending) return;
@@ -682,6 +725,7 @@ function createBridge({
   // Keep Online/Offline truthful without forcing duplicate emits (avoids renderer thrash)
   const statusPulse = setInterval(() => {
     emitFocusStatus();
+    emitHeartbeat();
   }, 4000);
 
   api = {

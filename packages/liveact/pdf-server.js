@@ -114,8 +114,15 @@ function truncateCaptureText(value, max = 200) {
 
 /** Workday/internal option ids and bare tag selectors are not human field keys. */
 function isJunkCaptureName(name) {
-  const n = String(name || "").trim();
+  const n = String(name || "").replace(/\s+/g, " ").trim();
   if (!n) return true;
+  const bareId = n.replace(/^#/, "");
+  if (/^react-select-\d+/i.test(bareId)) return true;
+  if (/use up and down to choose/i.test(n)) return true;
+  if (/check all that apply|select all that apply|choose all that apply/i.test(n)) return true;
+  if (/^\([^)]*\)$/.test(n)) return true;
+  if (/press enter to select/i.test(n) && /press (escape|tab)/i.test(n)) return true;
+  if (/press tab to select the option/i.test(n)) return true;
   if (/^(input|select|textarea|button|div|span|label)$/i.test(n)) return true;
   // Generic test-automation ids some sites assign in place of real names
   // ("select-one", "input-two", "field3", bare "one"/"two", ...) — never a
@@ -155,6 +162,36 @@ function isJunkCaptureValue(value) {
   return false;
 }
 
+const NAV_CLICK_LABEL_RE =
+  /^(save and continue|save & continue|submit|next|continue|back|previous|cancel|apply|add another|add|sign in|search|upload|remove|edit|delete)$/i;
+const NAV_CLICK_SELECTOR_RE =
+  /pageFooterNextButton|add-button|signInSubmitButton|bottom-navigation|wizardNext|continueButton/i;
+
+function isNavigationClickLabel(text) {
+  const t = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t || t.length > 48) return false;
+  return NAV_CLICK_LABEL_RE.test(t);
+}
+
+function isNavigationSelector(selector) {
+  return NAV_CLICK_SELECTOR_RE.test(String(selector || ""));
+}
+
+function navigationClickName(step = {}) {
+  for (const candidate of [step.value, step.selectedText, step.label, step.fieldName]) {
+    if (isNavigationClickLabel(candidate)) return String(candidate).replace(/\s+/g, " ").trim();
+  }
+  return "";
+}
+
+/** Footer / Add / Submit clicks — never store as a field value on a nearby question. */
+function isNavigationClick(step = {}) {
+  if (isNavigationSelector(step.selector)) return true;
+  return Boolean(navigationClickName(step));
+}
+
 function shouldKeepCaptureEvent(event) {
   if (!event || typeof event !== "object") return false;
   if (isNoiseCaptureUrl(event.pageUrl)) return false;
@@ -179,6 +216,73 @@ function shouldKeepCaptureEvent(event) {
   return Boolean(fallback);
 }
 
+function applyExplanationPatches(eventList) {
+  const byId = new Map();
+  const out = [];
+  for (const event of eventList || []) {
+    if (!event || typeof event !== "object") continue;
+    if (String(event.kind || "") === "step_explanation") {
+      const id = String(event.captureEventId || "").trim();
+      const text = String(event.explanation || "").replace(/\s+/g, " ").trim();
+      const prev = id ? byId.get(id) : null;
+      if (prev && text) prev.explanation = text;
+      continue;
+    }
+    if (String(event.kind || "") === "step_screenshot") {
+      const id = String(event.captureEventId || "").trim();
+      const prev = id ? byId.get(id) : null;
+      if (prev) require("./capture-step-shot").copyScreenshotMeta(event, prev);
+      continue;
+    }
+    const id = String(event.captureEventId || "").trim();
+    if (id) byId.set(id, event);
+    out.push(event);
+  }
+  return out;
+}
+
+function stableGuiSelector(sel) {
+  const s = String(sel || "").trim();
+  if (!s) return "";
+  if (/^(input|select|textarea|button|div|span|label|a)(\[type=.*\])?$/i.test(s)) return "";
+  if (s.startsWith("#") || /\[(name|id|data-automation-id|data-testid|data-test)=/i.test(s)) return s;
+  return "";
+}
+
+function stampShot(target, event) {
+  const next = require("./capture-step-shot").copyScreenshotMeta(event, target);
+  if (event?.captureEventId) next.captureEventId = String(event.captureEventId);
+  if (event?.ts && !next.stepAt) next.stepAt = event.ts;
+  const finder = truncateCaptureText(event?.finder || "", 240);
+  const label = String(next.label || next.fieldName || "").trim();
+  if (finder && finder.toLowerCase() !== label.toLowerCase()) next.finder = finder;
+  const guiId = String(event?.guiId || "").trim() || stableGuiSelector(event?.selector) || stableGuiSelector(next.selector);
+  if (guiId) next.guiId = guiId;
+  return next;
+}
+
+function upsertClick(row, event, click) {
+  const label = String(click?.label || "").trim();
+  const selector = String(click?.selector || "");
+  const prev = row.clicks[row.clicks.length - 1];
+  if (prev && prev.label === label && prev.selector === selector) {
+    stampShot(prev, event);
+    const last = row.steps[row.steps.length - 1];
+    if (
+      last &&
+      last.action === "click" &&
+      last.label === label &&
+      String(last.selector || "") === selector
+    ) {
+      stampShot(last, event);
+    }
+    return;
+  }
+  const stamped = stampShot({ ...click, label, selector }, event);
+  row.clicks.push(stamped);
+  row.steps.push(stampShot({ ...stamped, pageUrl: event.pageUrl || row.pageUrl }, event));
+}
+
 function writeCaptureSnapshot(transactions) {
   try {
     const dir = captureDataDir();
@@ -195,9 +299,57 @@ function writeCaptureSnapshot(transactions) {
   }
 }
 
+function nameFromFieldSelector(selector) {
+  const raw = String(selector || "").trim();
+  const named = raw.match(/^\[name="([^"]+)"\]$/);
+  if (named) {
+    const name = named[1].replace(/\s+/g, " ").trim();
+    if (name && !isJunkCaptureName(name)) return name;
+  }
+  if (raw === 'input[type="tel"]') return "Phone";
+  if (raw === 'input[type="email"]') return "Email";
+  const id = raw.match(/^#([A-Za-z][A-Za-z0-9_]*)$/);
+  if (id && !/metadata|group|label|input|button/i.test(id[1])) {
+    const words = id[1].replace(/^field_/, "").replace(/_/g, " ").trim();
+    if (words.length >= 3 && !isJunkCaptureName(words)) {
+      return words.replace(/\b[a-z]/g, (ch) => ch.toUpperCase());
+    }
+  }
+  return "";
+}
+
+function questionLabelScore(text) {
+  const s = String(text || "").replace(/\s+/g, " ").trim();
+  if (!s || isJunkCaptureName(s)) return -1;
+  let score = Math.min(s.length, 180);
+  if (/[?]/.test(s)) score += 1000;
+  if (/\*/.test(s)) score += 80;
+  if (/\s/.test(s)) score += 200;
+  if (/^[a-z0-9]+(?:_[a-z0-9]+)+$/i.test(s)) score -= 400;
+  if (/^[a-z]+(?:[A-Z][a-z0-9]*)+$/.test(s)) score -= 250;
+  return score;
+}
+
+function betterQuestionLabel(current, incoming) {
+  return questionLabelScore(incoming) >= questionLabelScore(current) ? incoming || current : current || incoming;
+}
+
+function selectWithin(events, index) {
+  const start = Date.parse(events[index]?.ts || "") || 0;
+  for (let j = index + 1; j < events.length && j < index + 8; j += 1) {
+    const next = events[j];
+    const at = Date.parse(next?.ts || "") || 0;
+    if (start && at && at - start > 500) return null;
+    if (String(next?.action || "").toLowerCase() === "select") return next;
+  }
+  return null;
+}
+
 function groupCaptureEvents(eventList) {
   const groups = new Map();
-  for (const event of eventList || []) {
+  const patched = applyExplanationPatches(eventList);
+  for (let index = 0; index < patched.length; index += 1) {
+    const event = patched[index];
     if (!shouldKeepCaptureEvent(event)) continue;
     const id = String(
       event.recordingSessionId || event.sessionId || event.cardId || event.transactionId || "session"
@@ -238,7 +390,7 @@ function groupCaptureEvents(eventList) {
       // Only treat very short tokens as "option answers" when deciding Field vs Value
       return false;
     };
-    if (action === "click") {
+    if (action === "click" || (action === "check" && isNavigationClick(event))) {
       const fieldName = truncateCaptureText(event.fieldName || "", 240);
       const value = truncateCaptureText(
         event.value != null && String(event.value).trim() !== ""
@@ -248,6 +400,21 @@ function groupCaptureEvents(eventList) {
       );
       const label = truncateCaptureText(event.label || value || fieldName, 120);
       if (!label && !value && !fieldName) continue;
+      const navName = navigationClickName({ ...event, label, value, selector }) || (isNavigationSelector(selector) ? value || label : "");
+      if (navName || isNavigationSelector(selector)) {
+        const clickLabel = navName || value || label || "click";
+        upsertClick(
+          row,
+          event,
+          {
+            action: "click",
+            label: clickLabel,
+            selector,
+            value: clickLabel,
+          }
+        );
+        continue;
+      }
       const question =
         fieldName && !isJunkCaptureName(fieldName) && !isBareOption(fieldName)
           ? fieldName
@@ -271,34 +438,39 @@ function groupCaptureEvents(eventList) {
           last.value = answer;
           last.selectedText = answer;
           last.selector = selector || last.selector;
+          stampShot(last, event);
         } else {
-          row.steps.push({
-            action: "check",
-            label: question,
-            fieldName: question,
-            selector,
-            value: answer,
-            selectedText: answer,
-            pageUrl: event.pageUrl || row.pageUrl,
-          });
+          row.steps.push(
+            stampShot(
+              {
+                action: "check",
+                label: question,
+                fieldName: question,
+                selector,
+                value: answer,
+                selectedText: answer,
+                pageUrl: event.pageUrl || row.pageUrl,
+              },
+              event
+            )
+          );
         }
         continue;
       }
-      const prev = row.clicks[row.clicks.length - 1];
-      if (!prev || prev.label !== label || prev.selector !== selector) {
-        const click = {
-          action: "click",
-          label: label || answer || fieldName,
-          selector,
-        };
-        if (fieldName && !isJunkCaptureName(fieldName)) click.fieldName = fieldName;
-        if (value) click.value = value;
-        row.clicks.push(click);
-        row.steps.push({ ...click, pageUrl: event.pageUrl || row.pageUrl });
-      }
+      const click = {
+        action: "click",
+        label: label || answer || fieldName,
+        selector,
+      };
+      if (fieldName && !isJunkCaptureName(fieldName)) click.fieldName = fieldName;
+      if (value) click.value = value;
+      upsertClick(row, event, click);
       continue;
     }
-    const humanName = String(event.fieldName || event.label || event.key || "").trim();
+    const humanFromSelector = nameFromFieldSelector(selector);
+    const explicitName = String(event.fieldName || event.label || event.key || "").trim();
+    const humanName =
+      explicitName && !isJunkCaptureName(explicitName) ? explicitName : humanFromSelector || explicitName;
     const name = !isJunkCaptureName(humanName)
       ? humanName
       : !isJunkCaptureName(selector)
@@ -342,20 +514,115 @@ function groupCaptureEvents(eventList) {
     ) {
       finalName = "Answer";
     }
+    if (isJunkCaptureName(finalName)) {
+      const finder = String(event.finder || "").trim();
+      if (finder && !isJunkCaptureName(finder)) finalName = finder;
+      else {
+        const guiTry = String(event.guiId || stableGuiSelector(String(event.selector || "")) || "").trim();
+        if (guiTry && value && (action === "check" || action === "select")) {
+          for (let i = row.steps.length - 1; i >= 0; i -= 1) {
+            const prev = row.steps[i];
+            if (!prev || prev.guiId !== guiTry || isJunkCaptureName(prev.label)) continue;
+            prev.value = String(value);
+            if (prev.label) row.fields[prev.label] = String(value);
+            break;
+          }
+        }
+        continue;
+      }
+    }
     if (!finalName) continue;
+    // A dropdown click emits a change whose label is the option and whose value
+    // is a 1-character code, then the real select ~60ms later. The short change
+    // is not a field. If the select only kept the search fragment, use the option.
+    if (action === "change" && String(value || "").length <= 1 && questionLabelScore(finalName) < 400) {
+      const upcoming = selectWithin(patched, index);
+      if (upcoming) {
+        const selVal = String(upcoming.value || upcoming.selectedText || "").trim();
+        if (
+          selVal &&
+          selVal.length <= 12 &&
+          finalName.length > selVal.length &&
+          finalName.toLowerCase() !== selVal.toLowerCase()
+        ) {
+          upcoming.value = finalName;
+          upcoming.selectedText = finalName;
+        }
+        continue;
+      }
+    }
     if (isJunkCaptureValue(value) && action !== "check" && action !== "select") continue;
     if (finalName && (value || action === "check" || action === "select")) {
       const fillAction = action === "check" || action === "select" ? action : "fill";
       const displayValue = value || selectedText || "checked";
+      if (
+        fillAction === "check" &&
+        /\*$/.test(finalName) &&
+        /\*$/.test(displayValue) &&
+        finalName.toLowerCase() !== displayValue.toLowerCase()
+      ) {
+        continue;
+      }
+      if (isNavigationClick({ label: finalName, value: displayValue, selector, selectedText })) {
+        const clickLabel = navigationClickName({ label: finalName, value: displayValue, selector }) || displayValue;
+        upsertClick(row, event, {
+          action: "click",
+          label: clickLabel,
+          selector,
+          value: clickLabel,
+        });
+        continue;
+      }
       // Prefer human labels over opaque ids in the fields map
       row.fields[finalName] = displayValue;
       const last = row.steps[row.steps.length - 1];
       const stepLabel =
-        String(event.label || finalName).trim() &&
-        !isJunkCaptureName(String(event.label || "").trim()) &&
-        !isShortOption(event.label)
-          ? String(event.label || finalName).trim()
-          : finalName;
+        humanFromSelector && (!explicitName || isJunkCaptureName(explicitName))
+          ? humanFromSelector
+          : String(event.label || finalName).trim() &&
+              !isJunkCaptureName(String(event.label || "").trim()) &&
+              !isShortOption(event.label)
+            ? String(event.label || finalName).trim()
+            : finalName;
+      const gui = String(event.guiId || stableGuiSelector(selector) || "").trim();
+      if (fillAction === "check" || fillAction === "select") {
+        let prior = null;
+        for (let i = row.steps.length - 1; i >= 0; i -= 1) {
+          const prev = row.steps[i];
+          if (!prev || (prev.action !== "check" && prev.action !== "select")) continue;
+          const sameGui = gui && prev.guiId && prev.guiId === gui;
+          const sameName =
+            (finalName && (prev.fieldName === finalName || prev.label === finalName)) ||
+            (stepLabel && (prev.label === stepLabel || prev.fieldName === stepLabel));
+          if (!sameGui && !sameName) continue;
+          const priorText = prev.label || prev.fieldName || "";
+          const nextText = stepLabel || finalName || "";
+          const distinctQuestions =
+            sameGui &&
+            !sameName &&
+            questionLabelScore(priorText) >= 400 &&
+            questionLabelScore(nextText) >= 400 &&
+            String(priorText).toLowerCase() !== String(nextText).toLowerCase();
+          if (distinctQuestions) continue;
+          prior = prev;
+          break;
+        }
+        if (prior) {
+          const oldLabel = prior.label;
+          const kept = betterQuestionLabel(oldLabel || prior.fieldName, stepLabel || finalName);
+          prior.value = displayValue;
+          prior.action = fillAction;
+          prior.selector = selector || prior.selector;
+          prior.label = kept || prior.label;
+          prior.fieldName = kept || finalName || prior.fieldName;
+          if (selectedText) prior.selectedText = selectedText;
+          if (gui) prior.guiId = gui;
+          if (oldLabel && oldLabel !== prior.label) delete row.fields[oldLabel];
+          row.fields[prior.label || finalName] = displayValue;
+          stampShot(prior, event);
+          continue;
+        }
+      }
       // Collapse "Click Yes" + following check into one check step when labels match
       if (
         last &&
@@ -372,6 +639,7 @@ function groupCaptureEvents(eventList) {
         last.label = isShortOption(stepLabel) ? finalName : stepLabel;
         last.selector = selector || last.selector;
         row.fields[last.label] = displayValue;
+        stampShot(last, event);
         continue;
       }
       if (
@@ -385,16 +653,22 @@ function groupCaptureEvents(eventList) {
         last.label = stepLabel;
         last.fieldName = finalName || last.fieldName;
         if (selectedText) last.selectedText = selectedText;
+        stampShot(last, event);
       } else {
-        row.steps.push({
-          action: fillAction,
-          label: stepLabel,
-          fieldName: finalName,
-          selector,
-          value: displayValue,
-          selectedText,
-          pageUrl: event.pageUrl || row.pageUrl,
-        });
+        row.steps.push(
+          stampShot(
+            {
+              action: fillAction,
+              label: stepLabel,
+              fieldName: finalName,
+              selector,
+              value: displayValue,
+              selectedText,
+              pageUrl: event.pageUrl || row.pageUrl,
+            },
+            event
+          )
+        );
       }
     }
   }
@@ -525,6 +799,24 @@ function createCaptureStore() {
     return recordingPayload();
   }
 
+  async function setRecordingAsync(body = {}) {
+    const action = String(body.action || "").toLowerCase();
+    const stop = body.recording === false || action === "stop" || body.stop === true;
+    if (stop) {
+      recording = false;
+      try {
+        const flush = require("./capture-step-shot").flushStepShots();
+        await Promise.race([
+          Promise.resolve(flush).catch(() => {}),
+          new Promise((resolve) => setTimeout(resolve, 2500)),
+        ]);
+      } catch {
+        /* shots optional */
+      }
+    }
+    return setRecording(body);
+  }
+
   function appendJsonl(event) {
     try {
       const dir = captureDataDir();
@@ -542,6 +834,7 @@ function createCaptureStore() {
     if (!recording) return null;
     const event = raw && typeof raw === "object" ? { ...raw } : {};
     event.ts = event.ts || new Date().toISOString();
+    event.captureEventId = String(event.captureEventId || crypto.randomUUID());
     event.sessionId = recordingSessionId || event.sessionId || event.cardId || "";
     event.recordingSessionId = recordingSessionId || event.recordingSessionId || "";
     event.cardId = recordingCardId || event.cardId || "";
@@ -552,9 +845,22 @@ function createCaptureStore() {
       event.user_id = event.user_id || recordingUser;
     }
     if (!shouldKeepCaptureEvent(event)) return [];
+    try {
+      require("./capture-step-shot").persistScreenshotDataUrl(event);
+    } catch {
+      /* shots optional */
+    }
     events.push(event);
     if (events.length > 8000) events.splice(0, events.length - 8000);
     appendJsonl(event);
+    try {
+      const shot = require("./capture-step-shot");
+      if (shot.shouldCaptureStepShot(event) && !String(event.screenshotPath || "").trim()) {
+        shot.scheduleStepShot(event);
+      }
+    } catch {
+      /* screenshots optional */
+    }
     return [event];
   }
 
@@ -562,11 +868,31 @@ function createCaptureStore() {
     return groupCaptureEvents(events);
   }
 
+  function attachStepExplanation(body = {}) {
+    const id = String(body.captureEventId || "").trim();
+    const text = String(body.explanation || "").replace(/\s+/g, " ").trim();
+    if (!id || !text) return { ok: false, error: "missing_explanation" };
+    const event = events.find((row) => String(row?.captureEventId || "") === id);
+    if (!event) return { ok: false, error: "step_not_found" };
+    event.explanation = text;
+    appendJsonl({
+      kind: "step_explanation",
+      captureEventId: id,
+      explanation: text,
+      ts: new Date().toISOString(),
+      recordingSessionId: event.recordingSessionId || recordingSessionId || "",
+      sessionId: event.sessionId || event.recordingSessionId || recordingSessionId || "",
+    });
+    return { ok: true, captureEventId: id, explanation: text };
+  }
+
   return {
     recordingPayload,
     setRecording,
+    setRecordingAsync,
     ingest,
     listTransactions,
+    attachStepExplanation,
     isRecording: () => recording,
   };
 }
@@ -648,7 +974,7 @@ function createPdfViewServer({ port = DEFAULT_PORT } = {}) {
         } catch {
           body = {};
         }
-        json(res, 200, { ok: true, ...capture.setRecording(body) });
+        json(res, 200, { ok: true, ...(await capture.setRecordingAsync(body)) });
         return true;
       }
       json(res, 200, { ok: true, ...capture.recordingPayload() });
@@ -754,5 +1080,9 @@ module.exports = {
   isCaptureRefKey,
   isJunkCaptureName,
   isJunkCaptureValue,
+  isNavigationClickLabel,
+  isNavigationSelector,
+  isNavigationClick,
+  navigationClickName,
   DEFAULT_PORT,
 };

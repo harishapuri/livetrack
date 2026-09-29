@@ -50,6 +50,101 @@ function seed() {
       updated: daysAgo(4),
       issueType: "Story",
     },
+    {
+      key: "MBA-1",
+      summary: "(Sample) Account Registration",
+      description: "Let new customers create an account and verify their email.",
+      status: "Done",
+      priority: "Medium",
+      assignee: "Demo Agent",
+      labels: ["sample"],
+      updated: daysAgo(14),
+      issueType: "Task",
+    },
+    {
+      key: "MBA-2",
+      summary: "(Sample) Transaction Management",
+      description: "Allow users to view their transaction history in the app.",
+      status: "Done",
+      priority: "Medium",
+      assignee: "Demo Agent",
+      labels: ["sample"],
+      updated: daysAgo(12),
+      issueType: "Task",
+    },
+    {
+      key: "MBA-3",
+      summary: "(Sample) Implement Biometric Login",
+      description: "Allow users to log in using fingerprint or facial recognition.",
+      status: "Done",
+      priority: "Medium",
+      assignee: "Demo Agent",
+      labels: ["sample", "biometric"],
+      updated: daysAgo(8),
+      issueType: "Task",
+      comments: [
+        "Please close RITM0203030. Weekend window is CHG0404004. Catalog work SCTASK9203003.",
+      ],
+    },
+    {
+      key: "MBA-4",
+      summary: "(Sample) Two-Factor Authentication Setup",
+      description: "Implement two-factor authentication for enhanced security.",
+      status: "In Progress",
+      priority: "Medium",
+      assignee: "Demo Agent",
+      labels: ["sample"],
+      updated: daysAgo(3),
+      issueType: "Task",
+      comments: ["RITM102003030 created for 2FA hardware tokens."],
+    },
+    {
+      key: "MBA-5",
+      summary: "(Sample) Implement Biometric Login in SAMPLE",
+      description: "Allow users to view their transaction history in the app.",
+      status: "In Progress",
+      priority: "Medium",
+      assignee: "Demo Agent",
+      labels: ["sample", "biometric"],
+      updated: daysAgo(2),
+      issueType: "Task",
+      comments: [
+        "Please close RITM0203030 after the MFA reset. Weekend window is CHG0404004. Catalog work SCTASK9203003. Also RITM29292002020 and RITM100101002. Related story MBA-3. Mentioned MBA-1 and MBA-2 are not the same story.",
+      ],
+    },
+    {
+      key: "MBA-6",
+      summary: "Implement Biometric FAILIGN WITH 404",
+      description: "Enable users to transfer funds between accounts.",
+      status: "Done",
+      priority: "Medium",
+      assignee: "Demo Agent",
+      labels: ["sample", "biometric"],
+      updated: daysAgo(0),
+      issueType: "Task",
+    },
+    {
+      key: "MBA-12",
+      summary: "Allow users to view their transaction history in the app.",
+      description: "Show posted transactions and pending authorizations in the mobile app.",
+      status: "Done",
+      priority: "Medium",
+      assignee: "Demo Agent",
+      labels: ["sample", "history"],
+      updated: daysAgo(6),
+      issueType: "Task",
+    },
+    {
+      key: "MBA-21",
+      summary: "Allow users to view their transaction history in the app.",
+      description: "Closed after confirming posted transactions show in the mobile app.",
+      status: "Done",
+      priority: "Medium",
+      assignee: "Demo Agent",
+      labels: ["sample", "history"],
+      updated: hoursAgo(1),
+      issueType: "Task",
+    },
   ];
 
   for (const row of rows) {
@@ -78,7 +173,15 @@ function seed() {
         issuetype: { name: row.issueType },
       },
     });
-    comments.set(row.key, []);
+    comments.set(
+      row.key,
+      (row.comments || []).map((body, index) => ({
+        id: String(nextCommentId++),
+        created: hoursAgo(index + 1),
+        author: { displayName: "Demo Agent", emailAddress: DEMO_EMAIL },
+        body,
+      }))
+    );
     attachments.set(row.key, []);
   }
 }
@@ -237,6 +340,33 @@ function listIssues() {
   );
 }
 
+function fieldHasJqlTokens(text, phrase) {
+  const hay = String(text || "").toLowerCase();
+  const tokens = String(phrase || "")
+    .toLowerCase()
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!tokens.length) return false;
+  return tokens.every((tok) => hay.includes(tok));
+}
+
+function jqlTildeMatches(jql, issue) {
+  const summary = String(issue?.fields?.summary || "").toLowerCase();
+  const description = String(issue?.fields?.description || "").toLowerCase();
+  const blob = `${summary} ${description}`.trim();
+  const orParts = String(jql || "").split(/\s+OR\s+/i);
+  return orParts.some((part) => {
+    const partClauses = [...part.matchAll(/\b(summary|description|text)\s*~\s*"([^"]+)"/gi)];
+    if (!partClauses.length) return false;
+    return partClauses.every(([, field, phrase]) => {
+      const name = String(field || "").toLowerCase();
+      const hay = name === "summary" ? summary : name === "description" ? description : blob;
+      return fieldHasJqlTokens(hay, phrase);
+    });
+  });
+}
+
 function handleSearch(url, res) {
   const maxResults = Math.min(100, Number(url.searchParams.get("maxResults") || 50) || 50);
   const jql = String(url.searchParams.get("jql") || "");
@@ -250,6 +380,28 @@ function handleSearch(url, res) {
       const name = String(i.fields.assignee?.displayName || "");
       if (!name || name === "Unassigned") return false;
       return email === DEMO_EMAIL.toLowerCase() || name === "Demo Agent";
+    });
+  }
+  const project = (/\bproject\s*=\s*([A-Za-z][A-Za-z0-9_]*)/i.exec(jql) || [])[1];
+  if (project) {
+    const prefix = `${project.toUpperCase()}-`;
+    all = all.filter((i) => String(i.key || "").toUpperCase().startsWith(prefix));
+  }
+  if (/\b(summary|description|text)\s*~/i.test(jql)) {
+    all = all.filter((i) => jqlTildeMatches(jql, i));
+  }
+  if (/\bstatusCategory\s*=\s*Done\b/i.test(jql) || /\bstatus\s*=\s*Done\b/i.test(jql)) {
+    all = all.filter((i) => /^(done|closed|resolved|complete|completed)$/i.test(i.fields.status?.name));
+  }
+  if (/\bkey\s*!=\s*([A-Z][A-Z0-9]+-\d+)/i.test(jql)) {
+    const exclude = String(RegExp.$1 || "").toUpperCase();
+    all = all.filter((i) => String(i.key || "").toUpperCase() !== exclude);
+  }
+  if (/\bORDER\s+BY\s+updated\s+DESC\b/i.test(jql)) {
+    all = [...all].sort((a, b) => {
+      const ta = Date.parse(a?.fields?.updated || 0) || 0;
+      const tb = Date.parse(b?.fields?.updated || 0) || 0;
+      return tb - ta;
     });
   }
   const sliced = all.slice(startAt, startAt + maxResults);
@@ -712,8 +864,22 @@ const server = http.createServer(async (req, res) => {
 
       const commentMatch = url.pathname.match(/^\/rest\/api\/3\/issue\/([^/]+)\/comment(?:\/([^/]+))?$/);
       if (commentMatch) {
+        const issueKey = decodeURIComponent(commentMatch[1]);
+        const issue = issues.get(issueKey) || [...issues.values()].find((i) => i.id === issueKey);
+        if (req.method === "GET" && !commentMatch[2]) {
+          if (!issue) {
+            return sendJson(res, 404, { errorMessages: ["Issue does not exist."] });
+          }
+          const list = comments.get(issue.key) || [];
+          return sendJson(res, 200, {
+            startAt: 0,
+            maxResults: list.length,
+            total: list.length,
+            comments: list,
+          });
+        }
         if (req.method === "POST" && !commentMatch[2]) {
-          return await handleComment(decodeURIComponent(commentMatch[1]), req, res);
+          return await handleComment(issueKey, req, res);
         }
         // Never allow update/delete — comments are append-only
         if (req.method === "PUT" || req.method === "DELETE" || req.method === "PATCH") {

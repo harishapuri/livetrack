@@ -5,6 +5,7 @@ const stepList = document.getElementById("stepList");
 const runNote = document.getElementById("runNote");
 const btnRecord = document.getElementById("btnRecord");
 const recToggleText = document.getElementById("recToggleText");
+const extLinkBlinker = document.getElementById("extLinkBlinker");
 const tagline = document.getElementById("tagline");
 const screenQueue = document.getElementById("screenQueue");
 const screenQuest = document.getElementById("screenQuest");
@@ -12,6 +13,13 @@ const questTitle = document.getElementById("questTitle");
 const questMeta = document.getElementById("questMeta");
 const btnBack = document.getElementById("btnBack");
 const btnStart = document.getElementById("btnStart");
+const playUrlModal = document.getElementById("playUrlModal");
+const playUrlInput = document.getElementById("playUrlInput");
+const btnLaunchPlayUrl = document.getElementById("btnLaunchPlayUrl");
+const btnCancelPlayUrl = document.getElementById("btnCancelPlayUrl");
+const btnClosePlayUrlModal = document.getElementById("btnClosePlayUrlModal");
+const btnPastePlayUrl = document.getElementById("btnPastePlayUrl");
+const btnClearPlayUrl = document.getElementById("btnClearPlayUrl");
 const agentApproveModal = document.getElementById("agentApproveModal");
 const agentProposeList = document.getElementById("agentProposeList");
 const agentApproveHint = document.getElementById("agentApproveHint");
@@ -54,8 +62,9 @@ const queueSearchWrap = document.getElementById("queueSearchWrap");
 const btnSettings = document.getElementById("btnSettings");
 const navLive = document.getElementById("navLive");
 const navJira = document.getElementById("navJira");
+const navPast = document.getElementById("navPast");
+const navExpert = document.getElementById("navExpert");
 const navMom = document.getElementById("navMom");
-const navActions = document.getElementById("navActions");
 const navAi = document.getElementById("navAi");
 const navDesk = document.getElementById("navDesk");
 const navFeedback = document.getElementById("navFeedback");
@@ -63,8 +72,9 @@ const navAnalytics = document.getElementById("navAnalytics");
 const navDashboard = document.getElementById("navDashboard");
 const paneLive = document.getElementById("paneLive");
 const paneJira = document.getElementById("paneJira");
+const panePast = document.getElementById("panePast");
+const paneExpert = document.getElementById("paneExpert");
 const paneMom = document.getElementById("paneMom");
-const paneActions = document.getElementById("paneActions");
 const paneAi = document.getElementById("paneAi");
 const paneDesk = document.getElementById("paneDesk");
 const paneFeedback = document.getElementById("paneFeedback");
@@ -87,7 +97,7 @@ const btnMomCopy = document.getElementById("btnMomCopy");
 const momFoldsStack = document.getElementById("momFoldsStack");
 const momMeetingsCard = document.getElementById("momMeetingsCard");
 const momLiveCard = document.getElementById("momLiveCard");
-const momMinutesCard = document.getElementById("momMinutesCard");
+const momMinutesBlock = document.getElementById("momMinutesBlock");
 const momPastCard = document.getElementById("momPastCard");
 const momPastList = document.getElementById("momPastList");
 const momPastCount = document.getElementById("momPastCount");
@@ -129,6 +139,7 @@ const dashList = document.getElementById("dashList");
 const dashMeta = document.getElementById("dashMeta");
 const dashHeading = document.getElementById("dashHeading");
 const btnDashRefresh = document.getElementById("btnDashRefresh");
+const btnDashApprovals = document.getElementById("btnDashApprovals");
 const captureLivePanel = document.getElementById("captureLivePanel");
 const captureLiveMeta = document.getElementById("captureLiveMeta");
 const captureLiveTicket = document.getElementById("captureLiveTicket");
@@ -166,6 +177,98 @@ const appRoot = document.getElementById("appRoot");
 
 let cards = [];
 let activeCardId = null;
+
+function cardHasAttachedPlaywright(card) {
+  if (!card) return false;
+  if (card.hasPlaywright) return true;
+  const script = card.playwright;
+  const nested = script?.playwright?.steps;
+  if (Array.isArray(nested) && nested.length) return true;
+  return Array.isArray(script?.steps) && script.steps.length > 0;
+}
+
+function playUrlStorageKey(cardId) {
+  return `livetrack.playUrl.${cardId || "card"}`;
+}
+
+function lastPlayUrlFor(card) {
+  try {
+    const saved = localStorage.getItem(playUrlStorageKey(card?.id));
+    if (saved) return saved;
+  } catch {
+    /* ignore */
+  }
+  return String(card?.formUrl || card?.playwright?.startUrl || "").trim();
+}
+
+function closePlayUrlModal() {
+  playUrlModal?.classList.add("hidden");
+  playUrlModal?.setAttribute("aria-hidden", "true");
+}
+
+function askPlayUrlThenLaunch(card) {
+  if (!playUrlModal || !playUrlInput) {
+    const typed = window.prompt("Job URL", lastPlayUrlFor(card) || "https://");
+    const url = String(typed || "").trim();
+    if (!url) return;
+    startFilling({ agentApproved: true, startUrl: url });
+    return;
+  }
+  playUrlInput.value = "";
+  playUrlInput.placeholder = "Paste https://…apply URL here";
+  playUrlModal.classList.remove("hidden");
+  playUrlModal.setAttribute("aria-hidden", "false");
+  void window.coact.focusMainWindow?.();
+  setTimeout(() => {
+    playUrlInput.focus();
+  }, 40);
+}
+
+async function pastePlayUrlFromClipboard() {
+  let text = "";
+  try {
+    const fromApp = await window.coact.readClipboard?.();
+    if (fromApp?.text) text = String(fromApp.text);
+  } catch {
+    /* ignore */
+  }
+  if (!text) {
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      /* ignore */
+    }
+  }
+  text = String(text || "").trim().replace(/\s+/g, "");
+  if (!text) {
+    runNote.className = "run-note error";
+    runNote.textContent = "Clipboard is empty. Copy the URL, then Paste.";
+    playUrlInput?.focus();
+    return;
+  }
+  playUrlInput.value = text;
+  playUrlInput.focus();
+  playUrlInput.setSelectionRange(0, text.length);
+}
+
+function launchPlayUrlFromModal() {
+  let url = String(playUrlInput?.value || "").trim();
+  url = url.replace(/\s+/g, "");
+  if (!url || !/^https?:\/\//i.test(url)) {
+    runNote.className = "run-note error";
+    runNote.textContent = "Paste a full http(s) job URL, then Launch.";
+    playUrlInput?.focus();
+    return;
+  }
+  try {
+    localStorage.setItem(playUrlStorageKey(activeCardId), url);
+  } catch {
+    /* ignore */
+  }
+  closePlayUrlModal();
+  agentApprovedForRun = true;
+  startFilling({ agentApproved: true, startUrl: url });
+}
 /** User chose ← Queue; stay on task list until the browser tab URL changes. */
 let suppressAutoOpen = false;
 let runState = "idle"; // idle | running | paused
@@ -195,12 +298,15 @@ let activeTabTitle = null;
 let autoPinnedCardId = null;
 /** @type {Map<string, Map<string, string>>} */
 const cardProgress = new Map();
+/** label → status fallback when SOP republish changes step ids */
+const cardProgressLabels = new Map();
 /** Per-card abandon / activity timestamps for 15-min stale reset */
 const cardProgressMeta = new Map();
 /** @type {Map<string, ReturnType<typeof setTimeout>>} */
 const staleProgressTimers = new Map();
 const STALE_PROGRESS_MS = 15 * 60 * 1000;
 const PROGRESS_META_STORAGE_KEY = "livetrack.cardProgressMeta";
+const PROGRESS_STORAGE_KEY = "livetrack.cardProgress";
 /** Per-card: true = coaching on. Starts on when a card opens; Stop turns it off until Coach or reopen. */
 const voiceCoachOnByCard = new Map();
 /** Dedupe guide speaks: `${cardId}:${stepId}` */
@@ -210,9 +316,13 @@ let lastGuideStepId = "";
 let guideAudioReady = false;
 /** Bumps on each coach start so overlapping opens don't cancel TTS incorrectly. */
 let voiceCoachGen = 0;
+/** Coalesce a burst of step updates into one line for the step the user is on. */
+let guideSpeakTimer = null;
 /** @type {{ ok?: boolean, issues?: any[], staleCount?: number, error?: string, fetchedAt?: string, configured?: boolean } | null} */
 let jiraSnapshot = null;
 let lastJiraUiFp = "";
+let pastWorkSnapshot = null;
+let pastWorkBusy = false;
 /** @type {Map<string, { path?: string, dataUrl?: string, story?: string, comment?: string, status?: string, busy?: boolean }>} */
 const jiraMailByKey = new Map();
 let momSnapshot = null;
@@ -225,6 +335,8 @@ let momMeetingsOpen = true;
 let momTranscriptOpen = false;
 let momMinutesOpen = false;
 let momPastOpen = false;
+let momActionsAddOpen = false;
+let momActionsListOpen = false;
 /** Expanded meeting row inside Outlook meetings list (one at a time). */
 let momExpandedEventId = "";
 let momPastItems = [];
@@ -278,7 +390,15 @@ function deskPageLabel(url, title) {
 function jiraUiFingerprint(snapshot) {
   if (!snapshot) return "";
   const issues = (snapshot.issues || []).map((i) =>
-    [i.key, i.status, i.done, i.sopStage, i.urgencyScore, i.linkedCardId].join(":")
+    [
+      i.key,
+      i.status,
+      i.done,
+      i.sopStage,
+      i.urgencyScore,
+      i.linkedCardId,
+      (i.relatedTickets || []).map((t) => t.key).join(","),
+    ].join(":"),
   );
   return [
     snapshot.ok,
@@ -307,20 +427,118 @@ let capturePollTimer = null;
 let captureBusy = false;
 /** True only after the user clicks Record this session — auto-start never sets this. */
 let recordStartedManually = false;
+/** Capture started because the first live step turned green. */
+let recordStartedFromFirstGreen = false;
+/** Steps completed with a value that is not the live-tracking value (orange). */
+const stepWarnMismatch = new Set();
+/** Agent-tied capture: auto-on at Playwright launch; never re-armed after a user stop. */
+let captureAgentOwned = false;
+let captureUserStopped = false;
 /** Bootstrap/first paint must not auto-record, even if default nav is Live. */
 let appReady = false;
 /** Armed only by a user Live click or queue-card click — not by launch auto-pin. */
 let autoRecordArmed = false;
-let pendingRecordingStop = false;
+/** Last Record click while a start/stop is still in flight: "start" | "stop" | "pause". */
+let pendingRecordingAction = "";
 let captureLiveMinimized = false;
 let liveRecordingCacheCleared = false;
+let lastCaptureTxnForExplain = null;
+let explainRecordStatus = "";
 let syncTabTimer = null;
 let wasExtensionConnected = false;
 let lastExtensionClientId = null;
 
+/** Chrome extension ↔ LiveTrack link (Record button blinker). */
+const LINK_IDLE_STALE_MS = 12000;
+const LINK_FLOW_STALE_MS = 8000;
+const LINK_RECORD_GRACE_MS = 8000;
+let extensionLink = {
+  connected: false,
+  bridgeUp: true,
+  lastStatusAt: 0,
+  lastPongAt: 0,
+  lastFlowAt: 0,
+  recordArmedAt: 0,
+};
+let lastCaptureFlowKey = "";
+let recLinkTimer = null;
+
+function captureTxnFlowKey(txn) {
+  if (!txn) return "";
+  const id = txn.id || txn.recordingSessionId || txn.ts || txn.updatedAt || "";
+  const fields = captureValuesMap(txn);
+  return `${id}|${Object.keys(fields).length}|${txn.clickCount || ""}|${txn.updatedAt || txn.ts || ""}`;
+}
+
+function noteCaptureFlow() {
+  extensionLink.lastFlowAt = Date.now();
+  updateLinkBlinker();
+}
+
+function applyExtensionHeartbeat(hb) {
+  if (!hb || typeof hb !== "object") return;
+  if (hb.appConnected) {
+    extensionLink.connected = true;
+  } else if (typeof hb.extensionConnected === "boolean") {
+    if (hb.extensionConnected) extensionLink.connected = true;
+    else if (runState !== "running" && !captureRecording) extensionLink.connected = false;
+  } else if (typeof hb.connected === "boolean" && hb.captureFlow !== true) {
+    if (hb.connected) extensionLink.connected = true;
+    else if (runState !== "running" && !captureRecording) extensionLink.connected = false;
+  }
+  if (Number(hb.lastStatusAt) > 0) extensionLink.lastStatusAt = Number(hb.lastStatusAt);
+  if (Number(hb.lastPongAt) > 0) extensionLink.lastPongAt = Number(hb.lastPongAt);
+  if (hb.captureFlow) extensionLink.lastFlowAt = Number(hb.at) || Date.now();
+  updateLinkBlinker();
+}
+
+function recLinkMode() {
+  const now = Date.now();
+  const connected =
+    Boolean(extensionLink.connected) && extensionLink.bridgeUp !== false;
+  const lastBeat = Math.max(
+    Number(extensionLink.lastStatusAt) || 0,
+    Number(extensionLink.lastPongAt) || 0,
+  );
+  const beatFresh =
+    connected && (!lastBeat || now - lastBeat < LINK_IDLE_STALE_MS);
+  const flowAt = Number(extensionLink.lastFlowAt) || 0;
+  const flowFresh = Boolean(flowAt && now - flowAt < LINK_FLOW_STALE_MS);
+  if (captureRecording) {
+    // A quiet form is still connected. "Down" means the extension stopped answering.
+    if (flowFresh) return "live";
+    if (beatFresh || runState === "running") return "ok";
+    const armed = Number(extensionLink.recordArmedAt) || 0;
+    if (armed && now - armed < LINK_RECORD_GRACE_MS) return "ok";
+    return "down";
+  }
+  return beatFresh ? "ok" : "down";
+}
+
+function updateLinkBlinker() {
+  if (!extLinkBlinker) return;
+  const mode = recLinkMode();
+  extLinkBlinker.classList.toggle("link-down", mode === "down");
+  extLinkBlinker.classList.toggle("link-ok", mode === "ok");
+  extLinkBlinker.classList.toggle("link-live", mode === "live");
+  const hint =
+    mode === "live"
+      ? "Extension connected — capture data is flowing"
+      : mode === "ok"
+        ? "Chrome extension connected to LiveTrack"
+        : captureRecording
+          ? "Recording, but no capture data — check the Chrome extension"
+          : "Chrome extension not connected";
+  extLinkBlinker.title = hint;
+  extLinkBlinker.setAttribute("aria-label", hint);
+  extLinkBlinker.setAttribute("data-link", mode);
+}
+
 /** Stuck-step GenAI coach */
 const STUCK_MS = 5000;
 const COACH_COOLDOWN_MS = 30000;
+/** Multiple-choice suggestions show this many values, then the next one after Dismiss. */
+const CHOICE_PAGE_SIZE = 5;
 let stuckTimer = null;
 let lastStepActivityAt = Date.now();
 /** @type {Map<string, { shown?: boolean, dismissedAt?: number, needsKeyShown?: boolean }>} */
@@ -339,9 +557,18 @@ function setExtensionStatus({
   bridgeUp,
   bridgeError,
   extensionClients,
+  extensionConnected,
+  appConnected,
 }) {
-  if (!btnRecord) return;
-  const online = Boolean(connected);
+  const extOn =
+    Boolean(connected) ||
+    Boolean(extensionConnected) ||
+    Boolean(appConnected);
+  extensionLink.connected = extOn;
+  if (extOn) extensionLink.lastStatusAt = Date.now();
+  if (bridgeUp === false) extensionLink.bridgeUp = false;
+  else if (bridgeUp === true) extensionLink.bridgeUp = true;
+  const online = extOn;
   const n = Number(extensionClients) || 0;
   let hint = "Record field values from Chrome";
   if (online) {
@@ -351,11 +578,13 @@ function setExtensionStatus({
         : "Chrome connected — click to record";
   } else if (bridgeError) hint = String(bridgeError);
   else if (bridgeUp === false) hint = "Bridge down";
-  if (!captureRecording && !capturePausedForNav) btnRecord.title = hint;
+  if (!captureRecording && !capturePausedForNav && btnRecord) btnRecord.title = hint;
+  updateLinkBlinker();
 }
 
 function updateRecordButton() {
   if (!btnRecord || !recToggleText) return;
+  btnRecord.disabled = false;
   btnRecord.classList.toggle("recording", captureRecording);
   btnRecord.classList.toggle("paused", capturePausedForNav);
   btnRecord.classList.toggle("online", captureRecording || capturePausedForNav);
@@ -365,6 +594,10 @@ function updateRecordButton() {
     : capturePausedForNav
       ? "Paused"
       : "Record";
+  if (captureRecording && !extensionLink.recordArmedAt) {
+    extensionLink.recordArmedAt = Date.now();
+  }
+  if (!captureRecording) extensionLink.recordArmedAt = 0;
   const noCard = !bestMatchedCard() && !captureRecordingCardId;
   btnRecord.title = captureRecording
     ? "Stop recording"
@@ -375,6 +608,11 @@ function updateRecordButton() {
       : noCard
         ? "Record this page as a new process (no queue card matches)"
         : "Start recording";
+  updateLinkBlinker();
+}
+
+function isWebsiteUrl(value) {
+  return /^https?:\/\//i.test(String(value || "").trim());
 }
 
 function humanizeFieldLabel(name) {
@@ -447,7 +685,47 @@ function captureClicksList(txn) {
   }
 }
 
-function renderFieldDl(dl, values, clicks) {
+function captureStepsList(txn) {
+  if (!txn) return [];
+  if (Array.isArray(txn.steps) && txn.steps.length) return txn.steps;
+  try {
+    const payload =
+      typeof txn.payload === "string" ? JSON.parse(txn.payload) : txn.payload || {};
+    return Array.isArray(payload.steps) ? payload.steps : [];
+  } catch {
+    return [];
+  }
+}
+
+function appendLiveExplanation(dl, steps, preview) {
+  const list = Array.isArray(steps) ? steps : [];
+  const explanations = Array.isArray(preview?.explanations) ? preview.explanations : [];
+  const pending = String(preview?.pending || "").trim();
+  list.forEach((step, index) => {
+    const saved = String(step?.explanation || "").trim();
+    const local = String(explanations[index] || "").trim();
+    const isLast = index === list.length - 1;
+    const body = isLast && pending ? pending : local || saved;
+    if (!body) return;
+    const label = String(step?.label || step?.fieldName || `Step ${index + 1}`).trim();
+    const dt = document.createElement("dt");
+    dt.textContent = "LiveTrack explanation";
+    const dd = document.createElement("dd");
+    dd.className = "capture-live-explain";
+    dd.textContent = label ? `${label}: ${body}` : body;
+    dl.append(dt, dd);
+  });
+  if (!list.length && pending) {
+    const dt = document.createElement("dt");
+    dt.textContent = "LiveTrack explanation";
+    const dd = document.createElement("dd");
+    dd.className = "capture-live-explain";
+    dd.textContent = pending;
+    dl.append(dt, dd);
+  }
+}
+
+function renderFieldDl(dl, values, clicks, steps, preview) {
   if (!dl) return;
   dl.replaceChildren();
   const entries = Object.entries(values || {}).filter(([, v]) =>
@@ -456,6 +734,7 @@ function renderFieldDl(dl, values, clicks) {
   const clickRows = Array.isArray(clicks)
     ? clicks.filter((c) => String(c.label || "").trim())
     : [];
+  const explainPreview = preview || window.liveTrackRecordExplain?.preview?.() || {};
   if (!entries.length && !clickRows.length) {
     const dt = document.createElement("dt");
     dt.textContent = "Status";
@@ -466,6 +745,7 @@ function renderFieldDl(dl, values, clicks) {
         ? "Paused — return to this card to continue"
         : "No values yet";
     dl.append(dt, dd);
+    appendLiveExplanation(dl, steps, explainPreview);
     return;
   }
   for (const click of clickRows) {
@@ -476,12 +756,14 @@ function renderFieldDl(dl, values, clicks) {
     dl.append(dt, dd);
   }
   for (const [key, value] of entries) {
+    if (isWebsiteUrl(key) || isWebsiteUrl(value)) continue;
     const dt = document.createElement("dt");
     dt.textContent = humanizeFieldLabel(key);
     const dd = document.createElement("dd");
     dd.textContent = String(value);
     dl.append(dt, dd);
   }
+  appendLiveExplanation(dl, steps, explainPreview);
 }
 
 function syncCaptureLiveMinButton() {
@@ -577,12 +859,15 @@ function renderLiveCapture(txn) {
     captureLivePanel?.classList.add("hidden");
     return;
   }
+  lastCaptureTxnForExplain = txn || null;
   const values = captureValuesMap(txn);
   const clicks = captureClicksList(txn);
+  const steps = captureStepsList(txn);
+  const explainPreview = window.liveTrackRecordExplain?.preview?.() || {};
   const n = Object.keys(values).length;
   const c = clicks.length;
-  const page = txn?.pageTitle || txn?.pageUrl || "";
-  const url = txn?.pageUrl || "";
+  const pageTitle = String(txn?.pageTitle || "").trim();
+  const page = /^https?:\/\//i.test(pageTitle) ? "" : pageTitle;
   const ticket = captureTicketOf(txn);
   const showTicket = ticket && !/^CAP-/i.test(ticket);
 
@@ -603,6 +888,10 @@ function renderLiveCapture(txn) {
       const bits = [];
       if (c) bits.push(`${c} click${c === 1 ? "" : "s"}`);
       if (n) bits.push(`${n} field${n === 1 ? "" : "s"}`);
+      if (explainRecordStatus) bits.push(explainRecordStatus);
+      else if (captureRecording && window.liveTrackRecordExplain?.isActive?.()) {
+        bits.push("Listening");
+      }
       const detail = bits.join(" · ");
       captureLiveMeta.textContent = captureRecording
         ? detail || "Recording clicks and field values"
@@ -614,11 +903,29 @@ function renderLiveCapture(txn) {
             ? `${detail} saved`
             : "Waiting for clicks and field values…";
     }
-    if (captureLivePage)
-      captureLivePage.textContent = [page, url].filter(Boolean).join(" · ");
-    renderFieldDl(captureLiveFields, values, clicks);
+    if (captureLivePage) captureLivePage.textContent = page;
+    renderFieldDl(captureLiveFields, values, clicks, steps, explainPreview);
   }
 }
+
+function syncRecordExplain(txn) {
+  if (!window.liveTrackRecordExplain?.isActive?.()) return;
+  window.liveTrackRecordExplain.syncSteps(captureStepsList(txn));
+}
+
+window.liveTrackRecordExplain?.setHandlers?.({
+  onStatus(text) {
+    explainRecordStatus = String(text || "").trim();
+    if (lastCaptureTxnForExplain || captureRecording || capturePausedForNav) {
+      renderLiveCapture(lastCaptureTxnForExplain);
+    }
+  },
+  onPreview() {
+    if (lastCaptureTxnForExplain || captureRecording || capturePausedForNav) {
+      renderLiveCapture(lastCaptureTxnForExplain);
+    }
+  },
+});
 
 function ensureCapturePoll() {
   if (capturePollTimer) return;
@@ -628,8 +935,7 @@ function ensureCapturePoll() {
 }
 
 function stopCapturePollIfIdle() {
-  if (captureRecording || capturePausedForNav || activeNav === "dashboard")
-    return;
+  if (captureRecording || capturePausedForNav) return;
   if (capturePollTimer) {
     clearInterval(capturePollTimer);
     capturePollTimer = null;
@@ -637,11 +943,30 @@ function stopCapturePollIfIdle() {
 }
 
 function canAutoRecord() {
-  return false;
+  return autoRecordArmed;
 }
 
 function armAutoRecord() {
   autoRecordArmed = false;
+}
+
+function firstLiveStepId() {
+  for (const [id, step] of stepIndex) {
+    if (!step || step.action === "highlight" || step.action === "wait" || step.optional) continue;
+    return id;
+  }
+  return "";
+}
+
+/** Start capture once the first live step turns green (a matching value). */
+function maybeAutoRecordOnFirstGreen(stepId) {
+  if (!stepId || stepId !== firstLiveStepId()) return;
+  if (stepWarnMismatch.has(stepId)) return;
+  if (captureRecording || capturePausedForNav || captureUserStopped || captureBusy) return;
+  if (!questScreenOpen()) return;
+  autoRecordArmed = true;
+  recordStartedFromFirstGreen = true;
+  setRecordingEnabled(true, { auto: true });
 }
 
 function questScreenOpen() {
@@ -652,6 +977,7 @@ function questScreenOpen() {
 
 function pauseRecordingForNav() {
   if (capturePausedForNav) return;
+  if (captureUserStopped) return;
   if (!captureRecording && !captureBusy) return;
   if (!questScreenOpen()) {
     setRecordingEnabled(false);
@@ -667,36 +993,94 @@ function resumeRecordingAfterNav() {
   setRecordingEnabled(true, { resume: true });
 }
 
+function stopAgentOwnedRecording() {
+  captureAgentOwned = false;
+  captureRecording = false;
+  captureRecordingCardId = "";
+  recordStartedManually = false;
+  capturePausedForNav = false;
+  updateRecordButton();
+  window.coact.setCaptureRecording?.({ action: "stop" }).catch(() => {});
+  stopCapturePollIfIdle();
+}
+
 async function tickCaptureStatus() {
   if (!window.coact.getCaptureStatus) return;
   try {
     const status = await window.coact.getCaptureStatus();
-    if (typeof status?.recording === "boolean" && !captureBusy) {
-      if (capturePausedForNav) {
+    // A timed-out poll is not a stop. Only a healthy reply may change Record.
+    if (status?.ok && typeof status.recording === "boolean" && !captureBusy) {
+      if (captureUserStopped) {
+        if (status.recording) {
+          window.coact.setCaptureRecording?.({ action: "stop" }).catch(() => {});
+        }
+        if (captureRecording || capturePausedForNav) {
+          captureRecording = false;
+          capturePausedForNav = false;
+          recordStartedManually = false;
+          updateRecordButton();
+        }
+        if (!status.recording) stopCapturePollIfIdle();
+      } else if (capturePausedForNav) {
         if (status.recording) {
           capturePausedForNav = false;
           captureRecording = true;
           updateRecordButton();
         }
       } else if (status.recording && !captureRecording) {
-        // Do not restore a leftover "was recording" session into auto-on.
-        window.coact.setCaptureRecording?.({ action: "stop" }).catch(() => {});
+        if (
+          recordStartedManually ||
+          recordStartedFromFirstGreen ||
+          (captureAgentOwned && status.playwrightRun)
+        ) {
+          captureRecording = true;
+          captureRecordingCardId = status.recordingCardId || activeCardId || captureRecordingCardId || "";
+          updateRecordButton();
+          ensureCapturePoll();
+        } else {
+          // Do not restore a leftover "was recording" session into auto-on.
+          window.coact.setCaptureRecording?.({ action: "stop" }).catch(() => {});
+        }
       } else if (!status.recording && captureRecording) {
-        captureRecording = false;
-        recordStartedManually = false;
-        captureRecordingCardId = "";
-        capturePausedForNav = false;
-        updateRecordButton();
+        if (
+          captureAgentOwned &&
+          !captureUserStopped &&
+          status.playwrightRun &&
+          runState === "running"
+        ) {
+          /* Playwright attach is still starting capture */
+        } else {
+          captureRecording = false;
+          recordStartedManually = false;
+          recordStartedFromFirstGreen = false;
+          captureRecordingCardId = "";
+          capturePausedForNav = false;
+          captureAgentOwned = false;
+          if (window.liveTrackRecordExplain?.isActive?.()) {
+            syncRecordExplain(lastCaptureTxnForExplain);
+            window.liveTrackRecordExplain.stop().catch(() => {});
+          }
+          clearLiveRecordingCache();
+          updateRecordButton();
+          if (activeNav === "dashboard") refreshDashboard({ silent: true });
+        }
       }
     }
-    renderLiveCapture(latestCaptureTxn(status?.transactions));
-    if (activeNav === "dashboard" && !dashLoading) {
-      refreshDashboard({ silent: true });
+    const latestTxn = latestCaptureTxn(status?.transactions);
+    if (captureRecording || capturePausedForNav) {
+      syncRecordExplain(latestTxn);
+      renderLiveCapture(latestTxn);
+    }
+    const latest = latestTxn;
+    const flowKey = captureTxnFlowKey(latest);
+    if (flowKey && flowKey !== lastCaptureFlowKey) {
+      lastCaptureFlowKey = flowKey;
+      noteCaptureFlow();
     }
   } catch {
     /* capture agent optional */
   }
-  stopCapturePollIfIdle();
+  if (!captureUserStopped) stopCapturePollIfIdle();
 }
 
 async function setRecordingEnabled(on, opts = {}) {
@@ -706,9 +1090,24 @@ async function setRecordingEnabled(on, opts = {}) {
   const pausing = Boolean(opts.pause);
   const resuming =
     Boolean(opts.resume) || Boolean(on && capturePausedForNav && !pausing);
+  if (on && !pausing) {
+    captureUserStopped = false;
+  } else if (!on && !resuming) {
+    captureUserStopped = true;
+    captureAgentOwned = false;
+    recordStartedFromFirstGreen = false;
+    autoRecordArmed = false;
+  }
   if (captureBusy) {
-    if (pausing) pendingRecordingStop = "pause";
-    else if (!on && !resuming) pendingRecordingStop = true;
+    if (pausing) pendingRecordingAction = "pause";
+    else if (on) pendingRecordingAction = "start";
+    else pendingRecordingAction = "stop";
+    if (!on && !pausing) {
+      captureRecording = false;
+      capturePausedForNav = false;
+      clearLiveRecordingCache();
+      updateRecordButton();
+    }
     return;
   }
   captureBusy = true;
@@ -725,13 +1124,45 @@ async function setRecordingEnabled(on, opts = {}) {
           ? "start"
           : "stop";
     const keepCard = pausing || resuming || (on && onQuest);
-    const res = await window.coact.setCaptureRecording({
+    // Flush speech explanations before capture stop so they can attach to the draft,
+    // but never let mic/STT hold captureBusy (and the Record toggle) indefinitely.
+    if (action === "stop") {
+      syncRecordExplain(lastCaptureTxnForExplain);
+      const stopExplain = Promise.resolve(
+        window.liveTrackRecordExplain?.stop?.(),
+      ).catch(() => {});
+      await Promise.race([
+        stopExplain,
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
+      explainRecordStatus = "";
+    }
+    const recIpc = window.coact.setCaptureRecording({
       action,
       cardId:
         keepCard && onQuest ? card.id : pausing ? captureRecordingCardId : "",
       queueCard: keepCard && onQuest ? card.title : "",
       lob: keepCard && onQuest ? card.lob : "",
     });
+    const res = await Promise.race([
+      Promise.resolve(recIpc).catch((err) => ({
+        ok: false,
+        error: err?.message || "ipc_failed",
+        recording: false,
+      })),
+      new Promise((resolve) =>
+        setTimeout(
+          () =>
+            resolve({
+              ok: false,
+              error: "timeout",
+              recording: false,
+              timedOut: true,
+            }),
+          12000
+        )
+      ),
+    ]);
     if (pausing) {
       captureRecording = false;
       capturePausedForNav = Boolean(
@@ -746,6 +1177,20 @@ async function setRecordingEnabled(on, opts = {}) {
       } else {
         ensureCapturePoll();
       }
+      // Pause mic without awaiting STT flush — Record must stay clickable.
+      if (capturePausedForNav) {
+        void window.liveTrackRecordExplain?.pause?.().catch(() => {});
+      } else {
+        syncRecordExplain(lastCaptureTxnForExplain);
+        void window.liveTrackRecordExplain
+          ?.stop?.()
+          .then(() => {
+            explainRecordStatus = "";
+          })
+          .catch(() => {
+            explainRecordStatus = "";
+          });
+      }
       updateRecordButton();
       return;
     }
@@ -755,14 +1200,22 @@ async function setRecordingEnabled(on, opts = {}) {
       updateRecordButton();
       return;
     }
-    captureRecording = Boolean(res?.recording);
-    capturePausedForNav = Boolean(res?.paused);
-    if (captureRecording && onQuest) captureRecordingCardId = card.id;
-    else if (!captureRecording && !capturePausedForNav)
-      captureRecordingCardId = "";
-    if (on && !opts.auto && captureRecording) recordStartedManually = true;
-    if (!captureRecording && !capturePausedForNav)
+    if (action === "stop" || (captureUserStopped && !on && !pausing && !resuming)) {
+      captureRecording = false;
+      capturePausedForNav = false;
       recordStartedManually = false;
+      captureRecordingCardId = "";
+    } else {
+      captureRecording = Boolean(res?.recording);
+      capturePausedForNav = Boolean(res?.paused);
+      if (captureRecording && onQuest) captureRecordingCardId = card.id;
+      else if (!captureRecording && !capturePausedForNav)
+        captureRecordingCardId = "";
+      if (on && !opts.auto && captureRecording) recordStartedManually = true;
+      if (!captureRecording && !capturePausedForNav)
+        recordStartedManually = false;
+    }
+    // Toggle UI immediately — mic start must not delay or stick captureBusy.
     updateRecordButton();
     if (!res?.ok && on) {
       if (runNote && onQuest) {
@@ -783,6 +1236,27 @@ async function setRecordingEnabled(on, opts = {}) {
       runNote.textContent =
         "Recording on, but page capture could not attach (start Chrome with remote debugging, or load the extension).";
     }
+    if ((action === "start" || action === "resume") && captureRecording) {
+      const fresh = action === "start";
+      void window.liveTrackRecordExplain
+        ?.start?.({ fresh })
+        .then((heard) => {
+          explainRecordStatus =
+            heard && heard.ok === false
+              ? heard.error || "Speech-to-text unavailable — steps still record"
+              : "";
+          if (explainRecordStatus && (lastCaptureTxnForExplain || captureRecording)) {
+            renderLiveCapture(lastCaptureTxnForExplain);
+          }
+        })
+        .catch((err) => {
+          explainRecordStatus =
+            err?.message || "Speech-to-text unavailable — steps still record";
+          if (lastCaptureTxnForExplain || captureRecording) {
+            renderLiveCapture(lastCaptureTxnForExplain);
+          }
+        });
+    }
     if (captureRecording) {
       liveRecordingCacheCleared = false;
       captureLiveMinimized = false;
@@ -792,36 +1266,101 @@ async function setRecordingEnabled(on, opts = {}) {
       ensureCapturePoll();
     } else {
       captureRecordingCardId = "";
-      liveRecordingCacheCleared = false;
-      showNav("dashboard");
-      await refreshDashboard();
-      const drafted = Number(res?.draftedCount || 0);
-      const txns = Number(res?.txnCount || 0);
-      if (dashMeta) {
-        if (drafted > 0) {
-          dashMeta.textContent = `Recorded · ${drafted} draft SOP${drafted === 1 ? "" : "s"} ready for review`;
-        } else if (txns > 0) {
-          dashMeta.textContent = `Recorded · ${txns} capture session${txns === 1 ? "" : "s"} on Dash`;
-        } else if (!res?.ok) {
-          dashMeta.textContent =
-            res?.error || "Recording stopped but capture store was unavailable";
-        } else {
-          dashMeta.textContent =
-            "Recording stopped · no clicks or field values were captured (extension offline? try CDP or reload extension)";
+      lastCaptureTxnForExplain = null;
+      clearLiveRecordingCache();
+      if (action === "stop") {
+        showNav("dashboard", { skipRecordPause: true });
+        const drafted = Number(res?.draftedCount || 0);
+        const txns = Number(res?.txnCount || 0);
+        if (dashMeta) {
+          if (drafted > 0) {
+            dashMeta.textContent = `Recorded · ${drafted} draft SOP${drafted === 1 ? "" : "s"} ready for review`;
+          } else if (txns > 0) {
+            dashMeta.textContent = `Recorded · ${txns} capture session${txns === 1 ? "" : "s"} on Dash`;
+          } else if (!res?.ok) {
+            dashMeta.textContent =
+              res?.error || "Recording stopped but capture store was unavailable";
+          } else {
+            dashMeta.textContent =
+              "Recording stopped · no clicks or field values were captured (extension offline? try CDP or reload extension)";
+          }
         }
+        ensureCapturePoll();
+      } else {
+        stopCapturePollIfIdle();
       }
-      stopCapturePollIfIdle();
     }
   } finally {
     captureBusy = false;
-    if (pendingRecordingStop === "pause") {
-      pendingRecordingStop = false;
+    const next = pendingRecordingAction;
+    pendingRecordingAction = "";
+    if (next === "stop") setRecordingEnabled(false);
+    else if (next === "pause" && !captureUserStopped)
       setRecordingEnabled(false, { pause: true });
-    } else if (pendingRecordingStop) {
-      pendingRecordingStop = false;
-      setRecordingEnabled(false);
-    }
+    else if (next === "start" && !captureUserStopped) setRecordingEnabled(true);
   }
+}
+
+const GENERIC_URL_TOKENS = new Set([
+  "apply",
+  "job",
+  "jobs",
+  "career",
+  "careers",
+  "search",
+  "home",
+  "index",
+  "login",
+  "signin",
+  "sign-in",
+  "signup",
+  "sign-up",
+  "en",
+  "en-us",
+  "en-gb",
+  "www",
+  "html",
+  "htm",
+  "form",
+  "page",
+  "app",
+  "web",
+  "portal",
+  "support",
+  "help",
+  "dashboard",
+  "admin",
+  "auth",
+]);
+
+function urlHost(normalized) {
+  const host = String(normalized || "").split("/")[0].split(":")[0];
+  return host;
+}
+
+function sameSiteHost(tabHost, hintHost) {
+  if (!tabHost || !hintHost) return false;
+  return tabHost === hintHost || tabHost.endsWith(`.${hintHost}`);
+}
+
+function specificHostHint(hint) {
+  const h = String(hint || "")
+    .toLowerCase()
+    .trim()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "")
+    .replace(/:\d+$/, "");
+  if (!h || h.includes(" ") || !h.includes(".")) return "";
+  const labels = h.split(".").filter(Boolean);
+  if (labels.length < 2 || labels.some((part) => part.length < 2)) return "";
+  return h;
+}
+
+function pathSegments(normalized) {
+  return urlPath(normalized)
+    .split("/")
+    .map((part) => part.replace(/\.html?$/i, ""))
+    .filter(Boolean);
 }
 
 function normalizeUrl(url) {
@@ -843,20 +1382,25 @@ function urlPath(normalized) {
 function cardMatchScore(card, tabUrl, tabTitle) {
   if (!tabUrl) return 0;
   const url = normalizeUrl(tabUrl);
-  const title = String(tabTitle || "").toLowerCase();
   const path = urlPath(url);
   let score = 0;
+
+  const tabH = urlHost(url);
+  let hostMatched = false;
 
   if (card.formUrl) {
     const form = normalizeUrl(card.formUrl);
     const formPath = urlPath(form);
     const formFile = formPath.includes("/") ? formPath.split("/").pop() : formPath;
+    const formHost = specificHostHint(urlHost(form));
+    const sameHost = sameSiteHost(tabH, formHost);
+    if (sameHost) hostMatched = true;
 
     // Exact page match
-    if (form && url === form) score = Math.max(score, 200);
+    if (sameHost && form && url === form) score = Math.max(score, 200);
 
     // Same filename (e.g. metro-permit.html) — strongest for demo sites
-    if (formFile && formFile.includes(".") && path.endsWith(formFile)) {
+    if (sameHost && formFile && formFile.includes(".") && path.endsWith(formFile)) {
       score = Math.max(score, 180);
     }
 
@@ -865,27 +1409,36 @@ function cardMatchScore(card, tabUrl, tabTitle) {
       !formPath || formPath === "index.html" || formPath === "index.htm";
     if (formIsRoot) {
       const tabIsRoot = !path || path === "index.html" || path === "index.htm";
-      if (tabIsRoot && url.startsWith(form.split("/")[0])) {
+      if (sameHost && tabIsRoot) {
         score = Math.max(score, 120);
       }
-    } else if (formPath && path.startsWith(formPath)) {
+    } else if (sameHost && formPath && path.startsWith(formPath)) {
       score = Math.max(score, 140);
     }
   }
 
+  const segments = new Set(pathSegments(url));
   for (const hint of card.formMatch || []) {
-    const h = String(hint || "").toLowerCase().trim();
-    if (!h) continue;
-    // Ignore overly broad host:port hints that match every demo page
-    if (/^[\w.-]+:\d+\/?$/.test(h.replace(/^https?:\/\//, ""))) continue;
-    const hn = h.replace(/^https?:\/\//, "").replace("localhost", "127.0.0.1");
-    if (url.includes(hn)) score = Math.max(score, 40 + Math.min(hn.length, 40));
-    if (title.includes(h)) score = Math.max(score, 60 + Math.min(h.length, 40));
+    const hostHint = specificHostHint(hint);
+    if (hostHint && sameSiteHost(tabH, hostHint)) {
+      hostMatched = true;
+      score = Math.max(score, 160);
+      continue;
+    }
+    const token = String(hint || "")
+      .toLowerCase()
+      .trim()
+      .replace(/\.html?$/i, "");
+    // Short words ("apply", "job") and page titles must not pin another website.
+    if (!token || token.includes(" ") || token.length < 12 || GENERIC_URL_TOKENS.has(token)) continue;
+    if (segments.has(token)) score = Math.max(score, hostMatched ? 170 : 150);
   }
 
   // Card id in path (metro-permit, northstar-job-apply, …)
-  const id = String(card.id || "").toLowerCase();
-  if (id && (path.includes(id) || url.includes(`/${id}`) || url.includes(`${id}.html`))) {
+  const id = String(card.id || "")
+    .toLowerCase()
+    .replace(/\.html?$/i, "");
+  if (id.length >= 12 && !GENERIC_URL_TOKENS.has(id) && segments.has(id)) {
     score = Math.max(score, 170);
   }
 
@@ -914,7 +1467,9 @@ function matchedCardsForTab(tabUrl = activeTabUrl, tabTitle = activeTabTitle) {
 
 function bestMatchedCard() {
   const matched = matchedCardsForTab();
-  return matched[0] || null;
+  // Two cards on the same host are not a pin. Wait until one page is specific.
+  if (matched.length !== 1) return null;
+  return matched[0];
 }
 
 async function syncQueueToActiveTab() {
@@ -925,9 +1480,20 @@ async function syncQueueToActiveTab() {
     screenQuest &&
     !screenQuest.classList.contains("hidden");
 
-  // Keep an open card (coach / fill) until the user taps ← Queue.
-  // Tab focus, new tabs, and non-Chrome apps must not bounce back to the list.
+  // Keep an open card until the user taps ← Queue, unless they selected a
+  // different site's tab. Blur and extra tabs must not bounce back to the list.
   if (questOpen) {
+    const switched = bestMatchedCard();
+    if (
+      switched &&
+      switched.id !== activeCardId &&
+      runState === "idle" &&
+      !suppressAutoOpen
+    ) {
+      autoPinnedCardId = switched.id;
+      openCard(switched.id);
+      return;
+    }
     renderQueue();
     return;
   }
@@ -937,7 +1503,7 @@ async function syncQueueToActiveTab() {
   if (card) {
     autoPinnedCardId = card.id;
 
-    // User pressed ← Queue — stay on the list until they activate a browser tab again
+    // User pressed ← Queue — stay on the list until the tab URL actually changes
     if (suppressAutoOpen) {
       renderQueue();
       return;
@@ -972,8 +1538,17 @@ function scheduleSyncQueueToActiveTab(immediate = false) {
 
 function saveCardProgress(cardId) {
   if (!cardId) return;
-  cardProgress.set(cardId, new Map(stepStatuses));
+  const map = new Map(stepStatuses);
+  cardProgress.set(cardId, map);
+  const labels = new Map();
+  for (const [id, status] of map) {
+    const step = stepIndex.get(id);
+    const label = String(step?.label || "").replace(/\s+/g, " ").trim().toLowerCase();
+    if (label && (status === "done" || status === "success")) labels.set(label, status);
+  }
+  cardProgressLabels.set(cardId, labels);
   touchCardActivity(cardId);
+  persistCardProgressStore();
 }
 
 function loadProgressMetaStore() {
@@ -1004,6 +1579,55 @@ function persistProgressMetaStore() {
       };
     }
     localStorage.setItem(PROGRESS_META_STORAGE_KEY, JSON.stringify(obj));
+  } catch {
+    /* ignore */
+  }
+}
+
+function persistCardProgressStore() {
+  try {
+    const obj = {};
+    for (const [cardId, map] of cardProgress.entries()) {
+      const steps = {};
+      for (const [stepId, status] of map.entries()) {
+        steps[stepId] = status;
+      }
+      const labels = {};
+      const labelMap = cardProgressLabels.get(cardId);
+      if (labelMap instanceof Map) {
+        for (const [label, status] of labelMap.entries()) {
+          labels[label] = status;
+        }
+      }
+      obj[cardId] = { steps, labels };
+    }
+    localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(obj));
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadCardProgressStore() {
+  try {
+    const raw = localStorage.getItem(PROGRESS_STORAGE_KEY);
+    if (!raw) return;
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== "object") return;
+    for (const [cardId, payload] of Object.entries(obj)) {
+      if (!cardId || !payload || typeof payload !== "object") continue;
+      const steps = payload.steps && typeof payload.steps === "object" ? payload.steps : payload;
+      const map = new Map();
+      for (const [stepId, status] of Object.entries(steps)) {
+        if (stepId && typeof status === "string") map.set(stepId, status);
+      }
+      if (map.size) cardProgress.set(cardId, map);
+      const labels = payload.labels && typeof payload.labels === "object" ? payload.labels : {};
+      const labelMap = new Map();
+      for (const [label, status] of Object.entries(labels)) {
+        if (label && typeof status === "string") labelMap.set(label, status);
+      }
+      if (labelMap.size) cardProgressLabels.set(cardId, labelMap);
+    }
   } catch {
     /* ignore */
   }
@@ -1117,12 +1741,46 @@ function expireIncompleteCardUi() {
   }
 }
 
+function forgetAllCardProgress() {
+  cardProgress.clear();
+  cardProgressLabels.clear();
+  persistCardProgressStore();
+  for (const timer of staleProgressTimers.values()) clearTimeout(timer);
+  staleProgressTimers.clear();
+}
+
+async function clearAllCardFieldsOnQueue(cardId) {
+  if (cardId) {
+    try {
+      await window.coact.watchCard?.(cardId, {
+        resetProgress: true,
+        clearFields: true,
+        resetAllProgress: true,
+      });
+    } catch {
+      /* still unwatch */
+    }
+  }
+  try {
+    await window.coact.watchCard?.(null);
+  } catch {
+    /* ignore */
+  }
+}
+
+function forgetCardProgress(cardId) {
+  if (!cardId) return;
+  cardProgress.delete(cardId);
+  cardProgressLabels.delete(cardId);
+  persistCardProgressStore();
+}
+
 async function resetStaleCardProgress(
   cardId,
   { markIncomplete = false, recordStats = false } = {},
 ) {
   if (!cardId) return;
-  cardProgress.delete(cardId);
+  forgetCardProgress(cardId);
   if (markIncomplete && recordStats) {
     await recordCardAbandoned(cardId);
   }
@@ -1133,7 +1791,7 @@ async function clearIncompleteCardStatus(cardId) {
   if (!cardId || expiringIncompleteUi.has(cardId)) return;
   const card = cards.find((c) => c.id === cardId);
   if (card && card.status !== "incomplete") {
-    cardProgress.delete(cardId);
+    forgetCardProgress(cardId);
     clearCardProgressMeta(cardId);
     return;
   }
@@ -1141,7 +1799,7 @@ async function clearIncompleteCardStatus(cardId) {
   try {
     if (card) card.status = "queued";
     await setCardStatusLocal(cardId, "queued");
-    cardProgress.delete(cardId);
+    forgetCardProgress(cardId);
     clearCardProgressMeta(cardId);
     try {
       await window.coact.watchCard?.(cardId, { resetProgress: true });
@@ -1173,28 +1831,41 @@ function scheduleStaleProgressReset(cardId) {
   staleProgressTimers.set(cardId, timer);
 }
 
-async function handleBackToQueueBeforeComplete({ wasRunning = false } = {}) {
-  const cardId = activeCardId;
+async function handleBackToQueueBeforeComplete({ wasRunning = false, cardId = activeCardId } = {}) {
   if (!cardId || isCardStepsComplete(cardId)) return;
-  // Leaving mid-work → mark incomplete (QueueCards + Executions for Stats) and start 15-min wait
-  saveCardProgress(cardId);
-  markCardAbandoned(cardId);
   if (wasRunning) {
-    // controlRun(cancel) already finalizes Executions as cancelled (counts as incomplete)
     await setCardStatusLocal(cardId, "incomplete");
   } else {
     await recordCardAbandoned(cardId);
   }
-  scheduleStaleProgressReset(cardId);
 }
 
 function restoreCardProgress(cardId, steps) {
   const saved = cardProgress.get(cardId);
-  if (!saved || !steps?.length) return steps;
-  return steps.map((step) => ({
-    ...step,
-    status: saved.get(step.id) || step.status || "pending",
-  }));
+  const byLabel = cardProgressLabels.get(cardId);
+  if ((!saved || !saved.size) && (!byLabel || !byLabel.size)) return steps;
+  if (!steps?.length) return steps;
+  return steps.map((step) => {
+    const fromId = saved?.get(step.id);
+    const label = String(step?.label || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const fromLabel = label && byLabel instanceof Map ? byLabel.get(label) : "";
+    const status = fromId || fromLabel || step.status || "pending";
+    return { ...step, status };
+  });
+}
+
+function completedIdsForCard(cardId) {
+  const ids = [];
+  const saved = cardProgress.get(cardId);
+  if (saved) {
+    for (const [id, status] of saved) {
+      if (status === "done" || status === "success") ids.push(id);
+    }
+  }
+  for (const [id, status] of stepStatuses) {
+    if (status === "done" || status === "success") ids.push(id);
+  }
+  return [...new Set(ids)];
 }
 
 function applyProgressUpdate(cardId, stepId, status) {
@@ -1204,8 +1875,22 @@ function applyProgressUpdate(cardId, stepId, status) {
     map = new Map();
     cardProgress.set(cardId, map);
   }
+  const prev = map.get(stepId);
   map.set(stepId, status);
+  const step = stepIndex.get(stepId);
+  const label = String(step?.label || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (label) {
+    let labels = cardProgressLabels.get(cardId);
+    if (!(labels instanceof Map)) {
+      labels = new Map();
+      cardProgressLabels.set(cardId, labels);
+    }
+    if (status === "done" || status === "success") labels.set(label, status);
+    else labels.delete(label);
+  }
+  if (prev === status) return;
   touchCardActivity(cardId);
+  persistCardProgressStore();
 }
 
 function applyQueuePayload(data) {
@@ -1265,6 +1950,10 @@ function cleanStepLabelForCoach(raw) {
 }
 
 function coachPhraseForStep(step, { index = 0, total = 0, kind = "now" } = {}) {
+  const recorded = String(step?.explanation || "").replace(/\s+/g, " ").trim();
+  if (recorded) {
+    return recorded.length > 420 ? `${recorded.slice(0, 417)}…` : recorded;
+  }
   const action = String(step?.action || "fill").toLowerCase();
   const label = cleanStepLabelForCoach(step?.label || step?.id || "");
   const n = Number(index) + 1;
@@ -1430,11 +2119,19 @@ async function speakGuideForStep(stepId, { kind = "now", force = false } = {}) {
   }
 }
 
+function scheduleCurrentStepVoice() {
+  // Speech starts only from the Coach button, not from step changes or opening a card.
+}
+
 function setVoiceCoachOn(cardId, on) {
   if (!cardId) return;
   voiceCoachOnByCard.set(cardId, Boolean(on));
   if (!on) {
     voiceCoachGen += 1;
+    if (guideSpeakTimer) {
+      clearTimeout(guideSpeakTimer);
+      guideSpeakTimer = null;
+    }
     stopGuideVoice({ silent: true });
   }
   syncVoiceGuideButtons(cardId);
@@ -1458,9 +2155,31 @@ async function startVoiceCoachForCard(cardId, { speak = true } = {}) {
   if (gen !== voiceCoachGen || activeCardId !== cardId) return;
   lastGuideSpeakKey = "";
   lastGuideStepId = "";
-  const cur = currentGuideStep();
-  if (!cur?.stepId) return;
-  await speakGuideForStep(cur.stepId, { kind: "first", force: true });
+  await speakRemainingGuideSteps(cardId, gen);
+}
+
+/** Coach button walks every remaining step, in order, and then stops. */
+async function speakRemainingGuideSteps(cardId, gen) {
+  const ids = [...stepIndex.keys()];
+  let spoke = false;
+  for (let i = 0; i < ids.length; i++) {
+    if (gen !== voiceCoachGen || activeCardId !== cardId || !isVoiceCoachOn(cardId)) return;
+    const status = stepStatuses.get(ids[i]);
+    if (status === "done" || status === "success" || status === "failed" || status === "error") {
+      continue;
+    }
+    const ok = await speakGuideForStep(ids[i], {
+      kind: spoke ? "next" : "first",
+      force: true,
+    });
+    if (!ok) return;
+    spoke = true;
+  }
+  if (gen !== voiceCoachGen || activeCardId !== cardId || !isVoiceCoachOn(cardId) || spoke) return;
+  await window.liveTrackVoice?.speak?.("That's everything on this card. Nice work.", {
+    quiet: true,
+    preferLocal: true,
+  });
 }
 
 async function toggleVoiceGuide(cardId) {
@@ -1498,11 +2217,16 @@ function renderSteps(steps) {
     const li = document.createElement("li");
     const status = step.status || "pending";
     const isMandatory = Boolean(step.mandatory);
-    li.className = `step ${status === "done" ? "done" : status}${isMandatory ? " mandatory" : ""}`;
+    const warn = status === "done" && stepWarnMismatch.has(step.id) ? " warn-mismatch" : "";
+    li.className = `step ${status === "done" ? "done" : status}${warn}${isMandatory ? " mandatory" : ""}`;
     li.dataset.stepId = step.id;
     if (isMandatory) li.dataset.mandatory = "true";
+    const explanation = String(step.explanation || "").trim();
+    const explainBlock = explanation
+      ? `<div class="step-explain"><div class="step-explain-title">LiveTrack explanation</div><div class="step-explain-body">${escapeHtml(explanation)}</div></div>`
+      : "";
     const keyMark = isMandatory
-      ? `<span class="step-key" title="Mandatory step — AI approve value available" aria-label="Mandatory">
+      ? `<span class="step-key" title="Mandatory step — SME approved value available" aria-label="Mandatory">
           <svg class="step-key-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
             <path fill="currentColor" d="M10.5 1a4.5 4.5 0 0 0-4.37 5.5L1 11.63V15h3.37l1.06-1.06.94.94H8.5v-2.12l.94-.94.94.94H12v-2.13l.56-.56A4.5 4.5 0 1 0 10.5 1zm0 2a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5z"/>
           </svg>
@@ -1513,6 +2237,7 @@ function renderSteps(steps) {
       <span class="label">${escapeHtml(step.label)}</span>
       <span class="state"></span>
       ${keyMark}
+      ${explainBlock}
     `;
     stepList.appendChild(li);
   });
@@ -1523,7 +2248,70 @@ function renderSteps(steps) {
   noteStepActivity();
 }
 
-/** Planned fill value for Agent preview — prefer case data the run will use. */
+function choiceListForStep(step) {
+  if (!Array.isArray(step?.allowedValues)) return [];
+  return step.allowedValues.map((v) => String(v ?? "").trim()).filter(Boolean);
+}
+
+function choiceWindow(all, store) {
+  const list = Array.isArray(all) ? all : [];
+  const cap = Math.min(CHOICE_PAGE_SIZE, list.length);
+  const revealed = Math.min(
+    list.length,
+    Math.max(cap, Number(store?.choiceRevealed) || cap)
+  );
+  const disabled = new Set(
+    (Array.isArray(store?.dismissedChoices) ? store.dismissedChoices : [])
+      .map((v) => String(v ?? "").trim())
+      .filter(Boolean)
+  );
+  const shown = list.slice(0, revealed);
+  const enabled = shown.filter((v) => !disabled.has(v));
+  const selectedRaw = String(store?.choiceSelected || "").trim();
+  const selected = enabled.includes(selectedRaw) ? selectedRaw : enabled[0] || "";
+  return { shown, enabled, disabled, revealed, selected };
+}
+
+/** Drop the current suggestion and reveal the next choice past the first five. */
+function dismissCurrentChoice(all, store, selected) {
+  const list = Array.isArray(all) ? all : [];
+  const windowed = choiceWindow(list, store);
+  const current = String(selected || windowed.selected || "").trim();
+  const disabled = new Set(windowed.disabled);
+  if (current && list.includes(current)) disabled.add(current);
+  const revealed = Math.min(list.length, windowed.revealed + (windowed.revealed < list.length ? 1 : 0));
+  const shown = list.slice(0, revealed);
+  const enabled = shown.filter((v) => !disabled.has(v));
+  const idx = shown.indexOf(current);
+  let next = "";
+  for (let i = idx + 1; i < shown.length; i++) {
+    if (!disabled.has(shown[i])) {
+      next = shown[i];
+      break;
+    }
+  }
+  if (!next) next = enabled[0] || "";
+  return {
+    choiceRevealed: revealed,
+    dismissedChoices: [...disabled],
+    choiceSelected: next,
+    done: !next,
+  };
+}
+
+/** Short quoted reply in the question, e.g. reply with "yes". */
+function quotedReplyValue(text) {
+  const match = String(text || "").match(
+    /\b(?:reply|respond|answer|enter|type|confirm)\s+with\s+["“']([^"”']{1,80})["”']/i
+  );
+  return match ? String(match[1] || "").trim() : "";
+}
+
+function smeExplanationForStep(step) {
+  return String(step?.explanation || "").replace(/\s+/g, " ").trim();
+}
+
+/** Planned fill value for Agent preview — SME choices, then case data. */
 function plannedValueForStep(step) {
   const action = String(step?.action || "").toLowerCase();
   if (action === "click" || action === "check" || action === "pause" || action === "wait") {
@@ -1537,34 +2325,48 @@ function plannedValueForStep(step) {
       : data && step?.id != null && Object.prototype.hasOwnProperty.call(data, step.id)
         ? step.id
         : null;
+  const choices = choiceListForStep(step);
+  const explanation = smeExplanationForStep(step);
+  if (choices.length) {
+    return {
+      value: choices[0],
+      valueKey: key || step.id,
+      choices,
+      reason:
+        explanation ||
+        (choices.length > 1 ? "Pick one of the SME choices." : "From the SME fill value."),
+    };
+  }
   if (data && key != null && data[key] != null) {
     const v = data[key];
     if (Array.isArray(v)) {
       const first = v.map((x) => String(x ?? "").trim()).find(Boolean);
-      if (first) return { value: first, valueKey: key, reason: `From case data (${key})` };
+      if (first) {
+        return {
+          value: first,
+          valueKey: key,
+          reason: explanation || `From case data (${key})`,
+        };
+      }
     } else {
       const s = String(v).trim();
-      if (s) return { value: s, valueKey: key, reason: `From case data (${key})` };
+      if (s) {
+        return { value: s, valueKey: key, reason: explanation || `From case data (${key})` };
+      }
     }
   }
   if (step?.value != null && String(step.value).trim()) {
     return {
       value: String(step.value).trim(),
       valueKey: key || step.id,
-      reason: "From SOP step value",
+      reason: explanation || "From SOP step value",
     };
-  }
-  if (Array.isArray(step?.allowedValues) && step.allowedValues.length) {
-    const first = step.allowedValues.map((v) => String(v ?? "").trim()).find(Boolean);
-    if (first) {
-      return { value: first, valueKey: key || step.id, reason: "From allowed values" };
-    }
   }
   if (step?.mandatory && action === "fill") {
     return {
       value: "",
       valueKey: key || step.id,
-      reason: "Mandatory — enter a value before approving.",
+      reason: explanation || "Mandatory — enter a value before approving.",
     };
   }
   return null;
@@ -1611,7 +2413,9 @@ function buildLocalAgentProposalsFromSteps() {
       label: step.label || id,
       value: planned?.value || "",
       valueKey: planned?.valueKey || step.valueFrom || id,
-      reason: planned?.reason || "Enter a value for this field.",
+      choices: Array.isArray(planned?.choices) ? planned.choices : choiceListForStep(step),
+      reason: planned?.reason || smeExplanationForStep(step) || "Enter a value for this field.",
+      smeExplanation: Boolean(smeExplanationForStep(step)),
       mandatory: Boolean(step.mandatory),
     });
   }
@@ -1631,6 +2435,33 @@ function focusAgentValueInput(stepId) {
   input.select?.();
 }
 
+function proposalChoices(row) {
+  return Array.isArray(row?.choices)
+    ? row.choices.map((v) => String(v ?? "").trim()).filter(Boolean)
+    : [];
+}
+
+function writeProposalValue(stepId, value, input, mandatory) {
+  const dest = (pendingAgentProposal?.proposals || []).find((x) => x.stepId === stepId);
+  if (dest) dest.value = value;
+  applyAgentPreviewValues(pendingAgentProposal?.proposals);
+  if (input) input.classList.toggle("invalid", mandatory && !String(value || "").trim());
+}
+
+function choiceOptionsMarkup(choices, store, custom) {
+  const windowed = choiceWindow(choices, store);
+  const options = windowed.shown
+    .map((choice) => {
+      const off = windowed.disabled.has(choice);
+      const selected = !custom && !off && choice === windowed.selected;
+      return `<option value="${escapeHtml(choice)}" ${off ? "disabled" : ""} ${
+        selected ? "selected" : ""
+      }>${escapeHtml(choice)}</option>`;
+    })
+    .join("");
+  return `${options}<option value="__other__" ${custom ? "selected" : ""}>Type a value</option>`;
+}
+
 function renderAgentProposeList(proposals) {
   if (!agentProposeList) return;
   agentProposeList.innerHTML = "";
@@ -1644,14 +2475,29 @@ function renderAgentProposeList(proposals) {
   }
   for (const row of proposals) {
     const mandatory = isStepMandatory(row.stepId) || Boolean(row.mandatory);
+    const choices = proposalChoices(row);
+    const several = choices.length >= 2;
+    let current = String(row.value || "");
+    const custom = several && current && !choices.includes(current);
+    if (several && !custom) {
+      const picked = choiceWindow(choices, {
+        ...row,
+        choiceSelected: current || row.choiceSelected,
+      }).selected;
+      current = picked || "";
+      row.value = current;
+      row.choiceSelected = current;
+    }
     const li = document.createElement("li");
     li.className = `agent-propose-item${mandatory ? " mandatory" : ""}`;
     li.dataset.stepId = row.stepId || "";
     if (row.valueKey) li.dataset.valueKey = row.valueKey;
     const inputId = `agent-val-${String(row.stepId || "").replace(/[^\w-]/g, "_")}`;
+    const selectId = `agent-pick-${String(row.stepId || "").replace(/[^\w-]/g, "_")}`;
+    const options = several ? choiceOptionsMarkup(choices, row, custom) : "";
     li.innerHTML = `
       <div class="agent-propose-head">
-        <label class="agent-propose-label" for="${escapeHtml(inputId)}">
+        <label class="agent-propose-label" for="${escapeHtml(several && !custom ? selectId : inputId)}">
           ${escapeHtml(row.label || row.stepId || "Field")}
           ${mandatory ? '<span class="agent-propose-req">Required</span>' : ""}
         </label>
@@ -1659,39 +2505,82 @@ function renderAgentProposeList(proposals) {
           type="button"
           class="agent-propose-pen"
           data-step-id="${escapeHtml(row.stepId || "")}"
-          title="Edit value"
-          aria-label="Edit ${escapeHtml(row.label || "value")}"
+          title="Type a value"
+          aria-label="Type a value for ${escapeHtml(row.label || "value")}"
         >
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
             <path fill="currentColor" d="M11.7 1.3a1.5 1.5 0 0 1 2.1 2.1l-.7.7-2.1-2.1.7-.7zM10.3 2.7 2 11v3h3l8.3-8.3-2.1-2.1z"/>
           </svg>
         </button>
       </div>
+      ${
+        several
+          ? `<select id="${escapeHtml(selectId)}" class="agent-propose-select" data-step-id="${escapeHtml(
+              row.stepId || ""
+            )}">${options}</select>
+            <button type="button" class="btn ghost tiny agent-propose-dismiss">Dismiss</button>`
+          : ""
+      }
       <input
         id="${escapeHtml(inputId)}"
-        class="agent-propose-input"
+        class="agent-propose-input${several && !custom ? " is-collapsed" : ""}"
         type="text"
         data-step-id="${escapeHtml(row.stepId || "")}"
-        value="${escapeHtml(row.value || "")}"
+        value="${escapeHtml(current)}"
+        placeholder="${several ? "Type a value" : ""}"
         ${mandatory ? 'required aria-required="true"' : ""}
         autocomplete="off"
       />
       <span class="agent-propose-reason">${escapeHtml(row.reason || "")}</span>
     `;
     const input = li.querySelector(".agent-propose-input");
+    const select = li.querySelector(".agent-propose-select");
+    const showCustom = () => {
+      if (select) select.value = "__other__";
+      input?.classList.remove("is-collapsed");
+      input?.focus();
+      input?.select?.();
+    };
     input?.addEventListener("input", () => {
-      const next = String(input.value || "");
-      const dest = (pendingAgentProposal?.proposals || []).find((x) => x.stepId === row.stepId);
-      if (dest) dest.value = next;
-      applyAgentPreviewValues(pendingAgentProposal?.proposals);
-      input.classList.toggle("invalid", mandatory && !next.trim());
+      writeProposalValue(row.stepId, String(input.value || ""), input, mandatory);
+    });
+    select?.addEventListener("change", () => {
+      if (select.value === "__other__") {
+        input?.classList.remove("is-collapsed");
+        if (input && choices.includes(String(input.value || ""))) input.value = "";
+        writeProposalValue(row.stepId, String(input?.value || ""), input, mandatory);
+        input?.focus();
+        return;
+      }
+      input?.classList.add("is-collapsed");
+      if (input) input.value = select.value;
+      writeProposalValue(row.stepId, select.value, input, mandatory);
     });
     li.querySelector(".agent-propose-pen")?.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      focusAgentValueInput(row.stepId);
+      if (select) showCustom();
+      else focusAgentValueInput(row.stepId);
     });
-    if (mandatory && !String(row.value || "").trim()) input?.classList.add("invalid");
+    li.querySelector(".agent-propose-dismiss")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const picked = select && select.value !== "__other__" ? select.value : row.choiceSelected;
+      const next = dismissCurrentChoice(choices, row, picked);
+      row.choiceRevealed = next.choiceRevealed;
+      row.dismissedChoices = next.dismissedChoices;
+      row.choiceSelected = next.choiceSelected;
+      row.value = next.choiceSelected;
+      if (select) select.innerHTML = choiceOptionsMarkup(choices, row, false);
+      if (input) {
+        input.value = next.choiceSelected;
+        input.classList.add("is-collapsed");
+      }
+      writeProposalValue(row.stepId, next.choiceSelected, input, mandatory);
+      const dismissBtn = li.querySelector(".agent-propose-dismiss");
+      if (dismissBtn) dismissBtn.disabled = next.done;
+    });
+    if (mandatory && !current.trim()) input?.classList.add("invalid");
     agentProposeList.appendChild(li);
   }
 }
@@ -1768,7 +2657,7 @@ async function showAgentPreview() {
   runNote.textContent = "Agent is proposing values…";
   if (agentApproveHint) {
     agentApproveHint.textContent =
-      "Edit values with the pen (required fields must be filled). Filling starts only after Approve.";
+      "Pick an SME choice or type a value (required fields must be filled). Filling starts only after Approve.";
   }
 
   const completedStepIds = [];
@@ -1820,11 +2709,14 @@ async function showAgentPreview() {
           label: step.label || step.id,
           value: planned?.value || "",
           valueKey: planned?.valueKey || step.valueFrom || step.id,
+          choices: Array.isArray(planned?.choices) ? planned.choices : choiceListForStep(step),
           reason:
             planned?.reason ||
+            smeExplanationForStep(step) ||
             (step.mandatory
               ? "Mandatory — enter a value before approving."
               : "Enter a value for this field."),
+          smeExplanation: Boolean(smeExplanationForStep(step)),
           mandatory: Boolean(step.mandatory),
         });
       }
@@ -1849,8 +2741,10 @@ async function showAgentPreview() {
         note || `Review ${n} value${n === 1 ? "" : "s"}. Use the pen to edit, then Approve.`;
     }
 
-    const firstInput = agentProposeList?.querySelector(".agent-propose-input");
-    (firstInput || btnApproveAgentModal || btnApproveAgent)?.focus();
+    const firstControl = agentProposeList?.querySelector(
+      ".agent-propose-select, .agent-propose-input:not(.is-collapsed)"
+    );
+    (firstControl || btnApproveAgentModal || btnApproveAgent)?.focus();
   } catch (err) {
     if (requestId !== agentProposeRequestId) return;
     runNote.className = "run-note error";
@@ -1946,6 +2840,7 @@ function findStuckCandidateStepId() {
 function canShowCoach(stepId) {
   const ep = coachEpisode.get(stepId);
   if (!ep) return true;
+  if (ep.acceptedByUser) return false;
   if (ep.shown && activeCoachStepId === stepId) return false;
   if (ep.dismissedAt && Date.now() - ep.dismissedAt < COACH_COOLDOWN_MS) return false;
   return true;
@@ -1958,8 +2853,21 @@ function dismissStepCoach(stepId) {
   const ep = coachEpisode.get(stepId) || {};
   ep.shown = false;
   ep.holdCoachForApprove = false;
+  ep.acceptedByUser = true;
   ep.dismissedAt = Date.now();
   coachEpisode.set(stepId, ep);
+  const st = stepStatuses.get(stepId);
+  if (st === "done" || st === "running") {
+    setStepTone(stepId, "success", { clearApprove: true });
+  }
+  if (activeCardId && stepId) {
+    void window.coact
+      .watchCard?.(activeCardId, {
+        resetProgress: false,
+        acceptStepId: stepId,
+      })
+      .catch(() => {});
+  }
 }
 
 function knownValueForStep(step) {
@@ -1979,15 +2887,25 @@ function knownValueForStep(step) {
         : null;
   if (!data || key == null) {
     if (step?.value != null && String(step.value).trim()) return String(step.value).trim();
-    return "";
+    return quotedReplyValue(step?.explanation) || quotedReplyValue(step?.label) || "";
   }
   const v = data[key];
-  if (v == null) return "";
+  if (v == null || v === "") {
+    const quoted =
+      quotedReplyValue(step?.explanation) || quotedReplyValue(step?.label);
+    if (quoted) return quoted;
+    return "";
+  }
   if (Array.isArray(v)) {
     const first = v.map((x) => String(x ?? "").trim()).find(Boolean);
-    return first || "";
+    if (first) return first;
+    const quoted =
+      quotedReplyValue(step?.explanation) || quotedReplyValue(step?.label);
+    return quoted || "";
   }
-  return String(v).trim();
+  const scalar = String(v).trim();
+  if (scalar) return scalar;
+  return quotedReplyValue(step?.explanation) || quotedReplyValue(step?.label) || "";
 }
 
 /** Instant tip — no user prompt / Ask AI required */
@@ -2003,8 +2921,9 @@ function localAutoCoachTip(step) {
   }
   if (action === "fill") {
     const known = knownValueForStep(step);
-    if (step?.mandatory && known) {
-      return `This step is marked mandatory. Suggested case value: “${known}”. Approve to autofill, or type any value — the field just needs to be filled.`;
+    if (known) {
+      const lead = step?.mandatory ? "This step is marked mandatory. " : "";
+      return `${lead}SME value: “${known}”. Approve to autofill, or type a different value.`;
     }
     if (step?.mandatory) {
       return `This step is marked mandatory. Fill “${short}” on the form — any value completes the step.`;
@@ -2033,6 +2952,7 @@ function stepCanApprove(step, suggestedValue) {
 function showStepCoachPopover(stepId, {
   thinking = false,
   text = "",
+  heading = "",
   canApply = false,
   canRetry = false,
   suggestedValue = "",
@@ -2051,23 +2971,64 @@ function showStepCoachPopover(stepId, {
   }
 
   activeCoachStepId = stepId;
+  const step = stepIndex.get(stepId);
+  const choices = choiceListForStep(step);
+  const several = choices.length >= 2;
   const ep = coachEpisode.get(stepId) || {};
   ep.shown = true;
+  if (several && suggestedValue && !ep.choiceSelected) ep.choiceSelected = suggestedValue;
+  const windowed = several ? choiceWindow(choices, ep) : null;
+  if (several) ep.choiceSelected = windowed.selected;
   coachEpisode.set(stepId, ep);
 
-  const body = thinking ? "…" : text || localAutoCoachTip(stepIndex.get(stepId));
-  lastCoachMeta = { stepId, suggestedValue, canApply, canRetry, confidence };
+  const recorded = String(step?.explanation || "").trim();
+  const body = thinking ? "…" : text || recorded || localAutoCoachTip(step);
+  const headingText =
+    heading ||
+    (recorded && body === recorded
+      ? "LiveTrack explanation"
+      : confidence === "high" && canApply
+        ? "Approve fill"
+        : "Tip");
+  const suggested = several ? windowed.selected : String(suggestedValue || "").trim();
+  lastCoachMeta = {
+    stepId,
+    suggestedValue: suggested,
+    canApply: several ? stepCanApprove(step, suggested) : canApply,
+    canRetry,
+    confidence,
+    text: body,
+    heading: headingText,
+    showTakeOver,
+  };
 
-  const valueBlock =
-    canApply && suggestedValue
-      ? `<div class="step-coach-value">AI approve value: <strong>${escapeHtml(suggestedValue)}</strong></div>`
+  const choiceList = several
+    ? `<ul class="step-coach-choices">${windowed.shown
+        .map((choice) => {
+          const off = windowed.disabled.has(choice);
+          const on = !off && choice === windowed.selected;
+          return `<li><button type="button" class="step-coach-choice${off ? " is-disabled" : ""}${
+            on ? " is-selected" : ""
+          }" data-choice="${escapeHtml(choice)}" ${off ? "disabled" : ""}>${escapeHtml(choice)}</button></li>`;
+        })
+        .join("")}</ul>`
+    : "";
+  const singleChoice = !several && suggested
+    ? `<ul class="step-coach-choices"><li><button type="button" class="step-coach-choice is-selected" data-choice="${escapeHtml(
+        suggested
+      )}">${escapeHtml(suggested)}</button></li></ul>`
+    : "";
+  const valueBlock = several
+    ? `<div class="step-coach-value">SME value${choiceList}</div>`
+    : singleChoice
+      ? `<div class="step-coach-value">SME value${singleChoice}</div>`
       : "";
+  const approveOk = several ? Boolean(suggested && stepCanApprove(step, suggested)) : canApply;
 
   const actions = [
-    canApply
+    approveOk
       ? `<button type="button" class="step-coach-apply" data-action="approve">Approve</button>`
       : "",
-    canRetry ? `<button type="button" class="step-coach-retry" data-action="retry">Retry</button>` : "",
     showTakeOver
       ? `<button type="button" class="step-coach-takeover" data-action="takeover">Take over</button>`
       : "",
@@ -2076,24 +3037,63 @@ function showStepCoachPopover(stepId, {
     .filter(Boolean)
     .join("");
 
+  box.classList.toggle("step-coach-explain", headingText === "LiveTrack explanation");
   box.innerHTML = `
-    <div class="step-coach-title">${confidence === "high" && canApply ? "Approve fill" : "Tip"}</div>
+    <div class="step-coach-title">${escapeHtml(headingText)}</div>
     <div class="step-coach-body">${escapeHtml(body)}</div>
     ${valueBlock}
     <div class="step-coach-actions">${actions}</div>
   `;
 
+  box.querySelectorAll("[data-choice]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const value = btn.getAttribute("data-choice") || "";
+      if (!value) return;
+      box.querySelectorAll("button").forEach((node) => {
+        node.disabled = true;
+      });
+      const stored = coachEpisode.get(stepId) || {};
+      stored.choiceSelected = value;
+      coachEpisode.set(stepId, stored);
+      lastCoachMeta = {
+        ...(lastCoachMeta || {}),
+        stepId,
+        suggestedValue: value,
+      };
+      void applyCoachAction({ broadMatch: false });
+    });
+  });
   box.querySelector('[data-action="dismiss"]')?.addEventListener("click", (e) => {
     e.stopPropagation();
-    dismissStepCoach(stepId);
+    if (!several) {
+      dismissStepCoach(stepId);
+      return;
+    }
+    const next = dismissCurrentChoice(choices, ep, lastCoachMeta?.suggestedValue);
+    const stored = coachEpisode.get(stepId) || {};
+    stored.choiceRevealed = next.choiceRevealed;
+    stored.dismissedChoices = next.dismissedChoices;
+    stored.choiceSelected = next.choiceSelected;
+    stored.acceptedByUser = false;
+    coachEpisode.set(stepId, stored);
+    if (next.done) {
+      dismissStepCoach(stepId);
+      return;
+    }
+    showStepCoachPopover(stepId, {
+      text: body,
+      heading: headingText,
+      canApply: stepCanApprove(step, next.choiceSelected),
+      canRetry,
+      suggestedValue: next.choiceSelected,
+      confidence,
+      showTakeOver,
+    });
   });
   box.querySelector('[data-action="approve"]')?.addEventListener("click", async (e) => {
     e.stopPropagation();
     await applyCoachAction({ broadMatch: false });
-  });
-  box.querySelector('[data-action="retry"]')?.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    await applyCoachAction({ broadMatch: true });
   });
   box.querySelector('[data-action="takeover"]')?.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -2132,8 +3132,10 @@ async function applyCoachAction({ broadMatch = false } = {}) {
   }
   const epClear = coachEpisode.get(lastCoachMeta.stepId) || {};
   epClear.holdCoachForApprove = false;
+  epClear.acceptedByUser = true;
   coachEpisode.set(lastCoachMeta.stepId, epClear);
   dismissStepCoach(lastCoachMeta.stepId);
+  setStepTone(lastCoachMeta.stepId, "success", { clearApprove: true });
   runNote.className = "run-note";
   runNote.textContent = broadMatch ? "Retried with broader match" : "Approved & filled";
   setTimeout(() => {
@@ -2159,15 +3161,27 @@ async function evaluateStuckStep() {
   const req = ++coachRequestId;
 
   // Always show an automatic tip immediately — Approve only for mandatory fills with a known value
-  const autoTip = localAutoCoachTip(step);
   const known = knownValueForStep(step);
   const action = String(step.action || "").toLowerCase();
   const canApply = stepCanApprove(step, known);
+  const recorded = String(step.explanation || "").trim();
+  if (recorded) {
+    showStepCoachPopover(stepId, {
+      text: recorded,
+      heading: "LiveTrack explanation",
+      canApply,
+      canRetry: ["fill", "click", "check"].includes(action),
+      suggestedValue: known,
+      confidence: canApply ? "high" : "low",
+    });
+    return;
+  }
+  const autoTip = localAutoCoachTip(step);
   showStepCoachPopover(stepId, {
     text: autoTip,
     canApply,
     canRetry: ["fill", "click", "check"].includes(action),
-    suggestedValue: canApply ? known : "",
+    suggestedValue: known,
     confidence: canApply ? "high" : "low",
   });
 
@@ -2179,6 +3193,9 @@ async function evaluateStuckStep() {
         label: step.label,
         action: step.action,
         valueFrom: step.valueFrom,
+        value: step.value,
+        allowedValues: step.allowedValues,
+        explanation: step.explanation,
         mandatory: Boolean(step.mandatory),
       },
       stepContext: stepContextText(),
@@ -2193,18 +3210,32 @@ async function evaluateStuckStep() {
     if (res?.ok && res.text && !res.needsKey) {
       const prior =
         lastCoachMeta?.stepId === stepId ? String(lastCoachMeta.suggestedValue || "").trim() : "";
-      const suggested = String(res.suggestedValue || known || prior || "").trim();
+      const suggested = String(known || res.suggestedValue || prior || "").trim();
       const applyOk = stepCanApprove(step, suggested);
       showStepCoachPopover(stepId, {
         text: res.text,
         canApply: applyOk,
         canRetry: res.canRetry !== false,
-        suggestedValue: applyOk ? suggested : "",
+        suggestedValue: suggested,
         confidence: res.confidence === "high" || applyOk ? "high" : "low",
       });
     }
   } catch {
     /* keep auto tip already shown */
+  }
+}
+
+function markNextLiveStep(stepId) {
+  const ids = [...stepIndex.keys()];
+  const start = ids.indexOf(stepId);
+  if (start < 0) return;
+  for (let i = start + 1; i < ids.length; i++) {
+    const step = stepIndex.get(ids[i]);
+    if (!step || step.action === "highlight" || step.action === "wait" || step.optional) continue;
+    const st = stepStatuses.get(ids[i]);
+    if (st === "done" || st === "failed") continue;
+    if (st !== "running") setStepTone(ids[i], "running");
+    return;
   }
 }
 
@@ -2215,36 +3246,28 @@ function setStepTone(stepId, tone, opts = {}) {
   const status =
     mapped === "done" || mapped === "running" || mapped === "failed" ? mapped : "pending";
   const prev = stepStatuses.get(stepId);
+  const wasWarn = stepWarnMismatch.has(stepId);
   stepStatuses.set(stepId, status);
+  if (status === "done" && opts.warnMismatch) stepWarnMismatch.add(stepId);
+  else if (status === "done" || status === "pending" || status === "failed") {
+    stepWarnMismatch.delete(stepId);
+  }
   if (activeCardId) applyProgressUpdate(activeCardId, stepId, status);
 
   const guideOnStatusChange = () => {
     if (prev === status) return;
-    // Red / failed — never coach
     if (status === "failed" || status === "error") return;
-    if (status === "running") {
-      speakGuideForStep(stepId, { kind: "now" });
-      return;
+    if (status === "running" || status === "done" || status === "success") {
+      scheduleCurrentStepVoice();
     }
-    // Attended mode often jumps grey → green without "running". Coach the next step.
-    if (status === "done" || status === "success") {
-      const next = nextGuideStepAfter(stepId);
-      if (next?.stepId) {
-        speakGuideForStep(next.stepId, { kind: "next" });
-        return;
-      }
-      const allDone = ![...stepStatuses.values()].some(
-        (s) => s !== "done" && s !== "success",
-      );
-      if (allDone && isVoiceCoachOn(activeCardId) && guideAudioReady) {
-        lastGuideSpeakKey = `${activeCardId}:complete`;
-        lastGuideStepId = "";
-        window.liveTrackVoice?.speak?.(
-          "That's everything on this card. Nice work.",
-          { quiet: true, preferLocal: true },
-        );
-      }
-    }
+  };
+
+  const settleDone = () => {
+    if (status !== "done") return;
+    const warn = stepWarnMismatch.has(stepId);
+    const becameDone = prev !== "done";
+    if (!warn && (becameDone || wasWarn)) maybeAutoRecordOnFirstGreen(stepId);
+    if (becameDone) markNextLiveStep(stepId);
   };
 
   if (!li) {
@@ -2253,34 +3276,29 @@ function setStepTone(stepId, tone, opts = {}) {
       noteStepActivity();
       guideOnStatusChange();
     }
+    settleDone();
     return;
   }
   // pending must strip done/running/failed so greens clear after field clears
   const mandatoryCls = li.dataset.mandatory === "true" ? " mandatory" : "";
+  const warnCls = status === "done" && stepWarnMismatch.has(stepId) ? " warn-mismatch" : "";
   if (status === "pending") li.className = `step${mandatoryCls}`;
   else if (status === "running") li.className = `step running${mandatoryCls}`;
-  else if (status === "done") li.className = `step done${mandatoryCls}`;
+  else if (status === "done") li.className = `step done${warnCls}${mandatoryCls}`;
   else if (status === "failed") li.className = `step failed${mandatoryCls}`;
   else li.className = `step${mandatoryCls}`;
 
-  // Clear coach only when this step finishes successfully — not on failed/mismatch.
-  // Wrong mandatory fills keep Approve until corrected (valueMatched) or user Approves.
+  // A matching value is green. A different entered value stays done, in orange.
   if (status === "done") {
     const ep = coachEpisode.get(stepId) || {};
-    if (opts.clearApprove) {
+    if (opts.clearApprove || !ep.acceptedByUser) {
       ep.holdCoachForApprove = false;
       coachEpisode.set(stepId, ep);
-    }
-    if (ep.holdCoachForApprove) {
-      li.className = `step done warn-mismatch${mandatoryCls}`;
-      updateTailSummary();
-      if (prev !== status) noteStepActivity();
-      return;
     }
     const coach = li.querySelector(".step-coach");
     if (coach) coach.remove();
     if (activeCoachStepId === stepId) activeCoachStepId = null;
-    coachEpisode.delete(stepId);
+    if (!ep.acceptedByUser) coachEpisode.delete(stepId);
   } else if (status === "running" && activeCoachStepId && activeCoachStepId !== stepId) {
     dismissStepCoach(activeCoachStepId);
   }
@@ -2290,6 +3308,7 @@ function setStepTone(stepId, tone, opts = {}) {
     noteStepActivity();
     guideOnStatusChange();
   }
+  settleDone();
 }
 
 function showQueue(opts = {}) {
@@ -2311,7 +3330,7 @@ function showQueue(opts = {}) {
   if (captureRecording || capturePausedForNav) setRecordingEnabled(false);
 }
 
-function showQuest(card) {
+function showQuest(card, opts = {}) {
   if (activeCardId && activeCardId !== card.id) {
     saveCardProgress(activeCardId);
   }
@@ -2320,6 +3339,7 @@ function showQuest(card) {
   coachEpisode.clear();
   agentApprovedForRun = false;
   if (activeNav !== "live") showNav("live");
+  stepWarnMismatch.clear();
   activeCardId = card.id;
   // Clear abandon timer — user resumed this card
   const staleTimer = staleProgressTimers.get(card.id);
@@ -2329,7 +3349,7 @@ function showQuest(card) {
   }
   // If they left mid-work and waited > 15 minutes, wipe progress
   if (!isCardStepsComplete(card.id) && isProgressStale(card.id)) {
-    cardProgress.delete(card.id);
+    forgetCardProgress(card.id);
     clearCardProgressMeta(card.id);
     void recordCardAbandoned(card.id);
     void window.coact.watchCard?.(card.id, { resetProgress: true }).catch(() => {});
@@ -2366,29 +3386,23 @@ function showQuest(card) {
   runNote.className = "run-note";
   runNote.textContent = "";
   setRunControls("idle");
-  // Auto-start coaching whenever a card is opened; stays on until user taps Stop
-  void startVoiceCoachForCard(card.id, { speak: true });
+  // Opening or auto-matching a card stays quiet. Voice starts only from Coach.
+  if (!opts.keepVoice) setVoiceCoachOn(card.id, false);
+  else syncVoiceGuideButtons(card.id);
 
-  window.coact.watchCard(card.id).then((res) => {
+  window.coact.watchCard(card.id, {
+    resetProgress: false,
+    completedStepIds: completedIdsForCard(card.id),
+  }).then((res) => {
     if (!res?.ok) return;
     if (activeCardId !== card.id) return;
-    if (res.steps?.length) {
+    if (res.steps?.length && res.via !== "playwright") {
       const merged = restoreCardProgress(card.id, res.steps);
       // Prefer live saved progress over fresh pending from SOP
       renderSteps(merged);
     }
     setRunControls(runState === "idle" ? "idle" : runState);
     syncVoiceGuideButtons(card.id);
-    // Only speak if open-start didn't already (avoid canceling in-flight TTS)
-    if (
-      isVoiceCoachOn(card.id) &&
-      !lastGuideStepId &&
-      !window.liveTrackVoice?.isSpeaking?.()
-    ) {
-      const cur = currentGuideStep();
-      if (cur?.stepId)
-        void speakGuideForStep(cur.stepId, { kind: "first", force: true });
-    }
   });
   if (capturePausedForNav && captureRecordingCardId === card.id) {
     setRecordingEnabled(true, { resume: true });
@@ -2560,7 +3574,7 @@ function renderActionsList(actions, { overdue = 0 } = {}) {
   }
   if (!list) return;
   if (!actions?.length) {
-    list.innerHTML = `<li class="muted">No action items yet. Stop &amp; refine a MOM, or add a note above.</li>`;
+    list.innerHTML = `<li class="muted">No action items yet. Read Outlook mail, stop &amp; refine a MOM, or add a note above.</li>`;
     return;
   }
   list.innerHTML = actions
@@ -2569,7 +3583,11 @@ function renderActionsList(actions, { overdue = 0 } = {}) {
       const meta = [
         a.owner ? escapeHtml(a.owner) : "",
         a.source === "mom" ? "from MOM" : "",
-        a.meetingSubject ? escapeHtml(a.meetingSubject) : "",
+        a.source === "email"
+          ? ""
+          : a.meetingSubject
+            ? escapeHtml(a.meetingSubject)
+            : "",
         due ? escapeHtml(due) : "",
       ]
         .filter(Boolean)
@@ -2579,15 +3597,61 @@ function renderActionsList(actions, { overdue = 0 } = {}) {
         !done && a.dueAt && new Date(a.dueAt).getTime() < Date.now()
           ? " overdue"
           : "";
+      const mailLink =
+        a.source === "email" ? String(a.meta?.webLink || "").trim() : "";
+      const openMail = mailLink
+        ? `<button type="button" class="btn ghost tiny actions-open-mail" data-url="${escapeHtml(mailLink)}" title="Open this mail in Outlook">Open mail</button>`
+        : "";
       return `<li class="actions-item${done ? " done" : ""}${overdueCls}" data-id="${escapeHtml(a.id)}">
         <div class="actions-item-main">
-          <strong>${escapeHtml(a.title)}</strong>
+          ${
+            mailLink
+              ? `<button type="button" class="actions-item-title" data-url="${escapeHtml(mailLink)}" title="Open this mail in Outlook">${escapeHtml(a.title)}</button>`
+              : `<strong>${escapeHtml(a.title)}</strong>`
+          }
           ${meta ? `<span class="muted tiny-copy">${meta}</span>` : ""}
         </div>
-        <button type="button" class="btn ghost tiny actions-toggle" data-id="${escapeHtml(a.id)}" data-done="${done ? "1" : "0"}">${done ? "Reopen" : "Done"}</button>
+        <div class="actions-item-tools">
+          ${openMail}
+          <button type="button" class="btn ghost tiny actions-toggle" data-id="${escapeHtml(a.id)}" data-done="${done ? "1" : "0"}">${done ? "Reopen" : "Done"}</button>
+        </div>
       </li>`;
     })
     .join("");
+}
+
+function setActionsMailStatus(text, kind = "") {
+  const el = document.getElementById("actionsMailStatus");
+  if (!el) return;
+  el.className = `desk-status muted tiny-copy${kind ? ` ${kind}` : ""}`;
+  el.textContent = text || "";
+}
+
+let mailAutoScanBusy = false;
+let mailAutoScanTimer = null;
+
+async function silentScanOutlookMail() {
+  if (mailAutoScanBusy || !window.coact?.actionsImportOutlook) return;
+  mailAutoScanBusy = true;
+  try {
+    const res = await window.coact.actionsImportOutlook();
+    if (
+      !res?.ok &&
+      (res?.needConnect || res?.needMailConsent || res?.mailDenied)
+    )
+      return;
+    await refreshActionsList();
+  } catch {
+    /* keep the list as-is */
+  } finally {
+    mailAutoScanBusy = false;
+  }
+}
+
+function startMailAutoScan() {
+  silentScanOutlookMail();
+  if (mailAutoScanTimer) return;
+  mailAutoScanTimer = setInterval(() => silentScanOutlookMail(), 5 * 60 * 1000);
 }
 
 async function refreshActionsList() {
@@ -2638,27 +3702,30 @@ async function submitActionsNote() {
   }
 }
 
-function showNav(id) {
+function showNav(id, opts = {}) {
+  const requested = id === "actions" || id === "chat" ? "mom" : id;
   const next = [
     "live",
     "jira",
+    "past",
+    "expert",
     "mom",
-    "actions",
     "ai",
     "desk",
     "feedback",
     "analytics",
     "dashboard",
-  ].includes(id)
-    ? id
+  ].includes(requested)
+    ? requested
     : "live";
   const prev = activeNav;
   activeNav = next;
   const panes = {
     live: paneLive,
     jira: paneJira,
+    past: panePast,
+    expert: paneExpert,
     mom: paneMom,
-    actions: paneActions,
     ai: paneAi,
     desk: paneDesk,
     feedback: paneFeedback,
@@ -2668,8 +3735,9 @@ function showNav(id) {
   const navBtns = {
     live: navLive,
     jira: navJira,
+    past: navPast,
+    expert: navExpert,
     mom: navMom,
-    actions: navActions,
     ai: navAi,
     desk: navDesk,
     feedback: navFeedback,
@@ -2684,11 +3752,9 @@ function showNav(id) {
     navBtns[key]?.classList.toggle("active", on);
   }
   navJira?.setAttribute("aria-expanded", next === "jira" ? "true" : "false");
+  navPast?.setAttribute("aria-expanded", next === "past" ? "true" : "false");
+  navExpert?.setAttribute("aria-expanded", next === "expert" ? "true" : "false");
   navMom?.setAttribute("aria-expanded", next === "mom" ? "true" : "false");
-  navActions?.setAttribute(
-    "aria-expanded",
-    next === "actions" ? "true" : "false",
-  );
   navAi?.setAttribute("aria-expanded", next === "ai" ? "true" : "false");
   navDesk?.setAttribute("aria-expanded", next === "desk" ? "true" : "false");
   navFeedback?.setAttribute(
@@ -2721,6 +3787,8 @@ function showNav(id) {
     if (next === "mom") {
       refreshMomPanel();
       refreshMomPastList();
+      refreshActionsList();
+      silentScanOutlookMail();
     }
     if (next === "dashboard") {
       refreshDashboard();
@@ -2736,8 +3804,11 @@ function showNav(id) {
       fillInboxContext();
       refreshInboxList();
     }
-    if (next === "actions") {
-      refreshActionsList();
+    if (next === "past") {
+      showPastWorkCached();
+    }
+    if (next === "expert") {
+      refreshExpertStatus();
     }
   }
 
@@ -2747,10 +3818,12 @@ function showNav(id) {
         ? "Live steps"
         : next === "jira"
           ? "Jira stories"
-          : next === "mom"
-            ? "Minutes of Meeting"
-            : next === "actions"
-              ? "Action items"
+          : next === "past"
+            ? "Past work sample"
+            : next === "expert"
+              ? "Find the expert"
+            : next === "mom"
+              ? "Minutes of Meeting"
               : next === "ai"
                 ? "Ask LiveTrack"
                 : next === "desk"
@@ -2762,9 +3835,11 @@ function showNav(id) {
                       : "Dash";
   }
   if (next === "ai") generalChatInput?.focus();
+  if (next === "expert") document.getElementById("expertQueryInput")?.focus();
   if (next === "dashboard") ensureCapturePoll();
   else stopCapturePollIfIdle();
-  if (prev === "live" && next !== "live") pauseRecordingForNav();
+  if (prev === "live" && next !== "live" && !opts.skipRecordPause)
+    pauseRecordingForNav();
   if (prev !== "live" && next === "live") resumeRecordingAfterNav();
   if (next === "live") scheduleSyncQueueToActiveTab(true);
 }
@@ -2891,6 +3966,8 @@ const AN_FEATURE_COLORS = {
   mom_refine: "#a16207",
   mom_teams_frame: "#0891b2",
   jira_mail_shot: "#db2777",
+  mail_actions: "#0ea5e9",
+  teams_chat_refine: "#4f46e5",
   stt: "#64748b",
   stt_diarize: "#475569",
   tts: "#ea580c",
@@ -3239,7 +4316,9 @@ async function refreshAnalytics() {
 async function refreshDashboard(opts = {}) {
   if (dashLoading) return;
   dashLoading = true;
-  if (dashMeta && !opts.silent) dashMeta.textContent = "Loading…";
+  if (dashMeta && !opts.silent && !dashList?.childElementCount) {
+    dashMeta.textContent = "Loading…";
+  }
   try {
     const data = await window.coact.getExecutionDashboard?.();
     renderDashboard(data);
@@ -3425,6 +4504,7 @@ function appendCaptureKvList(parent, rows) {
   head.append(h1, h2, h3);
   list.appendChild(head);
   for (const step of rows) {
+    if (isWebsiteUrl(step.label) || isWebsiteUrl(step.value) || isWebsiteUrl(step.key)) continue;
     const li = document.createElement("li");
     li.className = "ok";
     const left = document.createElement("span");
@@ -3451,6 +4531,26 @@ function isPendingCaptureDraft(row) {
 function studioHashForRow(row) {
   const sopId = String(row.draftSopId || "").trim();
   return sopId ? `#/studio?sop=${encodeURIComponent(sopId)}` : "#/studio";
+}
+
+/** Deep link for one Dash row: the waiting draft, or that published queue card. */
+function dashboardHashForRow(row) {
+  const sopId = String(row?.draftSopId || "").trim();
+  const ticket = String(row?.formReference || row?.jiraKey || "").trim();
+  const cardId = String(row?.queue_card_id || "").trim();
+  const lob = String(row?.lob || "").trim();
+  if (isPendingCaptureDraft(row)) {
+    const q = new URLSearchParams();
+    if (sopId) q.set("sop", sopId);
+    if (ticket) q.set("ticket", ticket);
+    const qs = q.toString();
+    return qs ? `#/approvals?${qs}` : "#/approvals";
+  }
+  if (cardId && cardId !== "website-capture" && lob) {
+    return `#/studio?card=${encodeURIComponent(`${lob}/${cardId}`)}`;
+  }
+  if (sopId) return `#/studio?sop=${encodeURIComponent(sopId)}`;
+  return "#/studio";
 }
 
 async function openQueueStudio(hash = "#/studio") {
@@ -3521,11 +4621,15 @@ function renderDashboard(data) {
     if (dashMeta) dashMeta.textContent = "Error";
     return;
   }
-  const rows = data.rows || [];
+  const rows = (data.rows || []).slice(0, 5);
+  const newestCapture = rows.find((row) => row.fill_mode === "capture");
+  const newestCaptureId = newestCapture ? dashCaptureExpandId(newestCapture) : "";
+  if (newestCaptureId) {
+    dashExpandedCaptureIds.clear();
+    dashExpandedCaptureIds.add(newestCaptureId);
+  }
   if (dashMeta) {
-    const from = data.dateFrom || "…";
-    const to = data.dateTo || "…";
-    dashMeta.textContent = `${rows.length} run${rows.length === 1 ? "" : "s"} · ${from} → ${to}`;
+    dashMeta.textContent = `${rows.length} latest run${rows.length === 1 ? "" : "s"}`;
   }
   if (!rows.length) {
     dashList.classList.add("empty");
@@ -3584,28 +4688,37 @@ function renderDashboard(data) {
     when.className = "muted";
     when.style.fontSize = "0.72rem";
     when.textContent = whenText;
+    const openCardBtn = document.createElement("button");
+    openCardBtn.type = "button";
+    openCardBtn.className = "btn ghost tiny";
+    openCardBtn.textContent = pendingDraft ? "This approval" : "This card";
+    openCardBtn.title = pendingDraft
+      ? "Open this recording on the Approvals tab"
+      : "Open this queue card in the dashboard";
+    openCardBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openQueueStudio(dashboardHashForRow(row));
+    });
     if (isCapture) {
       const right = document.createElement("span");
       right.className = "dash-card-top-right";
       const chevron = document.createElement("span");
       chevron.className = "dash-card-chevron";
       chevron.setAttribute("aria-hidden", "true");
-      right.append(when, chevron);
+      right.append(openCardBtn, when, chevron);
       top.append(right);
     } else {
-      top.append(when);
+      const right = document.createElement("span");
+      right.className = "dash-card-top-right";
+      right.append(openCardBtn, when);
+      top.append(right);
     }
     if (showRef) top.prepend(ticketBtn);
 
     const title = document.createElement("div");
     title.className = "dash-title";
-    title.textContent = titleText;
-    if (isCapture && row.pageUrl && !/\/browse\//i.test(row.pageUrl)) {
-      const pageLine = document.createElement("div");
-      pageLine.className = "capture-live-page";
-      pageLine.textContent = row.pageUrl;
-      title.appendChild(pageLine);
-    }
+    title.textContent = isWebsiteUrl(titleText) ? "Form" : titleText;
 
     const meta = document.createElement("div");
     meta.className = "dash-meta";
@@ -3948,6 +5061,78 @@ async function applyJiraMailScreenshot(issue) {
   }
 }
 
+function setJiraFoldOpen(card, open) {
+  card.classList.toggle("collapsed", !open);
+  const toggle = card.querySelector(":scope > .jira-issue-toggle");
+  toggle?.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function attachJiraFold(card, title, subtitle, options = {}) {
+  card.classList.add("jira-issue-fold", "collapsed");
+  const header = options.header;
+  const toggle = document.createElement(header ? "div" : "button");
+  if (!header) toggle.type = "button";
+  toggle.className = header ? "jira-issue-toggle past-work-toggle" : "jira-issue-toggle";
+  toggle.setAttribute("aria-expanded", "false");
+  if (header) {
+    toggle.setAttribute("role", "button");
+    toggle.tabIndex = 0;
+    toggle.title = title ? `Show extra detail for ${title}` : "Show extra detail";
+    toggle.append(header);
+    if (title && !String(header.textContent || "").trim()) {
+      const keyEl = document.createElement("span");
+      keyEl.className = "jira-issue-toggle-key";
+      keyEl.textContent = title;
+      toggle.prepend(keyEl);
+    }
+  } else {
+    const keyEl = document.createElement("span");
+    keyEl.className = "jira-issue-toggle-key";
+    keyEl.textContent = title || "";
+    const sumEl = document.createElement("span");
+    sumEl.className = "jira-issue-toggle-sum";
+    sumEl.textContent = subtitle || "";
+    toggle.append(keyEl, sumEl);
+  }
+  const onToggle = (event) => {
+    const nested = event.target.closest("a, button, input, textarea, select");
+    if (nested && nested !== toggle) return;
+    event.stopPropagation();
+    const opening = card.classList.contains("collapsed");
+    if (opening) {
+      const parent = card.parentElement;
+      if (parent) {
+        for (const other of parent.querySelectorAll(":scope > .jira-issue-fold")) {
+          if (other !== card) setJiraFoldOpen(other, false);
+        }
+      }
+    }
+    setJiraFoldOpen(card, opening);
+  };
+  toggle.addEventListener("click", onToggle);
+  if (header) {
+    toggle.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      onToggle(event);
+    });
+  }
+  const body = document.createElement("div");
+  body.className = "jira-issue-body";
+  while (card.firstChild) body.appendChild(card.firstChild);
+  card.append(toggle, body);
+}
+
+function isJiraIssueKey(key) {
+  return /^[A-Z][A-Z0-9]{1,9}-\d+$/i.test(String(key || "").replace(/[\s.#]+/g, ""));
+}
+
+function isOpsTicketKey(key) {
+  return /^(RITM|INC|CHG|CRQ|SCTASK|STASK|PRB|CTASK|PTASK|KB|REQ|RFC|INT|WO|CALL|TASK|CR)\d+$/i.test(
+    String(key || "").replace(/[\s.#-]+/g, ""),
+  );
+}
+
 function renderJiraList(snapshot) {
   const fp = jiraUiFingerprint(snapshot);
   if (fp && fp === lastJiraUiFp) {
@@ -4181,6 +5366,7 @@ function renderJiraList(snapshot) {
     });
 
     card.append(top, summary, stage, meta, actions, noteRow, mailRow);
+    attachJiraFold(card, issue.key, issue.summary);
     paintJiraMailRow(issue.key, mailEls);
     jiraList.appendChild(card);
   }
@@ -4494,14 +5680,33 @@ function syncOutlookAccountKindFromTenant() {
   applyOutlookAccountKind(outlookKindFromTenant(tenant), { fillTenant: false });
 }
 
-function showMomDeviceHint(data) {
-  if (!momDeviceHint) return;
+function showOutlookDeviceHint(data) {
   const on = Boolean(data?.userCode);
-  momDeviceHint.classList.toggle("hidden", !on);
-  if (on) momDeviceHint.removeAttribute("hidden");
-  else momDeviceHint.setAttribute("hidden", "");
-  if (momDeviceMessage) momDeviceMessage.textContent = data?.message || "";
+  const message = on
+    ? data?.includeMail === false
+      ? data?.message || ""
+      : `One sign-in for meetings and mail. Enter code ${data.userCode} on the Microsoft page (copied).`
+    : "";
+  if (momDeviceHint) {
+    momDeviceHint.classList.toggle("hidden", !on);
+    if (on) momDeviceHint.removeAttribute("hidden");
+    else momDeviceHint.setAttribute("hidden", "");
+  }
+  if (momDeviceMessage)
+    momDeviceMessage.textContent = message || data?.message || "";
   if (momDeviceCode) momDeviceCode.textContent = data?.userCode || "";
+  const actionsHint = document.getElementById("actionsDeviceHint");
+  const actionsCode = document.getElementById("actionsDeviceCode");
+  if (actionsHint) {
+    actionsHint.classList.toggle("hidden", !on);
+    if (on) actionsHint.removeAttribute("hidden");
+    else actionsHint.setAttribute("hidden", "");
+  }
+  if (actionsCode) actionsCode.textContent = data?.userCode || "";
+}
+
+function showMomDeviceHint(data) {
+  showOutlookDeviceHint(data);
 }
 
 function setMomRecBar(on, label) {
@@ -4518,93 +5723,28 @@ function selectedMomEvent() {
   return events.find((event) => event.id === momSelectedEventId) || null;
 }
 
-function renderMomTurns(turns, fallbackText, recording, meta) {
+function renderMomTurns(turns, fallbackText, recording) {
   if (!momTranscript) return;
-  if (meta && typeof meta === "object") lastMomThreadMeta = meta;
-  const info = lastMomThreadMeta || {};
-  const rows = Array.isArray(turns)
-    ? turns.filter((row) => String(row?.text || "").trim())
-    : [];
+  const rows = (Array.isArray(turns) ? turns : [])
+    .filter((row) => String(row?.text || "").trim())
+    .sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0));
   if (!rows.length) {
-    const parsed =
-      window.liveTrackMomSpeakers?.parseTurnsFromTranscript?.(fallbackText) ||
-      [];
-    if (
-      parsed.length > 1 ||
-      (parsed.length === 1 && parsed[0].speaker !== "Speaker")
-    ) {
-      renderMomTurns(parsed, "", recording, info);
-      return;
-    }
-  }
-  const threads =
-    window.liveTrackMomSpeakers?.buildSpeakerThreads?.(rows, {
-      operatorName: info.operatorName || momSnapshot?.greetingName || "",
-      meeting: info.meeting || { tileNames: info.tileNames || [] },
-      activeSpeaker: info.activeSpeaker || "",
-    }) || [];
-  const showThreads =
-    threads.length &&
-    (recording || rows.length || (info.tileNames || []).length > 1);
-  if (!showThreads) {
-    momTranscript.classList.remove("mom-thread-board", "mom-convo");
+    momTranscript.classList.remove("mom-thread-board", "mom-convo", "mom-bullets");
     momTranscript.textContent =
       fallbackText || (recording ? "Listening…" : "Not recording.");
     return;
   }
-  momTranscript.classList.add("mom-thread-board", "mom-convo");
+  momTranscript.classList.add("mom-thread-board", "mom-bullets");
+  momTranscript.classList.remove("mom-convo");
   momTranscript.replaceChildren();
-  const people = document.createElement("div");
-  people.className = "mom-convo-people";
-  for (const thread of threads) {
-    const chip = document.createElement("span");
-    chip.className = `mom-convo-person${thread.local ? " local" : ""}${thread.live ? " live" : ""}`;
-    chip.textContent = thread.live ? `${thread.name} · speaking` : thread.name;
-    people.appendChild(chip);
+  const list = document.createElement("ul");
+  list.className = "mom-bullet-list";
+  for (const row of rows) {
+    const item = document.createElement("li");
+    item.textContent = String(row.text || "").trim();
+    list.appendChild(item);
   }
-  momTranscript.appendChild(people);
-  const chat = document.createElement("div");
-  chat.className = "mom-convo-thread";
-  const messages = threads
-    .flatMap((thread) =>
-      thread.turns
-        .filter((row) => String(row?.text || "").trim())
-        .map((row) => ({
-          ...row,
-          speaker: thread.name,
-          local: thread.local,
-          live: thread.live,
-        })),
-    )
-    .sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0));
-  if (!messages.length) {
-    const empty = document.createElement("p");
-    empty.className = "mom-thread-empty";
-    empty.textContent = recording
-      ? "Waiting for the conversation…"
-      : "No lines yet.";
-    chat.appendChild(empty);
-  } else {
-    let lastSpeaker = "";
-    for (const row of messages) {
-      const grouped = lastSpeaker === row.speaker;
-      const el = document.createElement("article");
-      el.className = `mom-convo-row${row.local ? " local" : ""}${row.live && !grouped ? " live" : ""}${grouped ? " grouped" : ""}`;
-      if (!grouped) {
-        const who = document.createElement("strong");
-        who.className = "mom-thread-name";
-        who.textContent = row.speaker;
-        el.appendChild(who);
-      }
-      const bubble = document.createElement("p");
-      bubble.className = "mom-turn-text";
-      bubble.textContent = row.text;
-      el.appendChild(bubble);
-      chat.appendChild(el);
-      lastSpeaker = row.speaker;
-    }
-  }
-  momTranscript.appendChild(chat);
+  momTranscript.appendChild(list);
   momTranscript.scrollTop = momTranscript.scrollHeight;
 }
 
@@ -4618,11 +5758,18 @@ function momFoldIsVisible(el) {
 
 /** Accordion: one open fold (content-sized); closed folds dock as bars below it. */
 function layoutMomFolds() {
+  const recordingNow = Boolean(
+    momSnapshot?.session?.recording || window.liveTrackMomRecord?.isRecording?.(),
+  );
   const folds = [
     { el: momMeetingsCard, open: momMeetingsOpen },
-    { el: momLiveCard, open: momTranscriptOpen },
-    { el: momMinutesCard, open: momMinutesOpen },
+    { el: momLiveCard, open: recordingNow || momTranscriptOpen },
     { el: momPastCard, open: momPastOpen },
+    { el: document.getElementById("actionsAddFold"), open: momActionsAddOpen },
+    {
+      el: document.getElementById("actionsListFold"),
+      open: momActionsListOpen,
+    },
   ];
   let anyActive = false;
   for (const { el, open } of folds) {
@@ -4645,7 +5792,8 @@ function layoutMomFolds() {
     );
     if (isOpen) anyActive = true;
   }
-  momFoldsStack?.classList.toggle("has-active", anyActive);
+  momFoldsStack?.classList.toggle("mom-live-only", recordingNow);
+  momFoldsStack?.classList.toggle("has-active", anyActive || recordingNow);
   if (anyActive && momFoldsStack) {
     const visible = [...momFoldsStack.querySelectorAll(".mom-fold")].filter(
       (el) => momFoldIsVisible(el),
@@ -4662,6 +5810,8 @@ function closeAllMomFolds() {
   momTranscriptOpen = false;
   momMinutesOpen = false;
   momPastOpen = false;
+  momActionsAddOpen = false;
+  momActionsListOpen = false;
 }
 
 function toggleMomFold(which) {
@@ -4674,7 +5824,11 @@ function toggleMomFold(which) {
           ? momMinutesOpen
           : which === "past"
             ? momPastOpen
-            : false;
+            : which === "actions-add"
+              ? momActionsAddOpen
+              : which === "actions-list"
+                ? momActionsListOpen
+                : false;
   closeAllMomFolds();
   if (!wasOpen) {
     if (which === "meetings") momMeetingsOpen = true;
@@ -4683,6 +5837,10 @@ function toggleMomFold(which) {
     else if (which === "past") {
       momPastOpen = true;
       refreshMomPastList();
+    } else if (which === "actions-add") momActionsAddOpen = true;
+    else if (which === "actions-list") {
+      momActionsListOpen = true;
+      refreshActionsList();
     }
   } else if (which === "minutes" && momPastView) {
     momPastView = null;
@@ -4923,24 +6081,27 @@ function renderMomPanel(snapshot) {
   if (momMinutes && !minutes && !editingMinutes && !momPastView) {
     momMinutes.value = "";
   }
-  if (momMinutesTitle && minutes) {
-    momMinutesTitle.textContent = selectedMinutes.fromPast
-      ? selectedMinutes.subject
-        ? `Saved · ${selectedMinutes.subject}`
-        : "Saved minutes"
-      : selectedMinutes.subject
-        ? `Minutes · ${selectedMinutes.subject}`
-        : momPendingApproval
-          ? "Draft minutes"
-          : "Refined minutes";
+  const meetingEvent = selectedMomEvent();
+  const adhocTitle = "Minutes of ad-hoc meeting";
+  if (momMinutesTitle) {
+    const subject = String(meetingEvent?.subject || selectedMinutes.subject || "").trim();
+    const adhoc = !subject || /ad-?hoc/i.test(subject);
+    if (selectedMinutes.fromPast && subject && !adhoc) {
+      momMinutesTitle.textContent = `Saved · ${subject}`;
+    } else if (!adhoc) {
+      momMinutesTitle.textContent = `Minutes · ${subject}`;
+    } else {
+      momMinutesTitle.textContent = adhocTitle;
+    }
   }
-  if (momMinutesCard) {
-    // Past MOMs open inline under the row — keep the top minutes fold for live/draft only.
-    const showMinutes = Boolean(minutes) && !selectedMinutes.fromPast;
-    momMinutesCard.classList.toggle("hidden", !showMinutes);
-    if (showMinutes) momMinutesCard.removeAttribute("hidden");
-    else momMinutesCard.setAttribute("hidden", "");
+  const refinedOnly = Boolean(minutes) && !recording && !selectedMinutes.fromPast;
+  if (momMinutesBlock) {
+    const showMinutes = (recording || refinedOnly) && !selectedMinutes.fromPast;
+    momMinutesBlock.classList.toggle("hidden", !showMinutes);
+    if (showMinutes) momMinutesBlock.removeAttribute("hidden");
+    else momMinutesBlock.setAttribute("hidden", "");
   }
+  momLiveCard?.classList.toggle("mom-refined-only", refinedOnly);
   setMomApproveBar(momPendingApproval && !selectedMinutes.fromPast, {
     editing: momEditMode,
   });
@@ -5266,6 +6427,7 @@ async function connectOutlookFromUi() {
           "Outlook connected. Mark meetings to track, then Start MOM when a call begins (or anytime for ad-hoc).";
       }
       refreshMomPanel();
+      await refreshActionsList();
       return;
     }
     const err = res?.error || "Could not connect Outlook.";
@@ -5404,7 +6566,7 @@ async function approveMomMinutes() {
     }
     if (result?.actionsImported > 0) {
       refreshActionsBadge();
-      if (activeNav === "actions") refreshActionsList();
+      if (activeNav === "mom") refreshActionsList();
     }
     renderMomPanel(await window.coact.momGetSnapshot?.());
     refreshMomPastList();
@@ -5501,7 +6663,7 @@ function showMomMinutes(text, meeting, { pendingApproval = true } = {}) {
   if (!body) return;
   momMinutesOpen = true;
   momMeetingsOpen = false;
-  momTranscriptOpen = false;
+  momTranscriptOpen = true;
   momPastOpen = false;
   momPendingApproval = Boolean(pendingApproval);
   if (!momPendingApproval) momEditMode = false;
@@ -5533,6 +6695,7 @@ async function refreshJiraPanel() {
     return;
   }
   jiraRefreshing = true;
+  lastJiraUiFp = "";
   if (jiraMeta) jiraMeta.textContent = "Refreshing…";
   try {
     const snap = await window.coact.jiraRefresh?.();
@@ -5558,6 +6721,598 @@ async function refreshJiraPanel() {
       jiraRefreshQueued = false;
       refreshJiraPanel();
     }
+  }
+}
+
+function stripPastWorkTicketBundle(description) {
+  let text = String(description || "").replace(/\r\n/g, "\n");
+  const bundleIdx = text.search(/Comment tickets:\s*/i);
+  if (bundleIdx >= 0) text = text.slice(0, bundleIdx);
+  const numbersIdx = text.search(/Ticket numbers:\s*/i);
+  if (numbersIdx >= 0) text = text.slice(0, numbersIdx);
+  return text
+    .replace(
+      /\b(?:RITM|INC|CHG|CRQ|SCTASK|STASK|PRB|CTASK|PTASK|KB|REQ|RFC|INT|WO|CALL|TASK|CR)[\s.\-#]*\d+\b/gi,
+      " ",
+    )
+    .replace(/\b[A-Z][A-Z0-9]{1,9}-\d+\b/g, " ")
+    .replace(/\(\s*[,;]*\s*\)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function pastWorkTicketKeys(issue) {
+  const parent = String(issue?.key || "")
+    .toUpperCase()
+    .replace(/[\s.#]+/g, "");
+  const seen = new Set();
+  const keys = [];
+  for (const row of Array.isArray(issue?.relatedTickets) ? issue.relatedTickets : []) {
+    const key = String(row?.key || "").trim();
+    if (!key) continue;
+    const norm = key.toUpperCase().replace(/[\s.#]+/g, "");
+    if (!norm || seen.has(norm) || (parent && norm === parent)) continue;
+    seen.add(norm);
+    keys.push(key);
+  }
+  return keys;
+}
+
+function pastWorkRelatedTickets(issue) {
+  const parent = String(issue?.key || "").toUpperCase();
+  const seen = new Set();
+  const out = [];
+  for (const row of Array.isArray(issue?.relatedTickets) ? issue.relatedTickets : []) {
+    const key = String(row?.key || "").trim();
+    if (!key) continue;
+    const norm = key.toUpperCase().replace(/[\s.#]+/g, "");
+    if (!norm || seen.has(norm) || (parent && norm === parent)) continue;
+    seen.add(norm);
+    out.push(row);
+  }
+  return out;
+}
+
+function pastWorkOpsTicketKeys(issue) {
+  return pastWorkTicketKeys(issue).filter((key) => isOpsTicketKey(key));
+}
+
+function pastWorkListedKeys(issue) {
+  const peers = pastWorkTicketKeys(issue).filter((key) => isJiraIssueKey(key));
+  const ops = pastWorkTicketKeys(issue).filter((key) => isOpsTicketKey(key));
+  return [...peers, ...ops];
+}
+
+function pastWorkSourceDescription(issue) {
+  return stripPastWorkTicketBundle(issue?.description);
+}
+
+function pastWorkIssueByKey(issues) {
+  const map = new Map();
+  for (const issue of Array.isArray(issues) ? issues : []) {
+    const key = String(issue?.key || "")
+      .toUpperCase()
+      .replace(/[\s.#]+/g, "");
+    if (key) map.set(key, issue);
+  }
+  return map;
+}
+
+function pastWorkPeerLabel(key, catalog) {
+  const norm = String(key || "")
+    .toUpperCase()
+    .replace(/[\s.#]+/g, "");
+  const peer = catalog?.get?.(norm);
+  const description = pastWorkSourceDescription(peer);
+  return description ? `${key}:${description}` : `${key}:`;
+}
+
+function pastWorkBrowseUrl(parentIssue, key, catalog) {
+  const norm = String(key || "")
+    .toUpperCase()
+    .replace(/[\s.#]+/g, "");
+  const peer = catalog?.get?.(norm);
+  const peerUrl = String(peer?.url || "").trim();
+  if (/^https?:\/\//i.test(peerUrl)) return peerUrl;
+  const parentUrl = String(parentIssue?.url || "").trim();
+  const origin = parentUrl.match(/^(https?:\/\/[^/]+)/i);
+  if (origin && key) return `${origin[1]}/browse/${key}`;
+  return "";
+}
+
+function pastWorkLineEl(issue) {
+  const line = document.createElement("div");
+  line.className = "past-work-line";
+  const issueKey = String(issue?.key || "").trim();
+  line.title = issueKey;
+  if (issueKey) {
+    const key = document.createElement("button");
+    key.type = "button";
+    key.className = "jira-key past-work-header-key";
+    key.textContent = issueKey;
+    key.title = `Open ${issueKey}`;
+    key.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (issue.url) window.coact.jiraOpenIssue?.(issue.url);
+    });
+    line.append(key);
+  }
+  return line;
+}
+
+function pastWorkDetailEl(issue, catalog) {
+  const wrap = document.createElement("div");
+  wrap.className = "past-work-detail";
+  const description = pastWorkSourceDescription(issue);
+  if (description) {
+    const desc = document.createElement("p");
+    desc.className = "past-work-detail-desc";
+    desc.textContent = description;
+    wrap.append(desc);
+  }
+  const peers = pastWorkTicketKeys(issue)
+    .filter((key) => isJiraIssueKey(key))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const ops = pastWorkOpsTicketKeys(issue);
+  const lines = [
+    ...peers.map((key) => ({ key, peer: true })),
+    ...ops.map((key) => ({ key, peer: false })),
+  ];
+  if (!lines.length) {
+    if (!description) {
+      const empty = document.createElement("p");
+      empty.className = "jira-related-empty";
+      empty.textContent = "No extra detail";
+      wrap.append(empty);
+    }
+    return wrap;
+  }
+  const list = document.createElement("ul");
+  list.className = "past-work-ticket-list";
+  lines.forEach((row, index) => {
+    const li = document.createElement("li");
+    const open = index === 0 ? "(" : "";
+    const close = index === lines.length - 1 ? ")" : "";
+    if (row.peer) {
+      li.className = "past-work-peer-line";
+      li.title = row.key;
+      if (open) li.append(document.createTextNode("("));
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "jira-key";
+      btn.textContent = row.key;
+      const url = pastWorkBrowseUrl(issue, row.key, catalog);
+      btn.title = `Open ${row.key}`;
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (url) window.coact.jiraOpenIssue?.(url);
+      });
+      li.append(btn);
+      if (close) li.append(document.createTextNode(")"));
+    } else {
+      li.textContent = `${open}${row.key}${close}`;
+      li.title = row.key;
+    }
+    list.appendChild(li);
+  });
+  wrap.append(list);
+  return wrap;
+}
+
+function pastWorkBundleQuery(keys) {
+  const ops = (Array.isArray(keys) ? keys : []).filter((key) => isOpsTicketKey(key));
+  if (!ops.length) return "";
+  const compact = `numberIN${ops.map((key) => String(key).replace(/\s+/g, "").toUpperCase()).join(",")}`;
+  const orQuery = ops
+    .map((key) => `number=${String(key).replace(/\s+/g, "").toUpperCase()}`)
+    .join("^OR");
+  return compact.length <= orQuery.length ? compact : orQuery;
+}
+
+function unionPastWorkRelatedTickets(previous, incoming) {
+  const seen = new Set();
+  const out = [];
+  for (const row of [...(previous || []), ...(incoming || [])]) {
+    const key = String(row?.key || "")
+      .toUpperCase()
+      .replace(/[\s.#]+/g, "");
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
+function mergePastWorkSnapshots(previous, next) {
+  if (!next || typeof next !== "object") return next;
+  const prevIssues = Array.isArray(previous?.issues) ? previous.issues : [];
+  const nextIssues = Array.isArray(next.issues) ? next.issues : [];
+  if (!prevIssues.length) return next;
+  const prevBy = new Map();
+  for (const issue of prevIssues) {
+    const key = String(issue?.key || "")
+      .toUpperCase()
+      .replace(/[\s.#]+/g, "");
+    if (key) prevBy.set(key, issue);
+  }
+  const seen = new Set();
+  const issues = nextIssues.map((issue) => {
+    const key = String(issue?.key || "")
+      .toUpperCase()
+      .replace(/[\s.#]+/g, "");
+    if (key) seen.add(key);
+    const old = prevBy.get(key);
+    if (!old) return issue;
+    const incoming = Array.isArray(issue.relatedTickets) ? issue.relatedTickets : [];
+    const previousRel = Array.isArray(old.relatedTickets) ? old.relatedTickets : [];
+    return {
+      ...old,
+      ...issue,
+      description: String(issue.description || "").trim() || old.description,
+      relatedTickets: incoming.length
+        ? unionPastWorkRelatedTickets(previousRel, incoming)
+        : previousRel.length
+          ? previousRel
+          : incoming,
+    };
+  });
+  for (const old of prevIssues) {
+    const key = String(old?.key || "")
+      .toUpperCase()
+      .replace(/[\s.#]+/g, "");
+    if (!key || seen.has(key)) continue;
+    issues.push(old);
+  }
+  return { ...next, issues };
+}
+
+function renderPastWorkList(snapshot) {
+  const list = document.getElementById("pastList");
+  const meta = document.getElementById("pastMeta");
+  if (!list) return;
+  const doneName = /^(done|closed|resolved|complete|completed)$/i;
+  const catalog = pastWorkIssueByKey(snapshot?.issues || []);
+  const issues = (snapshot?.issues || []).filter((issue) => {
+    const key = String(issue.key || "").toUpperCase();
+    if (!key) return false;
+    if (!isJiraIssueKey(key) || isOpsTicketKey(key)) return false;
+    if (issue.done) return false;
+    if (String(issue.statusCategory || "").toLowerCase() === "done")
+      return false;
+    if (doneName.test(String(issue.status || ""))) return false;
+    if (/\b(done|closed|resolved|complete)\b/i.test(String(issue.status || "")))
+      return false;
+    return true;
+  });
+  if (!snapshot?.ok) {
+    list.classList.add("empty");
+    list.textContent = snapshot?.error || "Could not load past work sample";
+    if (meta)
+      meta.textContent =
+        snapshot?.configured === false
+          ? "Not configured — open Settings"
+          : "Error";
+    return;
+  }
+  if (!issues.length) {
+    list.classList.add("empty");
+    list.textContent = snapshot?.fromCache
+      ? "No past stories saved yet. Hit Refresh to load from Jira."
+      : "No past (non-active sprint) stories found";
+    if (meta) {
+      const saved = Number(snapshot.pastWorkSaved);
+      meta.textContent = snapshot.pastWorkError
+        ? "Empty · PastWork sheet save failed"
+        : saved
+          ? `Empty list · ${saved} row${saved === 1 ? "" : "s"} saved to PastWork`
+          : "Empty";
+    }
+    return;
+  }
+  list.classList.remove("empty");
+  list.replaceChildren();
+  for (const issue of issues) {
+    const card = document.createElement("div");
+    card.className = "jira-issue past-work-card";
+    const issueKey = String(issue.key || "").trim();
+    card.append(pastWorkDetailEl(issue, catalog));
+    attachJiraFold(card, issueKey, "", { header: pastWorkLineEl(issue) });
+    list.appendChild(card);
+  }
+  if (meta) {
+    const when = snapshot.fetchedAt
+      ? new Date(snapshot.fetchedAt).toLocaleTimeString()
+      : snapshot.fromCache
+        ? "saved locally"
+        : "—";
+    const saved = Number(snapshot.pastWorkSaved);
+    const saveBit = snapshot.pastWorkError
+      ? ` · sheet save failed`
+      : Number.isFinite(saved)
+        ? ` · ${saved} row${saved === 1 ? "" : "s"} saved to PastWork`
+        : " · saving PastWork sheet";
+    meta.textContent = `${issues.length} past stor${issues.length === 1 ? "y" : "ies"} · ${when}${saveBit}`;
+  }
+}
+
+function withRendererTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function setExpertMeta(text) {
+  const meta = document.getElementById("expertMeta");
+  if (meta) meta.textContent = text || "";
+}
+
+function fillExpertSystemFilter(tags, selected) {
+  const select = document.getElementById("expertSystemFilter");
+  if (!select) return;
+  const current = selected != null ? String(selected) : select.value;
+  const options = ["<option value=\"\">All systems</option>"];
+  for (const tag of Array.isArray(tags) ? tags : []) {
+    const value = String(tag || "").trim();
+    if (!value) continue;
+    const picked = value === current ? " selected" : "";
+    options.push(
+      `<option value="${value.replace(/"/g, "&quot;")}"${picked}>${value}</option>`
+    );
+  }
+  select.innerHTML = options.join("");
+}
+
+async function refreshExpertStatus() {
+  try {
+    const status = await window.coact.expertIndexStatus?.();
+    const count = Number(status?.recordCount) || 0;
+    const when = status?.builtAt ? new Date(status.builtAt).toLocaleString() : "";
+    fillExpertSystemFilter(status?.tags || []);
+    if (!count) {
+      setExpertMeta(
+        status?.error ||
+          "No saved index yet. Type a topic (for example two factor authentication) and Find — LiveTrack will search Jira now. Rebuild index is optional for faster repeats."
+      );
+      return;
+    }
+    setExpertMeta(
+      `${count} record${count === 1 ? "" : "s"}${when ? ` · built ${when}` : ""}${
+        status.embeddingModel ? ` · ${status.embeddingModel}` : ""
+      }`
+    );
+  } catch (err) {
+    setExpertMeta(err?.message || "Could not load expert index.");
+  }
+}
+
+function renderExpertPeople(result) {
+  const list = document.getElementById("expertList");
+  if (!list) return;
+  const people = Array.isArray(result?.people) ? result.people : [];
+  if (result?.clarify) {
+    list.classList.add("empty");
+    list.textContent = result.message || "Which system or issue type?";
+    return;
+  }
+  if (!result?.ok) {
+    list.classList.add("empty");
+    list.textContent = result?.error || "Find expert failed.";
+    return;
+  }
+  if (!people.length) {
+    list.classList.add("empty");
+    list.textContent = result.message || "No experts found.";
+    return;
+  }
+  list.classList.remove("empty");
+  list.replaceChildren();
+  people.forEach((person, index) => {
+    const card = document.createElement("article");
+    card.className = "expert-card";
+    const name = document.createElement("div");
+    name.className = "expert-card-name";
+    name.textContent = index === 0 ? `Top match: ${person.person}` : person.person;
+    const meta = document.createElement("p");
+    meta.className = "expert-card-meta";
+    meta.textContent = [
+      person.personEmail,
+      `${person.matchCount} match${person.matchCount === 1 ? "" : "es"} as ${person.role}`,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const evidence = document.createElement("ul");
+    evidence.className = "expert-evidence";
+    for (const row of person.evidence || []) {
+      const li = document.createElement("li");
+      const label = row.reference_id || row.title || "record";
+      if (row.url) {
+        const link = document.createElement("a");
+        link.href = row.url;
+        link.textContent = label;
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          window.coact.jiraOpenIssue?.(row.url);
+        });
+        li.append(link);
+        li.append(
+          ` · ${row.source}${row.role_signal ? ` ${row.role_signal}` : ""}${
+            row.title && row.title !== label ? ` · ${row.title}` : ""
+          }`
+        );
+      } else {
+        li.textContent = `${label} · ${row.source}`;
+      }
+      evidence.append(li);
+    }
+    card.append(name, meta, evidence);
+    list.append(card);
+  });
+}
+
+async function runFindExpert(event) {
+  event?.preventDefault?.();
+  const query = document.getElementById("expertQueryInput")?.value || "";
+  const systemFilter = document.getElementById("expertSystemFilter")?.value || "";
+  const list = document.getElementById("expertList");
+  const btn = document.getElementById("btnExpertSearch");
+  if (list) {
+    list.classList.add("empty");
+    list.textContent = "Searching Jira…";
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const result = await window.coact.findExpert?.({ query, systemFilter, limit: 5 });
+    renderExpertPeople(result || { ok: false, error: "Find expert is unavailable." });
+  } catch (err) {
+    renderExpertPeople({ ok: false, error: err?.message || "Find expert failed." });
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function rebuildExpertIndexUi() {
+  const btn = document.getElementById("btnExpertRebuild");
+  const list = document.getElementById("expertList");
+  if (btn) btn.disabled = true;
+  setExpertMeta("Rebuilding Jira + Confluence index…");
+  if (list) {
+    list.classList.add("empty");
+    list.textContent = "This can take a minute.";
+  }
+  try {
+    const result = await window.coact.expertIndexRebuild?.();
+    await refreshExpertStatus();
+    if (!result?.ok && !result?.recordCount) {
+      if (list) list.textContent = result?.error || "No expert records found.";
+      return;
+    }
+    if (list) {
+      list.classList.add("empty");
+      list.textContent = `Indexed ${result.recordCount || 0} records. Search a system or issue.`;
+    }
+  } catch (err) {
+    setExpertMeta(err?.message || "Rebuild failed.");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function showPastWorkCached() {
+  if (pastWorkSnapshot) {
+    renderPastWorkList(pastWorkSnapshot);
+    return;
+  }
+  loadPastWorkPanel();
+}
+
+async function loadPastWorkPanel() {
+  if (pastWorkBusy) return;
+  const list = document.getElementById("pastList");
+  pastWorkBusy = true;
+  try {
+    if (!pastWorkSnapshot && list && !list.childElementCount) {
+      list.classList.add("empty");
+      list.textContent = "Loading saved Past work…";
+    }
+    const snap = (await withRendererTimeout(
+      window.coact.jiraPastWorkLoad?.() || Promise.resolve(null),
+      8000,
+      "Past work cache timed out",
+    )) || {
+      ok: true,
+      fromCache: true,
+      issues: [],
+    };
+    pastWorkSnapshot = snap;
+    renderPastWorkList(snap);
+  } catch (err) {
+    const snap = {
+      ok: false,
+      fromCache: true,
+      issues: pastWorkSnapshot?.issues || [],
+      error: err?.message || "Could not load saved Past work",
+    };
+    pastWorkSnapshot = snap;
+    renderPastWorkList(snap);
+  } finally {
+    pastWorkBusy = false;
+  }
+}
+
+async function refreshPastWorkPanel() {
+  if (pastWorkBusy) return;
+  const list = document.getElementById("pastList");
+  const meta = document.getElementById("pastMeta");
+  pastWorkBusy = true;
+  if (meta) meta.textContent = "Refreshing comment history…";
+  if (list) {
+    list.classList.add("empty");
+    list.textContent = "Refreshing comment history…";
+  }
+  try {
+    const snap = (await withRendererTimeout(
+      window.coact.jiraPastWork?.({
+        force: true,
+        _t: Date.now(),
+      }) || Promise.resolve(null),
+      24000,
+      "Past work refresh timed out",
+    )) || {
+      ok: false,
+      error: "No response",
+    };
+    const merged = mergePastWorkSnapshots(pastWorkSnapshot, snap);
+    if (
+      merged.ok &&
+      window.coact.savePastWork &&
+      (merged.pastWorkError || !merged.pastWorkSaved)
+    ) {
+      if (meta) meta.textContent = "Saving PastWork sheet…";
+      try {
+        const save = await withRendererTimeout(
+          window.coact.savePastWork(
+            (merged.issues || []).map((issue) => ({
+              key: issue.key,
+              summary: issue.summary,
+              description: issue.description,
+              status: issue.status,
+              issueType: issue.issueType,
+              url: issue.url,
+              relatedTickets: issue.relatedTickets,
+              commentSource: issue.commentSource,
+              commentText: issue.commentText,
+            })),
+          ),
+          8000,
+          "Saving PastWork timed out",
+        );
+        merged.pastWorkSaved = Number(save?.saved) || merged.pastWorkSaved || 0;
+        merged.pastWorkError =
+          save?.ok === false || save?.xlsxOk === false
+            ? save.error || save.xlsxError || "Could not save PastWork sheet"
+            : "";
+      } catch (saveErr) {
+        merged.pastWorkError = saveErr?.message || "Could not save PastWork sheet";
+      }
+    }
+    pastWorkSnapshot = merged;
+    renderPastWorkList(merged);
+  } catch (err) {
+    const snap = {
+      ok: false,
+      configured: true,
+      fromCache: Boolean(pastWorkSnapshot?.issues?.length),
+      issues: pastWorkSnapshot?.issues || [],
+      error: err?.message || "Could not load past work sample",
+    };
+    pastWorkSnapshot = snap;
+    renderPastWorkList(snap);
+  } finally {
+    pastWorkBusy = false;
   }
 }
 
@@ -5695,13 +7450,39 @@ function clearDeskScreenshot() {
   setDeskStatus("deskSnipStatus", "Form cleared.");
 }
 
+async function refreshDeskEpics() {
+  const sel = document.getElementById("deskEpicSelect");
+  if (!sel) return;
+  const previous = sel.value || "";
+  let epics = [];
+  try {
+    const res = await window.coact.deskListEpics?.();
+    epics = Array.isArray(res?.epics) ? res.epics : [];
+  } catch {
+    epics = [];
+  }
+  sel.replaceChildren();
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = epics.length ? "No epic" : "No epics in this project";
+  sel.appendChild(empty);
+  for (const epic of epics) {
+    const opt = document.createElement("option");
+    opt.value = epic.key;
+    opt.textContent = `${epic.key} — ${epic.summary || ""}`.slice(0, 80);
+    sel.appendChild(opt);
+  }
+  if (epics.some((epic) => epic.key === previous)) sel.value = previous;
+}
+
 function fillDeskIssueSelect() {
   const cloneSel = document.getElementById("deskCloneSelect");
   fillDeskSelectOptions(cloneSel, {
-    emptyLabel: "Pick a ticket to clone",
+    emptyLabel: "New ticket",
     previous: cloneSel?.value || "",
     pickOpen: false,
   });
+  void refreshDeskEpics();
   fillDeskSelectOptions(document.getElementById("jiraMailIssueSelect"), {
     emptyLabel: "Pick a story",
     previous: document.getElementById("jiraMailIssueSelect")?.value || "",
@@ -5748,11 +7529,6 @@ document
   .getElementById("btnDeskCollabToggle")
   ?.addEventListener("click", () =>
     toggleDeskFold("deskCollabFold", "btnDeskCollabToggle"),
-  );
-document
-  .getElementById("btnActionsAddToggle")
-  ?.addEventListener("click", () =>
-    toggleDeskFold("actionsAddFold", "btnActionsAddToggle"),
   );
 
 document
@@ -6129,6 +7905,7 @@ async function createDeskProposedTickets(tickets) {
         summary: ticket.summary,
         description: ticket.description,
         acceptanceCriteria: ticket.acceptanceCriteria,
+        epicKey: document.getElementById("deskEpicSelect")?.value || "",
         screenshotPath: shot,
         extraFiles: files,
         pageUrl: activeTabUrl || "",
@@ -6185,6 +7962,7 @@ async function submitDeskJiraIssue(mode) {
       summary: draft?.summary || summary,
       description: draft?.description || description,
       acceptanceCriteria: draft?.acceptanceCriteria || acceptanceCriteria,
+      epicKey: document.getElementById("deskEpicSelect")?.value || "",
       screenshotPath: deskSnipPath,
       extraFiles: deskExtraFiles,
       pageUrl: activeTabUrl || "",
@@ -6208,6 +7986,11 @@ async function submitDeskJiraIssue(mode) {
           ? " Screenshot attached."
           : "";
     const attachFail = res.attachError ? ` ${res.attachError}` : "";
+    const epicNote = res.epicKey
+      ? res.epicLinked
+        ? ` Linked to ${res.epicKey}.`
+        : ` Epic was not linked${res.epicError ? `: ${res.epicError}` : "."}`
+      : "";
     const verb =
       mode === "clone"
         ? `Cloned ${sourceKey} → ${res.issueKey}`
@@ -6217,7 +8000,7 @@ async function submitDeskJiraIssue(mode) {
     await refreshDeskCollabList();
     setDeskStatus(
       "deskSnipStatus",
-      res.issueKey ? `${verb}.${extraNote}${attachFail}` : "Ticket created.",
+      res.issueKey ? `${verb}.${extraNote}${attachFail}${epicNote}` : "Ticket created.",
     );
   } catch (err) {
     setDeskStatus(
@@ -6541,6 +8324,14 @@ async function openSettings() {
   }
   if (jiraProjectKeyInput)
     jiraProjectKeyInput.value = s?.jiraProjectKey || "LIVEACT";
+  const expertSystemTagsInput = document.getElementById("expertSystemTagsInput");
+  const expertJqlInput = document.getElementById("expertJqlInput");
+  const confluenceSpaceKeysInput = document.getElementById("confluenceSpaceKeysInput");
+  const expertInactiveEmailsInput = document.getElementById("expertInactiveEmailsInput");
+  if (expertSystemTagsInput) expertSystemTagsInput.value = s?.expertSystemTags || "";
+  if (expertJqlInput) expertJqlInput.value = s?.expertJql || "";
+  if (confluenceSpaceKeysInput) confluenceSpaceKeysInput.value = s?.confluenceSpaceKeys || "";
+  if (expertInactiveEmailsInput) expertInactiveEmailsInput.value = s?.expertInactiveEmails || "";
   if (outlookTenantInput)
     outlookTenantInput.value = normalizeOutlookTenantUi(
       s?.outlookTenantId || OUTLOOK_DEFAULT_TENANT,
@@ -6647,6 +8438,14 @@ function collectJiraSettingsPayload(_opts = {}) {
   // Omit them here so saveSettings keeps existing disk values.
   if (jiraProjectKeyInput)
     payload.jiraProjectKey = jiraProjectKeyInput.value.trim() || "LIVEACT";
+  const expertSystemTagsInput = document.getElementById("expertSystemTagsInput");
+  const expertJqlInput = document.getElementById("expertJqlInput");
+  const confluenceSpaceKeysInput = document.getElementById("confluenceSpaceKeysInput");
+  const expertInactiveEmailsInput = document.getElementById("expertInactiveEmailsInput");
+  if (expertSystemTagsInput) payload.expertSystemTags = expertSystemTagsInput.value.trim();
+  if (expertJqlInput) payload.expertJql = expertJqlInput.value.trim();
+  if (confluenceSpaceKeysInput) payload.confluenceSpaceKeys = confluenceSpaceKeysInput.value.trim();
+  if (expertInactiveEmailsInput) payload.expertInactiveEmails = expertInactiveEmailsInput.value.trim();
   if (outlookTenantInput)
     payload.outlookTenantId = normalizeOutlookTenantUi(
       outlookTenantInput.value.trim() || OUTLOOK_DEFAULT_TENANT,
@@ -6686,31 +8485,54 @@ window.coact.onExtensionStatus((status) => {
     const nextUrl = status.tabUrl || null;
     const nextTitle = status.tabTitle || null;
     const activated = Boolean(status.activated);
-    // Explicit null = non-injectable tab (new tab, chrome://) — clear so sync returns to queue.
     // Connection events omit tabUrl entirely (handled by hasOwnProperty above).
-    // Tab/window activation must re-run auto-pick even when the URL did not change
-    // (e.g. user pressed ← Queue, then focused the same form again).
-    if (nextUrl !== activeTabUrl || nextTitle !== activeTabTitle || activated) {
-      if (activeNav === "live" && (nextUrl !== activeTabUrl || activated))
-        suppressAutoOpen = false;
+    // Same-tab typing / clicks send activated:true constantly. Only a real
+    // tab URL change (or clicking a queue card) may reopen after ← Queue.
+    const urlChanged = Boolean(nextUrl) && nextUrl !== activeTabUrl;
+    if (urlChanged) {
+      if (activeNav === "live") suppressAutoOpen = false;
+    }
+    if (nextUrl) {
+      activeTabUrl = nextUrl;
+      if (nextTitle != null) activeTabTitle = nextTitle;
+    } else if (!activated) {
+      // Explicit null = non-injectable tab (new tab, chrome://).
+      // Do not blank the URL on activated user_activity — that would make
+      // the next form-tab event look like a URL change and reopen the card.
       activeTabUrl = nextUrl;
       activeTabTitle = nextTitle;
-      if (activeNav === "live") scheduleSyncQueueToActiveTab(activated);
+    } else if (nextTitle) {
+      activeTabTitle = nextTitle;
+    }
+    if (activeNav === "live" && (urlChanged || !suppressAutoOpen)) {
+      scheduleSyncQueueToActiveTab(urlChanged);
     }
   }
 
   // Re-attach watch after reconnect or client swap (SW restart / long idle)
   if (nowConnected && activeCardId) {
+    const fillingCard = cards.find((c) => c.id === activeCardId);
     const clientChanged =
       Boolean(status?.clientId) && status.clientId !== lastExtensionClientId;
-    if (!wasExtensionConnected || clientChanged || status?.reconnected) {
-      window.coact.watchCard(activeCardId);
+    if (
+      !cardHasAttachedPlaywright(fillingCard) &&
+      (!wasExtensionConnected || clientChanged || status?.reconnected)
+    ) {
+      window.coact.watchCard(activeCardId, {
+        resetProgress: false,
+        completedStepIds: completedIdsForCard(activeCardId),
+      });
     }
   }
   if (status?.clientId) lastExtensionClientId = status.clientId;
   if (!nowConnected) lastExtensionClientId = null;
   wasExtensionConnected = nowConnected;
 });
+
+if (window.coact.onExtensionHeartbeat) {
+  window.coact.onExtensionHeartbeat(applyExtensionHeartbeat);
+}
+if (!recLinkTimer) recLinkTimer = setInterval(updateLinkBlinker, 1000);
 
 function renderQueue() {
   const matchedIds = matchingCardIds();
@@ -6829,7 +8651,7 @@ async function clearFormFields() {
   closeMoreMenu();
   clearStuckCoach();
   coachEpisode.clear();
-  cardProgress.delete(activeCardId);
+  forgetCardProgress(activeCardId);
 
   const cleared = [...stepIndex.values()].map((step) => ({
     ...step,
@@ -6880,7 +8702,10 @@ async function refreshStepTracking() {
   // Keep current greens while the extension re-scans (force-emits status)
   if (stepStatuses.size) saveCardProgress(activeCardId);
 
-  const res = await window.coact.watchCard(activeCardId, { resetProgress: false });
+  const res = await window.coact.watchCard(activeCardId, {
+    resetProgress: false,
+    completedStepIds: completedIdsForCard(activeCardId),
+  });
   if (!res?.ok) {
     runNote.className = "run-note error";
     const err = String(res?.error || res?.reason || "");
@@ -6922,29 +8747,14 @@ async function startFilling(options = {}) {
   if (!activeCardId || runState !== "idle") return;
 
   aiRepairAttemptedForRun = false;
-  // Plain Start (not Agent Approve) must not inherit a prior agent-approved gate skip
-  if (!options?.agentApproved) agentApprovedForRun = false;
+  const fillingCard = cards.find((c) => c.id === activeCardId);
+  const autoPlay = Boolean(options?.agentApproved && cardHasAttachedPlaywright(fillingCard));
+  if (!options?.agentApproved && !autoPlay) agentApprovedForRun = false;
+  if (autoPlay) agentApprovedForRun = true;
   runNote.className = "run-note";
-  runNote.textContent = "";
+  runNote.textContent = autoPlay ? "Running recorded script…" : "";
   setRunControls("running");
   saveCardProgress(activeCardId);
-  lastGuideSpeakKey = "";
-  guideAudioReady = true;
-  if (activeCardId && !isVoiceCoachOn(activeCardId)) {
-    // Keep coaching on unless user already stopped it on this card
-    setVoiceCoachOn(activeCardId, true);
-  }
-  try {
-    await window.liveTrackVoice?.unlockAudio?.();
-  } catch {
-    /* ignore */
-  }
-  if (isVoiceCoachOn(activeCardId)) {
-    const first = currentGuideStep();
-    if (first?.stepId) {
-      speakGuideForStep(first.stepId, { kind: "first", force: true });
-    }
-  }
 
   // Resume from first incomplete step (greens = already done)
   const stepIds = [...stepIndex.keys()];
@@ -6963,7 +8773,7 @@ async function startFilling(options = {}) {
     startIndex = stepIds.length;
   }
 
-  if (startIndex >= stepIds.length && stepIds.length > 0) {
+  if (!autoPlay && startIndex >= stepIds.length && stepIds.length > 0) {
     runNote.className = "run-note success";
     runNote.textContent = "All steps already done";
     agentApprovedForRun = false;
@@ -6986,15 +8796,22 @@ async function startFilling(options = {}) {
   );
 
   const result = await window.coact.runCard(activeCardId, {
-    startIndex,
-    completedStepIds,
-    ...(dataOverrides ? { dataOverrides } : {}),
+    startIndex: autoPlay ? 0 : startIndex,
+    completedStepIds: autoPlay ? [] : completedStepIds,
+    ...(autoPlay ? {} : dataOverrides ? { dataOverrides } : {}),
     ...(agentApprovedValues ? { agentApprovedValues } : {}),
-    agentApproved,
+    ...(options?.startUrl ? { startUrl: options.startUrl } : {}),
+    agentApproved: autoPlay ? true : agentApproved,
   });
   if (!result.ok) {
     agentApprovedForRun = false;
-    if (result.error === "extension_offline" || result.error === "browser_unavailable") {
+    if (
+      result.error === "extension_offline" ||
+      result.error === "browser_unavailable" ||
+      result.error === "browser_offline" ||
+      result.error === "no_cdp" ||
+      result.error === "no_chrome_context"
+    ) {
       showBrowserRequiredModal();
       setRunControls("idle");
       return;
@@ -7005,8 +8822,14 @@ async function startFilling(options = {}) {
       data_missing: "This case is not ready yet.",
       not_found: "This case is no longer in the queue.",
       sop_missing: "This workflow is unavailable.",
+      browser_offline:
+        "Chrome is not on port 9222. Quit Chrome, relaunch with --remote-debugging-port=9222, then retry.",
     };
-    runNote.textContent = messages[result.error] || "Could not start.";
+    runNote.textContent =
+      messages[result.error] ||
+      result.reason ||
+      result.error ||
+      "Could not start.";
     setRunControls("idle");
     return;
   }
@@ -7015,11 +8838,23 @@ async function startFilling(options = {}) {
   if (startIndex > 0) {
     runNote.className = "run-note";
     runNote.textContent = `Resuming from step ${startIndex + 1}…`;
+  } else if (autoPlay) {
+    runNote.className = "run-note";
+    runNote.textContent = "Running recorded script…";
   } else {
     runNote.className = "run-note";
     runNote.textContent = "";
   }
   setRunControls("running");
+  if (result.mode === "playwright") {
+    captureUserStopped = false;
+    captureAgentOwned = true;
+    captureRecording = true;
+    captureRecordingCardId = activeCardId;
+    updateRecordButton();
+    ensureCapturePoll();
+    setExtensionStatus({ connected: true, appConnected: true });
+  }
 }
 
 function escapeHtml(value) {
@@ -7061,30 +8896,58 @@ function takeOver() {
   setRunControls("idle");
   closeMoreMenu();
   stopGuideVoice({ silent: true });
+  if (captureAgentOwned || captureRecording) stopAgentOwnedRecording();
   runNote.className = "run-note";
   runNote.textContent = "";
 }
 
-btnBack.addEventListener("click", async () => {
+btnBack.addEventListener("click", () => {
   const wasRunning = runState !== "idle";
+  const leavingId = activeCardId;
   if (wasRunning) window.coact.controlRun("cancel");
-  try {
-    await handleBackToQueueBeforeComplete({ wasRunning });
-  } catch {
-    /* ignore */
-  }
-  window.coact.watchCard(null);
   closeMoreMenu();
   suppressAutoOpen = true;
   autoPinnedCardId = null;
   stopGuideVoice({ silent: true });
-  // skipSave: handleBack already saved or reset progress
+  forgetAllCardProgress();
+  void handleBackToQueueBeforeComplete({ wasRunning, cardId: leavingId }).catch(() => {});
+  void clearAllCardFieldsOnQueue(leavingId).catch(() => {});
   showQueue({ skipSave: true });
 });
 
 btnStart.addEventListener("click", () => {
   closeMoreMenu();
+  const card = cards.find((c) => c.id === activeCardId);
+  if (cardHasAttachedPlaywright(card)) {
+    askPlayUrlThenLaunch(card);
+    return;
+  }
   showAgentPreview();
+});
+btnLaunchPlayUrl?.addEventListener("click", () => launchPlayUrlFromModal());
+btnCancelPlayUrl?.addEventListener("click", () => closePlayUrlModal());
+btnClosePlayUrlModal?.addEventListener("click", () => closePlayUrlModal());
+btnPastePlayUrl?.addEventListener("click", () => {
+  void pastePlayUrlFromClipboard();
+});
+btnClearPlayUrl?.addEventListener("click", () => {
+  if (playUrlInput) playUrlInput.value = "";
+  playUrlInput?.focus();
+});
+playUrlInput?.addEventListener("focus", () => {
+  if (playUrlInput.value) playUrlInput.select();
+});
+playUrlInput?.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && String(e.key || "").toLowerCase() === "v") {
+    e.preventDefault();
+    void pastePlayUrlFromClipboard();
+    return;
+  }
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    launchPlayUrlFromModal();
+  }
+  if (e.key === "Escape") closePlayUrlModal();
 });
 btnApproveAgent?.addEventListener("click", () => {
   closeMoreMenu();
@@ -7170,22 +9033,25 @@ window.coact.onQueueUpdated?.((data) => {
       }
       renderQueue();
     } else {
-      // Drop cached progress chrome so mandatory / step edits from studio show immediately
-      cardProgress.delete(openId);
-      // Stay on Desk/Jira/AI/Dash — remounting would switch to Live and auto-record
+      // Keep greens across SOP republish / record updates
+      saveCardProgress(openId);
       if (activeNav !== "live") {
         renderQueue();
       } else {
-        showQuest(card);
-        // Re-bind watcher so Chrome extension gets fresh SOP steps
-        window.coact.watchCard?.(openId).catch(() => {});
+        showQuest(card, { keepVoice: true });
+        window.coact
+          .watchCard?.(openId, {
+            resetProgress: false,
+            completedStepIds: completedIdsForCard(openId),
+          })
+          .catch(() => {});
         if (runNote) {
           runNote.className = "run-note success";
           const mand = (card.steps || []).filter((s) => s.mandatory).length;
           runNote.textContent =
             mand > 0
-              ? `Updated from Queue studio · ${mand} mandatory step${mand === 1 ? "" : "s"}`
-              : "Updated from Queue studio";
+              ? `SOP updated · ${mand} mandatory step${mand === 1 ? "" : "s"}`
+              : "SOP updated";
         }
       }
     }
@@ -7244,8 +9110,11 @@ navLive?.addEventListener("click", () => {
   showNav("live");
 });
 navJira?.addEventListener("click", () => showNav("jira"));
+navPast?.addEventListener("click", () => showNav("past"));
+navExpert?.addEventListener("click", () => showNav("expert"));
+document.getElementById("expertSearchForm")?.addEventListener("submit", runFindExpert);
+document.getElementById("btnExpertRebuild")?.addEventListener("click", () => rebuildExpertIndexUi());
 navMom?.addEventListener("click", () => showNav("mom"));
-navActions?.addEventListener("click", () => showNav("actions"));
 navAi?.addEventListener("click", () => showNav("ai"));
 navDesk?.addEventListener("click", () => showNav("desk"));
 navFeedback?.addEventListener("click", () => showNav("feedback"));
@@ -7366,6 +9235,14 @@ document.getElementById("actionsShowDone")?.addEventListener("change", () => {
 document
   .getElementById("actionsList")
   ?.addEventListener("click", async (event) => {
+    const openBtn = event.target.closest(
+      ".actions-open-mail, .actions-item-title",
+    );
+    if (openBtn) {
+      const url = openBtn.getAttribute("data-url") || "";
+      if (url) window.coact.jiraOpenIssue?.(url);
+      return;
+    }
     const btn = event.target.closest(".actions-toggle");
     if (!btn) return;
     const id = btn.getAttribute("data-id");
@@ -7389,6 +9266,7 @@ document
     }
   });
 btnDashRefresh?.addEventListener("click", () => refreshDashboard());
+btnDashApprovals?.addEventListener("click", () => openQueueStudio("#/approvals"));
 btnCaptureLiveMin?.addEventListener("click", () => {
   if (captureRecording || capturePausedForNav) {
     captureLiveMinimized = !captureLiveMinimized;
@@ -7404,11 +9282,26 @@ captureLiveTicket?.addEventListener("click", () => {
 });
 btnRecord?.addEventListener("click", () => {
   if (capturePausedForNav) {
-    if (activeNav === "live") setRecordingEnabled(true, { resume: true });
-    else setRecordingEnabled(false);
+    if (activeNav === "live" && !captureUserStopped) {
+      setRecordingEnabled(true, { resume: true });
+    } else {
+      captureUserStopped = true;
+      setRecordingEnabled(false);
+    }
     return;
   }
-  setRecordingEnabled(!captureRecording);
+  if (captureRecording || (captureBusy && !captureUserStopped)) {
+    captureUserStopped = true;
+    captureAgentOwned = false;
+    pendingRecordingAction = "stop";
+    captureRecording = false;
+    capturePausedForNav = false;
+    updateRecordButton();
+    setRecordingEnabled(false);
+    return;
+  }
+  captureUserStopped = false;
+  setRecordingEnabled(true);
 });
 queueSearch?.addEventListener("input", () => {
   queueSearchQuery = queueSearch.value || "";
@@ -7565,6 +9458,9 @@ btnPickExecutions?.addEventListener("click", async () => {
 
 btnJiraRefresh?.addEventListener("click", () => refreshJiraPanel());
 document
+  .getElementById("btnPastRefresh")
+  ?.addEventListener("click", () => refreshPastWorkPanel());
+document
   .getElementById("btnJiraRecentToggle")
   ?.addEventListener("click", () => {
     const el = document.getElementById("jiraRecent");
@@ -7604,11 +9500,17 @@ btnMomMeetingsToggle?.addEventListener("click", () =>
 btnMomLiveToggle?.addEventListener("click", () => toggleMomFold("live"));
 btnMomMinutesToggle?.addEventListener("click", () => toggleMomFold("minutes"));
 btnMomPastToggle?.addEventListener("click", () => toggleMomFold("past"));
+document
+  .getElementById("btnActionsAddToggle")
+  ?.addEventListener("click", () => toggleMomFold("actions-add"));
+document
+  .getElementById("btnActionsListToggle")
+  ?.addEventListener("click", () => toggleMomFold("actions-list"));
 window.coact.onMomUpdated?.((snap) => {
   renderMomPanel(snap);
 });
 window.coact.onOutlookDeviceCode?.((data) => {
-  showMomDeviceHint(data);
+  showOutlookDeviceHint(data);
   const code = data?.userCode ? ` Code: ${data.userCode}` : "";
   setOutlookStatus(
     `${data?.message || "Enter the code in the browser to connect Outlook."}${code}`,
@@ -7616,7 +9518,7 @@ window.coact.onOutlookDeviceCode?.((data) => {
   );
   if (momStatus) {
     momStatus.textContent = data?.userCode
-      ? `Sign in at Microsoft — enter code ${data.userCode}`
+      ? `One Microsoft sign-in for meetings and mail — enter code ${data.userCode}`
       : data?.message || "Waiting for Microsoft sign-in…";
   }
 });
@@ -7670,8 +9572,7 @@ window.coact.onMomApproved?.((data) => {
         : "Minutes approved and saved for today.";
   }
   refreshActionsBadge();
-  if (data?.actionsImported > 0 && activeNav === "actions")
-    refreshActionsList();
+  if (data?.actionsImported > 0 && activeNav === "mom") refreshActionsList();
   renderMomPanel(momSnapshot);
   refreshMomPastList();
 });
@@ -7686,7 +9587,7 @@ btnMomCopy?.addEventListener("click", () =>
 );
 window.coact.onActionsUpdated?.((data) => {
   updateActionsBadge(data?.pending);
-  if (activeNav === "actions") refreshActionsList();
+  if (activeNav === "mom") refreshActionsList();
 });
 btnOutlookConnect?.addEventListener("click", () => connectOutlookFromUi());
 outlookAccountKind?.addEventListener("change", () => {
@@ -7763,6 +9664,18 @@ window.coact.onRequestTail((wantTail) => {
 });
 
 window.coact.onStepUpdate((update) => {
+  if (update) noteCaptureFlow();
+  if (update?.choicesUpdated && Array.isArray(update.allowedValues) && update.stepId) {
+    if (!update.cardId || update.cardId === activeCardId) {
+      const step = stepIndex.get(update.stepId);
+      if (step) step.allowedValues = update.allowedValues;
+    }
+    const card = cards.find((c) => c.id === (update.cardId || activeCardId));
+    const cardStep = card?.steps?.find((s) => s.id === update.stepId);
+    if (cardStep && cardStep !== step) cardStep.allowedValues = update.allowedValues;
+    return;
+  }
+
   if (!update?.stepId) {
     if (update.status === "reasoning" || update.status === "needs_repair" || update.reason) {
       if (update.cardId && update.cardId !== activeCardId) return;
@@ -7782,14 +9695,34 @@ window.coact.onStepUpdate((update) => {
     (update.status === "reasoning" && (update.expected || update.suggestedValue))
   ) {
     if (update.cardId && activeCardId && update.cardId !== activeCardId) return;
+    const skipCoach = coachEpisode.get(update.stepId) || {};
+    const alreadyDone =
+      skipCoach.acceptedByUser ||
+      stepStatuses.get(update.stepId) === "done" ||
+      stepStatuses.get(update.stepId) === "success";
+    const filledActual = Boolean(String(update.actual || "").trim());
+    // A filled value that is not the live-tracking value is orange and done.
+    // Tracking moves to the next step instead of waiting on this field.
+    if (update.status === "mismatch" && (filledActual || update.valueMatched === false)) {
+      setStepTone(update.stepId, "success", { warnMismatch: true, clearApprove: true });
+      if (update.cardId) applyProgressUpdate(update.cardId, update.stepId, "done");
+      return;
+    }
+    if (alreadyDone || filledActual) {
+      setStepTone(update.stepId, "success", { clearApprove: true });
+      if (update.cardId) applyProgressUpdate(update.cardId, update.stepId, "done");
+      if (alreadyDone) return;
+    }
     const text = String(update.reason || "");
     if (text) {
       runNote.className = "run-note warn";
       runNote.textContent = text.length > 72 ? `${text.slice(0, 69)}…` : text;
     }
-    // Soft warn only — never failed/error alert or miss sound for a wrong value
-    setStepTone(update.stepId, "running");
-    if (update.cardId) applyProgressUpdate(update.cardId, update.stepId, "running");
+    // Soft warn only — never failed/error or running/stuck for a wrong filled value
+    if (!alreadyDone && !filledActual) {
+      setStepTone(update.stepId, "running");
+      if (update.cardId) applyProgressUpdate(update.cardId, update.stepId, "running");
+    }
     const step = stepIndex.get(update.stepId);
     const prior =
       lastCoachMeta?.stepId === update.stepId
@@ -7803,7 +9736,7 @@ window.coact.onStepUpdate((update) => {
     if (agentApprovedForRun) return;
     if (canApply || update.status === "mismatch") {
       const ep = coachEpisode.get(update.stepId) || {};
-      ep.holdCoachForApprove = Boolean(canApply);
+      ep.holdCoachForApprove = false;
       ep.shown = true;
       coachEpisode.set(update.stepId, ep);
     }
@@ -7817,7 +9750,7 @@ window.coact.onStepUpdate((update) => {
               `Wrong value for “${step?.label || update.stepId}”. Approve to fill “${suggested}”, or keep typing.`
             : update.reason || text || "Fill this field with any value to continue.",
       canApply,
-      suggestedValue: canApply ? suggested : "",
+      suggestedValue: suggested,
       confidence: canApply ? "high" : "low",
       showTakeOver: false,
     });
@@ -7831,13 +9764,27 @@ window.coact.onStepUpdate((update) => {
         ? "success"
         : update.status === "pending"
           ? "plan"
-          : update.status === "failed"
+          : update.status === "failed" || update.status === "missing"
             ? "error"
             : null;
   if (!tone) return;
 
   const mapped =
     tone === "success" ? "done" : tone === "error" ? "failed" : tone === "plan" ? "pending" : tone;
+
+  const prevStatus = stepStatuses.get(update.stepId);
+  // Next-page scans cannot see earlier fields — do not grey completed steps
+  // unless the live field is still on this page and empty.
+  if (
+    mapped === "pending" &&
+    (prevStatus === "done" || prevStatus === "success") &&
+    update.fieldPresent !== true
+  ) {
+    return;
+  }
+
+  // Identical status from each keystroke must not repaint or rewrite progress.
+  if ((!update.cardId || update.cardId === activeCardId) && prevStatus === mapped) return;
 
   // Always remember progress for background tabs
   if (update.cardId) applyProgressUpdate(update.cardId, update.stepId, mapped);
@@ -7849,19 +9796,22 @@ window.coact.onStepUpdate((update) => {
     setStepTone(update.stepId, "running");
   } else if (update.status === "done") {
     setStepTone(update.stepId, "success", {
-      clearApprove: update.valueMatched === true,
+      clearApprove: true,
+      warnMismatch: update.valueMatched === false,
     });
   } else if (update.status === "pending") {
     setStepTone(update.stepId, "plan");
-  } else if (update.status === "failed") {
+  } else if (update.status === "failed" || update.status === "missing") {
     setStepTone(update.stepId, "error");
-    playMissAlert();
+    if (update.status === "failed") playMissAlert();
     runNote.className = "run-note error";
     runNote.textContent = update.reason
       ? update.reason.length > 72
         ? `${update.reason.slice(0, 69)}…`
         : update.reason
-      : "Missed step";
+      : update.status === "missing"
+        ? "Required field empty"
+        : "Missed step";
   } else if (update.status === "needs_repair") {
     setStepTone(update.stepId, "running");
     runNote.className = "run-note";
@@ -7873,6 +9823,32 @@ window.coact.onRunFinished(async (result) => {
   if (result.cardId && activeCardId && result.cardId !== activeCardId) return;
 
   agentApprovedForRun = false;
+
+  if (result.mode === "playwright") {
+    setRunControls("idle");
+    if (captureAgentOwned || captureRecording) stopAgentOwnedRecording();
+    if (result.status === "run_complete") {
+      runNote.className = "run-note success";
+      runNote.textContent = "Done";
+      questMeta.textContent = "Completed";
+    } else if (result.status === "run_cancelled") {
+      stopGuideVoice({ silent: true });
+      runNote.className = "run-note";
+      runNote.textContent = "Take over — finish in Chrome";
+    } else {
+      stopGuideVoice({ silent: true });
+      const why = String(result.reason || result.failedStepLabel || "").trim();
+      runNote.className = "run-note error";
+      runNote.textContent = why
+        ? why.length > 90
+          ? `${why.slice(0, 87)}…`
+          : why
+        : "Script stopped — Take over in Chrome";
+    }
+    aiRepairAttemptedForRun = false;
+    updateTailSummary();
+    return;
+  }
 
   if (
     result.status === "run_failed" &&
@@ -7914,7 +9890,10 @@ window.coact.onRunFinished(async (result) => {
       runNote.className = "run-note";
       runNote.textContent = repair.reason || "AI retry applied — continue or Agent again";
       setRunControls("idle");
-      window.coact.watchCard(activeCardId);
+      window.coact.watchCard(activeCardId, {
+        resetProgress: false,
+        completedStepIds: completedIdsForCard(activeCardId),
+      });
       updateTailSummary();
       return;
     }
@@ -7927,7 +9906,10 @@ window.coact.onRunFinished(async (result) => {
     playMissAlert();
     updateTailSummary();
     if (activeCardId && result.cardId === activeCardId) {
-      window.coact.watchCard(activeCardId);
+      window.coact.watchCard(activeCardId, {
+        resetProgress: false,
+        completedStepIds: completedIdsForCard(activeCardId),
+      });
     }
     return;
   }
@@ -7956,16 +9938,22 @@ window.coact.onRunFinished(async (result) => {
   updateTailSummary();
   // Keep tracking edits after Start finishes
   if (activeCardId && result.cardId === activeCardId) {
-    window.coact.watchCard(activeCardId);
+    window.coact.watchCard(activeCardId, {
+        resetProgress: false,
+        completedStepIds: completedIdsForCard(activeCardId),
+      });
   }
 });
 
 window.coact.getBootstrap().then(async (data) => {
   const boot = data || {};
   loadProgressMetaStore();
+  loadCardProgressStore();
   applyQueuePayload(boot);
   captureRecording = false;
   recordStartedManually = false;
+  captureAgentOwned = false;
+  captureUserStopped = false;
   captureRecordingCardId = "";
   capturePausedForNav = false;
   autoRecordArmed = false;

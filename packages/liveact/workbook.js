@@ -1,8 +1,10 @@
 /**
- * Mother workbook — single source of truth at <projectRoot>/livetrack.xlsx
+ * Mother workbook — single source of truth at ~/Desktop/livetrack/livetrack.xlsx.
+ * Queue, settings, and executions stay under ~/Projects/coact.
  * Each sheet is an Excel Table. Operational JSON/JSONL and per-card xlsx are gone.
  */
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const ExcelJS = require("exceljs");
 
@@ -11,6 +13,11 @@ function resolveProjectRoot() {
   if (envRoot) return path.resolve(envRoot);
   const { defaultProjectRoot } = require("./documents");
   return defaultProjectRoot();
+}
+
+/** Operator workbook. Tests keep using COACT_PROJECT_ROOT or an explicit dir. */
+function defaultWorkbookDir() {
+  return path.join(os.homedir(), "Desktop", "livetrack");
 }
 
 const WORKBOOK_NAME = "livetrack.xlsx";
@@ -52,6 +59,18 @@ const SHEETS = {
     sheet: "TimingSteps",
     table: "tblTimingSteps",
     columns: ["run_id", "step_id", "label", "step_start_time", "step_end_time"],
+  },
+  QueueStepTimes: {
+    sheet: "QueueStepTimes",
+    table: "tblQueueStepTimes",
+    columns: [
+      "queue_card_id",
+      "run_id",
+      "step_id",
+      "label",
+      "step_start_time",
+      "step_end_time",
+    ],
   },
   Feedback: {
     sheet: "Feedback",
@@ -104,6 +123,19 @@ const SHEETS = {
       "meetingSubject",
       "doneAt",
       "payload_json",
+    ],
+  },
+  TeamsChat: {
+    sheet: "TeamsChat",
+    table: "tblTeamsChat",
+    columns: [
+      "id",
+      "ts",
+      "user",
+      "conversation",
+      "original",
+      "refined",
+      "usedAi",
     ],
   },
   KgNodes: {
@@ -224,10 +256,29 @@ const SHEETS = {
       "payload_json",
     ],
   },
+  LearnedChoices: {
+    sheet: "LearnedChoices",
+    table: "tblLearnedChoices",
+    columns: ["sop_id", "step_id", "value", "created_at"],
+  },
   JiraActions: {
     sheet: "JiraActions",
     table: "tblJiraActions",
     columns: ["timestamp", "actor", "issueKey", "action", "ok", "payload_json"],
+  },
+  PastWork: {
+    sheet: "PastWork",
+    table: "tblPastWork",
+    columns: [
+      "jira_key",
+      "summary",
+      "description",
+      "related_tickets",
+      "related_notes",
+      "status",
+      "issue_type",
+      "url",
+    ],
   },
   AiUsage: {
     sheet: "AiUsage",
@@ -283,7 +334,16 @@ const SHEETS = {
 const SECRET_KEY_RE = /(api[_-]?key|token|password|secret|smtp\.pass|pass)$/i;
 
 function workbookPath(projectRoot = resolveProjectRoot()) {
-  return path.join(projectRoot, WORKBOOK_NAME);
+  const root = path.resolve(projectRoot || resolveProjectRoot());
+  if (!process.env.COACT_PROJECT_ROOT) {
+    const sharedRuntime = path.resolve(path.join(os.homedir(), "Projects", "coact"));
+    if (root === sharedRuntime) {
+      const dir = defaultWorkbookDir();
+      fs.mkdirSync(dir, { recursive: true });
+      return path.join(dir, WORKBOOK_NAME);
+    }
+  }
+  return path.join(root, WORKBOOK_NAME);
 }
 
 function sanitizeCell(value) {
@@ -336,44 +396,64 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function withWorkbookLock(filePath, fn) {
-  const lockPath = `${filePath}.lock`;
-  const start = Date.now();
-  const staleMs = 30000;
-  const timeoutMs = 25000;
+let workbookChain = Promise.resolve();
 
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const fd = fs.openSync(lockPath, "wx");
-      try {
-        fs.writeFileSync(fd, `${process.pid}\n${Date.now()}\n`, "utf8");
-      } finally {
-        fs.closeSync(fd);
-      }
-      try {
-        return await fn();
-      } finally {
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          /* ignore */
-        }
-      }
-    } catch (err) {
-      if (err.code !== "EEXIST") throw err;
-      try {
-        const st = fs.statSync(lockPath);
-        if (Date.now() - st.mtimeMs > staleMs) {
-          fs.unlinkSync(lockPath);
-          continue;
-        }
-      } catch {
-        /* retry */
-      }
-      await sleep(80 + Math.floor(Math.random() * 120));
+function enqueueWorkbookOp(op) {
+  const run = workbookChain.then(op, op);
+  workbookChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+function stealLockIfSafe(lockPath) {
+  try {
+    const st = fs.statSync(lockPath);
+    const raw = fs.readFileSync(lockPath, "utf8");
+    const pid = Number(String(raw).split("\n")[0]);
+    const staleMs = 8000;
+    if (pid === process.pid || Date.now() - st.mtimeMs > staleMs) {
+      fs.unlinkSync(lockPath);
+      return true;
     }
+  } catch {
+    return false;
   }
-  throw new Error(`Could not lock ${path.basename(filePath)} — another writer is busy`);
+  return false;
+}
+
+async function withWorkbookLock(filePath, fn) {
+  return enqueueWorkbookOp(async () => {
+    const lockPath = `${filePath}.lock`;
+    const start = Date.now();
+    const timeoutMs = 60000;
+
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const fd = fs.openSync(lockPath, "wx");
+        try {
+          fs.writeFileSync(fd, `${process.pid}\n${Date.now()}\n`, "utf8");
+        } finally {
+          fs.closeSync(fd);
+        }
+        try {
+          return await fn();
+        } finally {
+          try {
+            fs.unlinkSync(lockPath);
+          } catch {
+            /* ignore */
+          }
+        }
+      } catch (err) {
+        if (err.code !== "EEXIST") throw err;
+        stealLockIfSafe(lockPath);
+        await sleep(80 + Math.floor(Math.random() * 120));
+      }
+    }
+    throw new Error(`Could not lock ${path.basename(filePath)} — another writer is busy`);
+  });
 }
 
 async function loadWorkbook(filePath) {
@@ -451,12 +531,44 @@ function refreshCatalog(workbook) {
   replaceSheet(workbook, SHEETS.Catalog, rows);
 }
 
+function promotePastWorkSheet(workbook) {
+  const past = workbook.getWorksheet("PastWork");
+  if (!past) return;
+  const rest = workbook.worksheets.filter((ws) => ws.name !== "PastWork");
+  past.orderNo = 1;
+  rest.forEach((ws, i) => {
+    ws.orderNo = i + 2;
+  });
+  past.properties = { ...(past.properties || {}), tabColor: { argb: "FF1D4ED8" } };
+  workbook.views = [
+    {
+      x: 0,
+      y: 0,
+      width: 20000,
+      height: 12000,
+      firstSheet: 0,
+      activeTab: 0,
+      visibility: "visible",
+    },
+  ];
+}
+
 async function writeWorkbookAtomic(workbook, filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   refreshCatalog(workbook);
+  promotePastWorkSheet(workbook);
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp.xlsx`;
   await workbook.xlsx.writeFile(tmp);
-  fs.renameSync(tmp, filePath);
+  try {
+    fs.renameSync(tmp, filePath);
+  } catch {
+    fs.copyFileSync(tmp, filePath);
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 async function withWorkbook(projectRoot, mutator) {
@@ -508,6 +620,51 @@ async function replaceRows(sheetKey, rows, projectRoot = resolveProjectRoot()) {
   });
 }
 
+/**
+ * Insert or replace rows matched by keyOf. Other columns on an existing row
+ * stay unless the incoming row sets them.
+ */
+async function upsertRows(sheetKey, rows, keyOf, projectRoot = resolveProjectRoot()) {
+  const spec = SHEETS[sheetKey];
+  if (!spec || !rows?.length || typeof keyOf !== "function") return;
+  const filePath = workbookPath(projectRoot);
+  await withWorkbookLock(filePath, async () => {
+    const workbook = await loadWorkbook(filePath);
+    for (const other of Object.values(SHEETS)) {
+      if (other.sheet === spec.sheet) continue;
+      if (!workbook.getWorksheet(other.sheet)) replaceSheet(workbook, other, []);
+    }
+    const existing = workbook.getWorksheet(spec.sheet)
+      ? readSheetObjects(workbook, spec)
+      : [];
+    const next = existing.slice();
+    for (const row of rows) {
+      const key = keyOf(row);
+      const idx = next.findIndex((r) => keyOf(r) === key);
+      if (idx >= 0) next[idx] = { ...next[idx], ...row };
+      else next.push(row);
+    }
+    replaceSheet(workbook, spec, next);
+    await writeWorkbookAtomic(workbook, filePath);
+  });
+}
+
+/** Update one sheet without rebuilding every other table. */
+async function updateSheetRows(sheetKey, rows, projectRoot = resolveProjectRoot()) {
+  const spec = SHEETS[sheetKey];
+  if (!spec) return;
+  const filePath = workbookPath(projectRoot);
+  await withWorkbookLock(filePath, async () => {
+    const workbook = await loadWorkbook(filePath);
+    for (const other of Object.values(SHEETS)) {
+      if (other.sheet === spec.sheet) continue;
+      if (!workbook.getWorksheet(other.sheet)) replaceSheet(workbook, other, []);
+    }
+    replaceSheet(workbook, spec, rows || []);
+    await writeWorkbookAtomic(workbook, filePath);
+  });
+}
+
 async function rewriteWorkbook(projectRoot = resolveProjectRoot()) {
   await withWorkbook(projectRoot, async () => null);
 }
@@ -550,6 +707,8 @@ module.exports = {
   readTables,
   appendRows,
   replaceRows,
+  upsertRows,
+  updateSheetRows,
   rewriteWorkbook,
   readSheetObjects,
   replaceSheet,

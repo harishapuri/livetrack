@@ -66,6 +66,10 @@ function resolvePdfPath(card, sop) {
 }
 
 function resolveFieldValue(step, data) {
+  if (Array.isArray(step?.allowedValues) && step.allowedValues.length) {
+    const first = step.allowedValues.map((v) => String(v ?? "").trim()).find(Boolean);
+    if (first) return first;
+  }
   if (step.value != null && step.value !== "") return String(step.value);
   if (step.valueFrom != null && data && Object.prototype.hasOwnProperty.call(data, step.valueFrom)) {
     const v = data[step.valueFrom];

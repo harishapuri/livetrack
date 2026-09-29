@@ -12,6 +12,7 @@ const { spawn, execFile } = require("child_process");
 const chromeMac = require("./chrome-mac");
 const { loadSettings } = require("./settings");
 const playwrightCapture = require("./playwright-capture");
+const servicenowSearch = require("./servicenow-search");
 
 const DEFAULT_CDP = "http://127.0.0.1:9222";
 
@@ -26,6 +27,7 @@ let runCtl = { cancelled: false, paused: false };
 let lastPageMeta = { url: "", title: "" };
 let preferredUrl = "";
 let matchHints = [];
+let playwrightOwned = false;
 
 function setMatchHints(hints) {
   matchHints = Array.isArray(hints)
@@ -236,61 +238,23 @@ function probeCdp(cdpUrl) {
   });
 }
 
-/** True if a Chrome process is already running against our dedicated profile dir. */
-function dedicatedProfileRunning() {
-  return new Promise((resolve) => {
-    const dir = chromeUserDataDir();
-    execFile("pgrep", ["-f", `user-data-dir=${dir}`], (err, stdout) => {
-      resolve(Boolean(String(stdout || "").trim()));
-    });
-  });
-}
-
-/** Launches the dedicated CDP profile at most once, even under concurrent callers. */
-async function ensureChromeLaunched(cdpUrl) {
-  if (await probeCdp(cdpUrl)) return true;
-  if (await dedicatedProfileRunning()) {
-    // Already starting up — just wait for the port.
-    for (let i = 0; i < 25; i++) {
-      if (await probeCdp(cdpUrl)) return true;
-      await sleep(300);
-    }
-    return probeCdp(cdpUrl);
-  }
-  if (launching) return launching;
-
-  launching = (async () => {
-    let port = 9222;
-    try {
-      port = Number(new URL(cdpUrl).port) || 9222;
-    } catch {
-      /* keep default */
-    }
-    const args = [
-      `--remote-debugging-port=${port}`,
-      "--remote-allow-origins=*",
-      `--user-data-dir=${chromeUserDataDir()}`,
-      "--no-first-run",
-      "--no-default-browser-check",
-    ];
-    const child = spawn(chromeLaunchPath(), args, { detached: true, stdio: "ignore" });
-    child.unref();
-    for (let i = 0; i < 40; i++) {
-      if (await probeCdp(cdpUrl)) return true;
-      await sleep(300);
-    }
-    return probeCdp(cdpUrl);
-  })();
-
-  try {
-    return await launching;
-  } finally {
-    launching = null;
-  }
-}
-
 async function playwright() {
-  return require("playwright-core");
+  const candidates = [
+    "playwright-core",
+    "playwright",
+    path.join(os.homedir(), "Desktop", "playwright", "node_modules", "playwright-core"),
+    path.join(os.homedir(), "Desktop", "playwright", "node_modules", "playwright"),
+    path.join(os.homedir(), "Desktop", "playwrite", "node_modules", "playwright-core"),
+  ];
+  let last = "";
+  for (const id of candidates) {
+    try {
+      return require(id);
+    } catch (err) {
+      last = err?.message || String(err);
+    }
+  }
+  throw new Error(last || "playwright-core is not installed");
 }
 
 function isConnected() {
@@ -303,6 +267,38 @@ function isConnected() {
 
 function isTracking() {
   return isConnected();
+}
+
+function isPlaywrightOwned() {
+  return playwrightOwned && isConnected();
+}
+
+/** Use a Playwright-launched browser as the LiveTrack tracker (URL poll + capture). */
+function adoptBrowser(pwBrowser, page) {
+  if (!pwBrowser) return { ok: false, error: "no_browser" };
+  stopWatch();
+  playwrightOwned = true;
+  browser = pwBrowser;
+  try {
+    context = (page && typeof page.context === "function" ? page.context() : null)
+      || (pwBrowser.contexts && pwBrowser.contexts()[0])
+      || null;
+  } catch {
+    context = null;
+  }
+  lastError = "";
+  try {
+    pwBrowser.on("disconnected", () => {
+      if (browser === pwBrowser) {
+        browser = null;
+        context = null;
+        playwrightOwned = false;
+      }
+    });
+  } catch {
+    /* ignore */
+  }
+  return { ok: true };
 }
 
 function lastConnectError() {
@@ -340,6 +336,13 @@ function usableUrl(u) {
 }
 
 async function connect({ launch = false } = {}) {
+  if (playwrightOwned && isConnected()) {
+    lastError = "";
+    return { ok: true, via: "playwright" };
+  }
+  if (playwrightOwned) {
+    return { ok: false, error: "playwright_owned" };
+  }
   if (isConnected()) {
     if (await dedicatedProfileOwnsCdp()) {
       disconnect();
@@ -364,7 +367,12 @@ async function connect({ launch = false } = {}) {
     }
     try {
       const { chromium } = await playwright();
-      browser = await chromium.connectOverCDP(url);
+      browser = await Promise.race([
+        chromium.connectOverCDP(url),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("cdp_connect_timeout")), 8000)
+        ),
+      ]);
       await attachContexts();
       await installActivityProbe();
       browser.on("disconnected", () => {
@@ -391,6 +399,15 @@ async function connect({ launch = false } = {}) {
 function disconnect() {
   stopWatch();
   stopUrlPoll();
+  if (playwrightOwned) {
+    // Keep Playwright's Chrome open — only drop the tracker pointer if it already died.
+    if (!isConnected()) {
+      browser = null;
+      context = null;
+      playwrightOwned = false;
+    }
+    return;
+  }
   const b = browser;
   browser = null;
   context = null;
@@ -412,6 +429,27 @@ function disconnect() {
   }
 }
 
+const GENERIC_PAGE_HINTS = new Set([
+  "apply",
+  "job",
+  "jobs",
+  "career",
+  "careers",
+  "search",
+  "home",
+  "index",
+  "login",
+  "signin",
+  "sign-in",
+  "form",
+  "page",
+  "portal",
+  "support",
+  "help",
+  "en-us",
+  "en-gb",
+]);
+
 function hintScore(url) {
   const u = String(url || "").toLowerCase();
   if (!usableUrl(u)) return -1;
@@ -423,9 +461,17 @@ function hintScore(url) {
     else if (file && u.includes(file)) n += 180;
   }
   for (const h of matchHints) {
-    const hint = String(h).toLowerCase();
-    if (hint.length < 4) continue;
-    if (u.includes(hint)) n += 8 + Math.min(hint.length, 24);
+    const hint = String(h).toLowerCase().trim();
+    if (hint.length < 8 || GENERIC_PAGE_HINTS.has(hint)) continue;
+    // Hosts and long path ids only. "apply" / "job" match unrelated tabs.
+    if (!hint.includes(".") && hint.length < 12) continue;
+    if (hint.includes(".")) {
+      const host = hint.replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
+      const tabHost = u.replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
+      if (host && (tabHost === host || tabHost.endsWith(`.${host}`))) n += 80;
+      continue;
+    }
+    if (u.includes(`/${hint}`) || u.includes(`${hint}.html`)) n += 40;
   }
   return n;
 }
@@ -494,6 +540,10 @@ async function pickPage(pages) {
 }
 
 async function activePage() {
+  if (playwrightOwned) {
+    if (!isConnected()) return null;
+    return pickPage(allPages());
+  }
   const ready = await connect({ launch: false });
   if (!ready.ok) return null;
   return pickPage(allPages());
@@ -650,40 +700,158 @@ function stepValue(step, data, approved = {}) {
   if (step?.id != null && approved[step.id] != null) {
     return String(approved[step.id] ?? "");
   }
+  // Choices on the step win over case-data keys, so a renamed field still fills.
+  if (Array.isArray(step?.allowedValues) && step.allowedValues.length) {
+    const first = step.allowedValues.map((v) => String(v ?? "").trim()).find(Boolean);
+    if (first) return first;
+  }
   const key = step?.valueFrom || step?.id;
-  const raw = data?.[key] ?? data?.[step?.id];
-  return raw == null ? "" : String(raw);
+  const raw = data?.[key] ?? (step?.id != null ? data?.[step.id] : undefined);
+  if (raw != null && raw !== "") {
+    if (Array.isArray(raw)) {
+      const first = raw.map((v) => String(v ?? "").trim()).find(Boolean);
+      if (first) return first;
+    } else if (typeof raw !== "object") {
+      return String(raw);
+    }
+  }
+  if (step?.value != null && String(step.value).trim()) return String(step.value).trim();
+  return "";
+}
+
+async function firstMatchingLocator(page, loc) {
+  if (!loc) return null;
+  try {
+    if ((await loc.count()) > 0) return loc.first();
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 async function locatorFor(page, step) {
+  const guiId = String(step?.guiId || "").trim();
+  if (guiId) {
+    const hit = await firstMatchingLocator(page, page.locator(guiId));
+    if (hit) return hit;
+  }
+  const locSpec = step?.locator && typeof step.locator === "object" ? step.locator : {};
+  if (locSpec.css) {
+    const hit = await firstMatchingLocator(page, page.locator(String(locSpec.css)));
+    if (hit) return hit;
+  }
+  const role = locSpec.getByRole;
+  if (role && role.role) {
+    const opts = {};
+    if (role.name != null) opts.name = role.name;
+    if (role.exact != null) opts.exact = role.exact;
+    const hit = await firstMatchingLocator(page, page.getByRole(String(role.role), opts));
+    if (hit) return hit;
+  }
+  if (locSpec.getByLabel) {
+    const hit = await firstMatchingLocator(
+      page,
+      page.getByLabel(String(locSpec.getByLabel), { exact: false })
+    );
+    if (hit) return hit;
+  }
+  if (locSpec.getByText) {
+    const hit = await firstMatchingLocator(page, page.getByText(String(locSpec.getByText), { exact: false }));
+    if (hit) return hit;
+  }
   if (step?.selector) {
-    const loc = page.locator(String(step.selector));
-    if ((await loc.count()) > 0) return loc.first();
+    const hit = await firstMatchingLocator(page, page.locator(String(step.selector)));
+    if (hit) return hit;
   }
   const labels = [
-    ...(Array.isArray(step?.findByLabel) ? step.findByLabel : []),
+    ...(Array.isArray(step?.findByLabel) ? step.findByLabel : step?.findByLabel ? [step.findByLabel] : []),
     step?.label,
+    step?.finder,
   ].filter(Boolean);
   for (const label of labels) {
-    const byLabel = page.getByLabel(String(label), { exact: false });
-    if ((await byLabel.count()) > 0) return byLabel.first();
-    const byText = page.getByRole("textbox", { name: String(label), exact: false });
-    if ((await byText.count()) > 0) return byText.first();
+    const byLabel = await firstMatchingLocator(
+      page,
+      page.getByLabel(String(label), { exact: false })
+    );
+    if (byLabel) return byLabel;
+    const byText = await firstMatchingLocator(
+      page,
+      page.getByRole("textbox", { name: String(label), exact: false })
+    );
+    if (byText) return byText;
   }
   return null;
+}
+
+function urlIncludesHint(url) {
+  return String(url || "").trim();
+}
+
+async function waitAfterStep(page, step, nextStep) {
+  if (!page) return;
+  const wait = step?.waitAfter && typeof step.waitAfter === "object" ? step.waitAfter : {};
+  let urlIncludes = String(wait.urlIncludes || wait.urlPath || "").trim();
+  const nextUrl = String(nextStep?.pageUrl || "").trim();
+  const curUrl = String(step?.pageUrl || "").trim();
+  if (!urlIncludes && nextUrl && curUrl && nextUrl !== curUrl) {
+    urlIncludes = urlIncludesHint(nextUrl);
+  }
+  const timeout = Number(wait.timeoutMs) || 20000;
+  if (urlIncludes) {
+    await page
+      .waitForURL((u) => String(u).includes(urlIncludes), { timeout })
+      .catch(() => {});
+  }
+  if (wait.ms) await sleep(Number(wait.ms) || 0);
 }
 
 async function applyOneStep(page, step, value) {
   const action = String(step?.action || "fill").toLowerCase();
   if (action === "highlight" || action === "wait") return { ok: true };
 
+  const snowFallback = step?.fallbackNavigate === "servicenow-change-request";
+  if (page && (action === "navigate" || snowFallback)) {
+    const pageUrl = page.url();
+    if (!servicenowSearch.looksLikeServiceNow(pageUrl, await page.title().catch(() => ""))) {
+      return { ok: false, error: "Open a logged-in ServiceNow tab, then Start." };
+    }
+    const target = servicenowSearch.changeRequestSearchUrl(pageUrl, value);
+    if (!target) return { ok: false, error: "Enter a change request number or keywords." };
+    if (action === "fill" && value) {
+      const loc = await locatorFor(page, step);
+      if (loc) {
+        await loc.fill(String(value), { timeout: 4000 }).catch(() => {});
+      }
+    }
+    try {
+      await page.goto(target, { waitUntil: "domcontentloaded", timeout: 20000 });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err?.message || "servicenow_navigate_failed" };
+    }
+  }
+
   if (page) {
     const loc = await locatorFor(page, step);
     if (loc) {
       try {
-        if (action === "fill") {
-          await loc.fill(value, { timeout: 8000 });
-        } else if (action === "check") {
+        if (action === "fill" || action === "typeahead") {
+          await loc.fill(String(value ?? ""), { timeout: 8000 });
+          const option = String(step.option || value || "").trim();
+          if (action === "typeahead" && option) {
+            const opt = page.getByRole("option", { name: option, exact: false });
+            if ((await opt.count().catch(() => 0)) > 0) {
+              await opt.first().click({ timeout: 4000 }).catch(() => {});
+            }
+          }
+        } else if (action === "check" || action === "answer") {
+          if (value && String(value) !== "on" && String(value) !== "true") {
+            const named = page.getByRole("radio", { name: String(value), exact: false });
+            if ((await named.count().catch(() => 0)) > 0) {
+              await named.first().click({ timeout: 8000 });
+              return { ok: true };
+            }
+          }
           await loc.check({ force: true, timeout: 8000 }).catch(() => loc.click());
         } else if (action === "click") {
           await loc.click({ timeout: 8000 });
@@ -776,6 +944,10 @@ async function runSop({
 
     const value = stepValue(step, data, agentApprovedValues);
     const result = await applyOneStep(page, step, value);
+    const nextStep = steps[i + 1];
+    if (result.ok && /^(click|check|answer|typeahead)$/i.test(action)) {
+      await waitAfterStep(page, step, nextStep);
+    }
     onStep?.({
       cardId,
       stepId: step.id,
@@ -932,6 +1104,8 @@ module.exports = {
   cdpHttpUrl,
   isConnected,
   isTracking,
+  isPlaywrightOwned,
+  adoptBrowser,
   lastConnectError,
   connect,
   disconnect,
@@ -943,6 +1117,8 @@ module.exports = {
   stopWatch,
   applyOneStep,
   applyStep,
+  locatorFor,
+  waitAfterStep,
   captureVisiblePng,
   activePage,
   allPages,

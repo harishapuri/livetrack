@@ -1,5 +1,7 @@
 (function () {
-  const CHUNK_MS = 3000;
+  const CHUNK_MS = 400;
+  const SENTENCE_PAUSE_MS = 1500;
+  const MAX_SENTENCE_MS = 18000;
   const TARGET_RATE = 16000;
   const MAX_IN_FLIGHT = 4;
   const MIN_SECONDS = 0.5;
@@ -33,6 +35,11 @@
     micRefRate: 16000,
     discarded: false,
     captureId: 0,
+    pendingPcm: [],
+    pendingRate: 44100,
+    pendingMs: 0,
+    silenceMs: 0,
+    sentenceFlight: null,
   };
 
   function setStatus(text) {
@@ -147,6 +154,17 @@
     return chunks;
   }
 
+  function textsOverlap(a, b) {
+    const norm = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const left = norm(a);
+    const right = norm(b);
+    if (!left || !right) return false;
+    if (left === right) return true;
+    const shorter = left.length <= right.length ? left : right;
+    const longer = left.length <= right.length ? right : left;
+    return shorter.length >= 12 && longer.includes(shorter);
+  }
+
   function rmsOf(samples) {
     if (!samples?.length) return 0;
     let sum = 0;
@@ -225,22 +243,24 @@
   }
 
   function cleanChunkText(value) {
-    const raw = String(value || "").trim();
-    if (!raw) return "";
-    if (speakers().cleanMomWording) return speakers().cleanMomWording(raw, wordingOpts());
-    if (speakers().isJunkTranscript?.(raw)) return "";
-    return raw;
+    return String(value || "").replace(/\s+/g, " ").trim();
   }
 
   function publishTurns() {
     if (state.discarded) return;
-    const mapped = speakers().mapSpeakerTurns?.(state.rawTurns, {
-      operatorName: state.operatorName,
-      meeting: state.meeting,
-      visualSpeaker: state.visualSpeaker,
-    }) || state.rawTurns;
-    state.turns = speakers().mergeAdjacentTurns?.(mapped, wordingOpts()) || mapped;
-    state.transcript = speakers().formatTurns?.(state.turns, wordingOpts()) || state.turns.map((t) => t.text).join("\n");
+    const turns = [];
+    for (const turn of state.rawTurns) {
+      const text = cleanChunkText(turn?.text);
+      if (!text) continue;
+      const prev = turns[turns.length - 1];
+      if (prev && (prev.text === text || prev.text.endsWith(text))) continue;
+      turns.push({
+        text,
+        at: Number(turn.at) || 0,
+      });
+    }
+    state.turns = turns;
+    state.transcript = turns.map((turn) => `• ${turn.text}`).join("\n");
     try {
       state.onTurns?.(state.turns, state.transcript, {
         tileNames: state.meeting?.tileNames || [],
@@ -268,31 +288,22 @@
     const blob = encodeWav(pcm, TARGET_RATE);
     const base64 = await blobToBase64(blob);
     if (state.discarded) return null;
-    const payload = { base64, mimeType: "audio/wav", model, whisperFallback: false };
-    if (diarize) {
-      payload.diarize = true;
-      const op = speakers().operatorLabel?.(state.operatorName) || "You";
-      if (state.knownRef && !skipKnown) {
-        payload.knownSpeakerNames = [op];
-        payload.knownSpeakerReferences = [state.knownRef];
-      }
-    }
+    const payload = {
+      base64,
+      mimeType: "audio/wav",
+      model: model || "whisper-1",
+      whisperFallback: true,
+    };
     const result = await window.coact.transcribeAudio(payload);
     if (state.discarded) return null;
     if (!result?.ok) {
       const err = String(result?.error || "");
-      if (err && !/no speech heard/i.test(err)) setStatus(err);
+      if (err && !/no speech heard/i.test(err)) return { error: err };
       return null;
     }
-    const segments = Array.isArray(result.segments)
-      ? result.segments
-          .map((seg) => ({ ...seg, text: cleanChunkText(seg?.text) }))
-          .filter((seg) => seg.text)
-      : [];
-    let text = cleanChunkText(result.text);
-    if (!text && segments.length) text = segments.map((seg) => seg.text).join(" ").trim();
+    const text = cleanChunkText(result.text);
     if (!text) return null;
-    return { ...result, text, segments };
+    return { ...result, text, segments: [] };
   }
 
   async function maybeSaveMicReference(chunks, sampleRate) {
@@ -386,117 +397,89 @@
     return remoteScreenName() || fallback;
   }
 
-  function appendResultTurns(result, source, at, chunkVisual) {
-    if (!result || state.discarded) return;
-    const toTurns = speakers().segmentsToTurns;
-    const localName = speakers().operatorLabel?.(state.operatorName) || "You";
-    const asLocal = source === "mic";
+  function appendResultTurns(result, at) {
+    const text = cleanChunkText(result?.text);
+    if (!text || state.discarded) return;
+    state.rawTurns.push({ text, at });
+  }
 
-    if (asLocal) {
-      const text = String(result.text || "").trim();
-      const rows =
-        result.segments?.length && toTurns
-          ? toTurns(result.segments, { source: "mic", at })
-          : text
-            ? [{ text, speaker: localName, source: "mic", at }]
-            : [];
-      for (const row of rows) {
-        const text = cleanChunkText(row.text);
-        if (!text) continue;
-        state.rawTurns.push({
-          ...row,
-          text,
-          speaker: localName,
-          rawSpeaker: "local",
-          source: "mic",
-        });
-      }
+  function resetSentenceBuffer() {
+    state.pendingPcm = [];
+    state.pendingMs = 0;
+    state.silenceMs = 0;
+  }
+
+  function pushSentenceAudio(samples, sampleRate) {
+    if (!samples?.length) return;
+    const rate = Number(sampleRate) || 44100;
+    const ms = (samples.length / rate) * 1000;
+    if (rmsOf(samples) >= MIN_RMS) {
+      state.pendingPcm.push(samples);
+      state.pendingRate = rate;
+      state.pendingMs += ms;
+      state.silenceMs = 0;
       return;
     }
+    if (state.pendingPcm.length) state.silenceMs += ms;
+  }
 
-    const rows = (
-      result.segments?.length && toTurns
-        ? toTurns(result.segments, { source: "loop", at })
-        : String(result.text || "").trim()
-          ? [{ text: String(result.text).trim(), speaker: "A", source: "loop", at, rawSpeaker: "A" }]
-          : []
-    ).map((row, index) => ({
-      ...row,
-      rawSpeaker: `${at}-${index}-${row.speaker || "A"}`,
-    }));
-    const assigned =
-      speakers().assignRemoteTurns?.(rows, {
-        operatorName: state.operatorName,
-        meeting: state.meeting,
-        visualSpeaker: chunkVisual || "",
-      }) || rows;
-    for (const row of assigned) {
-      const text = cleanChunkText(row.text);
-      if (!text) continue;
-      state.rawTurns.push({
-        ...row,
-        text,
-        rawSpeaker: row.rawSpeaker || row.speaker,
-        source: "loop",
-      });
+  async function flushSentence(force) {
+    if (state.sentenceFlight) {
+      if (!force) return;
+      try {
+        await state.sentenceFlight;
+      } catch {
+        /* the in-flight chunk reports its own error */
+      }
+    }
+    const ready =
+      force ||
+      state.silenceMs >= SENTENCE_PAUSE_MS ||
+      state.pendingMs >= MAX_SENTENCE_MS;
+    if (!ready || !state.pendingPcm.length) {
+      if (force) resetSentenceBuffer();
+      return;
+    }
+    const chunks = state.pendingPcm;
+    const rate = state.pendingRate;
+    resetSentenceBuffer();
+    const samples = mergeFloat32(chunks);
+    const job = transcribeChunk(samples, rate);
+    state.sentenceFlight = job;
+    try {
+      const res = await job;
+      if (res?.text) {
+        appendResultTurns(res, Date.now());
+        publishTurns();
+      } else if (res?.error) {
+        setStatus(res.error);
+      }
+    } finally {
+      if (state.sentenceFlight === job) state.sentenceFlight = null;
     }
   }
 
   async function flushTracks(sampleRate) {
-    const captureId = state.captureId;
     if (state.discarded) return;
     const micChunks = takeTapPcm(state.taps.mic);
     const loopChunks = takeTapPcm(state.taps.loop);
-    if (!micChunks.length && !loopChunks.length) return;
-    const got = await acquireSlot();
-    if (!got || state.discarded || captureId !== state.captureId) return;
+    if (!micChunks.length && !loopChunks.length) {
+      if (state.pendingPcm.length) {
+        state.silenceMs += CHUNK_MS;
+        await flushSentence(false);
+      }
+      return;
+    }
     try {
-      const at = Date.now();
-      const framePromise = peekTeamsFrame();
       const micSamples = micChunks.length ? mergeFloat32(micChunks) : null;
       const loopSamples = loopChunks.length ? mergeFloat32(loopChunks) : null;
-      if (micSamples) await maybeSaveMicReference(micChunks, sampleRate);
-      if (state.discarded || captureId !== state.captureId) return;
-      const loopLoud = loopSamples && rmsOf(loopSamples) >= MIN_RMS;
-      const micLoud = micSamples && rmsOf(micSamples) >= 0.012;
-      const loopRms = loopSamples ? rmsOf(loopSamples) : 0;
       const micRms = micSamples ? rmsOf(micSamples) : 0;
-      const remoteDominates = loopLoud && loopRms >= Math.max(MIN_RMS, micRms * 1.15);
-      const userTalking = micLoud && !remoteDominates && (!loopLoud || micRms > loopRms * 2.2);
-      const jobs = [
-        framePromise,
-        state.loopback && loopLoud
-          ? transcribeChunk(loopSamples, sampleRate, { diarize: false, skipKnown: true })
-          : Promise.resolve(null),
-        userTalking
-          ? transcribeChunk(micSamples, sampleRate, { model: "gpt-4o-mini-transcribe" })
-          : Promise.resolve(null),
-      ];
-      const [frame, loopRes, micRes] = await Promise.all(jobs);
-      if (state.discarded || captureId !== state.captureId) return;
-      let visualLocal = Boolean(frame?.visualLocal);
-      let chunkVisual = visualLocal ? "" : String(frame?.speaking || "").trim();
-      if (speakers().isOperatorOnCall?.(chunkVisual, state.operatorName, state.meeting)) {
-        visualLocal = true;
-        chunkVisual = "";
-      }
-      if (visualLocal && remoteDominates) {
-        visualLocal = false;
-        chunkVisual = state.lastRemoteName || "";
-      }
-      state.visualLocal = visualLocal;
-      state.visualSpeaker = chunkVisual;
-      if (chunkVisual) state.lastRemoteName = chunkVisual;
-      if (loopRes) appendResultTurns(loopRes, "loop", at, chunkVisual);
-      if (micRes && visualLocal && !remoteDominates) {
-        appendResultTurns(micRes, "mic", at + 1, chunkVisual);
-      }
-      state.rawTurns.sort((a, b) => (a.at || 0) - (b.at || 0));
-      publishTurns();
+      const loopRms = loopSamples ? rmsOf(loopSamples) : 0;
+      if (micSamples && micRms >= loopRms) pushSentenceAudio(micSamples, sampleRate);
+      else if (loopSamples) pushSentenceAudio(loopSamples, sampleRate);
+      await flushSentence(false);
     } catch (err) {
       if (!state.discarded) setStatus(err?.message || "Could not convert speech to text.");
-    } finally {
-      releaseSlot(captureId);
     }
   }
 
@@ -659,6 +642,7 @@
     state.transcript = "";
     state.knownRef = "";
     state.micRefChunks = [];
+    resetSentenceBuffer();
     state.captureCtx = captureCtx;
     state.discarded = false;
     state.captureId += 1;
@@ -715,6 +699,7 @@
     const sampleRate = state.captureCtx?.sampleRate || 44100;
     try {
       await flushTracks(sampleRate);
+      await flushSentence(true);
     } catch {
       /* ignore */
     }

@@ -11,13 +11,14 @@
     "pack": "electron-builder --dir --config.electronVersion=33.4.11",
     "dist": "electron-builder --config.electronVersion=33.4.11",
     "dist:mac": "electron-builder --mac --config.electronVersion=33.4.11",
-    "dist:win": "electron-builder --win --config.electronVersion=33.4.11",
+    "dist:win": "electron-builder --win --config.electronVersion=33.4.11 && node scripts/build-portable-uninstaller.js",
     "dist:win:uninstaller": "node scripts/build-portable-uninstaller.js"
   },
   "dependencies": {
     "@coact/shared": "*",
     "exceljs": "^4.4.0",
     "pdf-lib": "^1.17.1",
+    "playwright-core": "^1.63.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -102,7 +103,8 @@
       "extendInfo": {
         "NSScreenCaptureUsageDescription": "LiveTrack captures a screen region for Desk tickets and captures meeting playback (earphones or speakers) for Minutes of Meeting.",
         "NSMicrophoneUsageDescription": "LiveTrack uses the microphone for spoken prompts and Minutes of Meeting, including speaker playback in the room.",
-        "NSSpeechRecognitionUsageDescription": "LiveTrack converts spoken prompts into text for Ask LiveTrack."
+        "NSSpeechRecognitionUsageDescription": "LiveTrack converts spoken prompts into text for Ask LiveTrack.",
+        "NSAppleEventsUsageDescription": "LiveTrack reads the Microsoft Teams message box so it can refine your draft."
       }
     },
     "dmg": {

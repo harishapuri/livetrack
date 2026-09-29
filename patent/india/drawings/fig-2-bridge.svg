@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="640" viewBox="0 0 760 640">
+  <rect width="760" height="640" fill="#ffffff"/>
+  <text x="24" y="32" font-family="Arial, sans-serif" font-size="16" font-weight="700">FIG. 2</text>
+  <rect x="40" y="56" width="200" height="70" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+  <text x="52" y="86" font-family="Arial, sans-serif" font-size="13">Desktop controller 12</text>
+  <text x="52" y="106" font-family="Arial, sans-serif" font-size="12">127.0.0.1</text>
+  <rect x="280" y="56" width="200" height="70" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+  <text x="300" y="86" font-family="Arial, sans-serif" font-size="13">Loopback bridge 32</text>
+  <text x="316" y="106" font-family="Arial, sans-serif" font-size="12">port 17321</text>
+  <rect x="520" y="56" width="200" height="70" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+  <text x="540" y="86" font-family="Arial, sans-serif" font-size="13">Browser extension 26</text>
+  <text x="556" y="106" font-family="Arial, sans-serif" font-size="12">same computer</text>
+  <line x1="240" y1="91" x2="280" y2="91" stroke="#000000" stroke-width="1.5"/>
+  <polygon points="280,91 268,85 268,97" fill="#000000"/>
+  <line x1="480" y1="91" x2="520" y2="91" stroke="#000000" stroke-width="1.5"/>
+  <polygon points="520,91 508,85 508,97" fill="#000000"/>
+  <text x="48" y="170" font-family="Arial, sans-serif" font-size="13" font-weight="700">Messages that stay on computer 11</text>
+  <g font-family="Arial, sans-serif" font-size="13">
+    <rect x="48" y="188" width="300" height="36" fill="#ffffff" stroke="#000000"/>
+    <text x="60" y="212">Hello 50, ping and pong 51</text>
+    <rect x="48" y="236" width="300" height="36" fill="#ffffff" stroke="#000000"/>
+    <text x="60" y="260">Run-card message 52</text>
+    <rect x="48" y="284" width="300" height="36" fill="#ffffff" stroke="#000000"/>
+    <text x="60" y="308">Watch-card message 53</text>
+    <rect x="48" y="332" width="300" height="36" fill="#ffffff" stroke="#000000"/>
+    <text x="60" y="356">Apply-step message 54</text>
+    <rect x="48" y="380" width="300" height="36" fill="#ffffff" stroke="#000000"/>
+    <text x="60" y="404">Control message 55 (pause, resume, stop)</text>
+    <rect x="400" y="188" width="312" height="36" fill="#ffffff" stroke="#000000"/>
+    <text x="412" y="212">Step-update message 56</text>
+    <rect x="400" y="236" width="312" height="36" fill="#ffffff" stroke="#000000"/>
+    <text x="412" y="260">Repair-plan message 57</text>
+    <rect x="400" y="284" width="312" height="36" fill="#ffffff" stroke="#000000"/>
+    <text x="412" y="308">Value-check message 58</text>
+    <rect x="400" y="332" width="312" height="72" fill="#ffffff" stroke="#000000"/>
+    <text x="412" y="356">Shorthand fill or click</text>
+    <text x="412" y="376">normalised into apply-step 54</text>
+  </g>
+  <rect x="48" y="460" width="664" height="120" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+  <text x="64" y="488" font-family="Arial, sans-serif" font-size="13">Capture channel 33, port 17322, same computer.</text>
+  <text x="64" y="512" font-family="Arial, sans-serif" font-size="13">If no pong arrives within 60 seconds, bridge 32 drops the socket.</text>
+  <text x="64" y="536" font-family="Arial, sans-serif" font-size="13">If no extension socket is open, the step is not applied.</text>
+  <text x="64" y="560" font-family="Arial, sans-serif" font-size="13">Named client identifier selects the extension; otherwise the connected client.</text>
+</svg>

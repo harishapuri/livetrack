@@ -37,6 +37,11 @@ const DEFAULTS = {
   },
   jiraCardKeyField: "jiraKey",
   jiraProjectKey: "LIVEACT",
+  /** Find the Expert — project-wide Jira + optional Confluence (not queue JQL). */
+  expertJql: "",
+  expertSystemTags: "",
+  confluenceSpaceKeys: "",
+  expertInactiveEmails: "",
   /** Weekly digest delivery */
   digestOptIn: true,
   digestEnabledChannels: ["dashboard", "slack", "email"],
@@ -310,6 +315,10 @@ function loadSettings() {
       jiraStatusMap: normalizeJiraStatusMap(raw.jiraStatusMap),
       jiraCardKeyField: String(raw.jiraCardKeyField || DEFAULTS.jiraCardKeyField).trim() || "jiraKey",
       jiraProjectKey: normalizeJiraProjectRef(raw.jiraProjectKey),
+      expertJql: String(raw.expertJql || "").trim(),
+      expertSystemTags: String(raw.expertSystemTags || "").trim(),
+      confluenceSpaceKeys: String(raw.confluenceSpaceKeys || "").trim(),
+      expertInactiveEmails: String(raw.expertInactiveEmails || "").trim(),
       digestOptIn: raw.digestOptIn !== false,
       digestEnabledChannels: Array.isArray(raw.digestEnabledChannels)
         ? raw.digestEnabledChannels
@@ -389,6 +398,10 @@ function persistableSettings(next, keptToken) {
     jiraStatusMap: normalizeJiraStatusMap(next.jiraStatusMap),
     jiraCardKeyField: String(next.jiraCardKeyField || DEFAULTS.jiraCardKeyField).trim() || "jiraKey",
     jiraProjectKey: normalizeJiraProjectRef(next.jiraProjectKey),
+    expertJql: String(next.expertJql || "").trim(),
+    expertSystemTags: String(next.expertSystemTags || "").trim(),
+    confluenceSpaceKeys: String(next.confluenceSpaceKeys || "").trim(),
+    expertInactiveEmails: String(next.expertInactiveEmails || "").trim(),
     digestOptIn: next.digestOptIn !== false,
     digestEnabledChannels: Array.isArray(next.digestEnabledChannels)
       ? next.digestEnabledChannels
@@ -538,6 +551,16 @@ function saveSettings(partial) {
   }
   if (clean.jiraProjectKey != null) {
     next.jiraProjectKey = normalizeJiraProjectRef(clean.jiraProjectKey);
+  }
+  if (clean.expertJql != null) next.expertJql = String(clean.expertJql || "").trim();
+  if (clean.expertSystemTags != null) {
+    next.expertSystemTags = String(clean.expertSystemTags || "").trim();
+  }
+  if (clean.confluenceSpaceKeys != null) {
+    next.confluenceSpaceKeys = String(clean.confluenceSpaceKeys || "").trim();
+  }
+  if (clean.expertInactiveEmails != null) {
+    next.expertInactiveEmails = String(clean.expertInactiveEmails || "").trim();
   }
   if (clean.digestOptIn != null) next.digestOptIn = Boolean(clean.digestOptIn);
   if (clean.digestEnabledChannels != null) {
@@ -710,6 +733,10 @@ function getAppSettings() {
     jiraStatusMap: normalizeJiraStatusMap(s.jiraStatusMap),
     jiraCardKeyField: s.jiraCardKeyField || DEFAULTS.jiraCardKeyField,
     jiraProjectKey: s.jiraProjectKey || DEFAULTS.jiraProjectKey,
+    expertJql: s.expertJql || "",
+    expertSystemTags: s.expertSystemTags || "",
+    confluenceSpaceKeys: s.confluenceSpaceKeys || "",
+    expertInactiveEmails: s.expertInactiveEmails || "",
     jiraConfigured: Boolean(s.jiraBaseUrl && s.jiraEmail && s.jiraApiToken),
     digestOptIn: s.digestOptIn !== false,
     digestEnabledChannels: s.digestEnabledChannels || [...DEFAULTS.digestEnabledChannels],

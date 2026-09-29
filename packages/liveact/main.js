@@ -22,6 +22,9 @@ let tailMode = false;
 // One Electron instance — multiple copies fight for always-on-top / focus (flicker)
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
+  console.error(
+    "LiveTrack is already running, so this copy quit. Use the open window, or quit Electron / LiveTrack and start again."
+  );
   app.exit(0);
 } else {
   app.on("second-instance", () => {
@@ -33,9 +36,29 @@ if (!gotSingleInstanceLock) {
       }
     }
     if (mainWindow && !mainWindow.isDestroyed()) {
-      if (!mainWindow.isVisible()) mainWindow.show();
+      try {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+      } catch {
+        /* ignore */
+      }
+      try {
+        mainWindow.setBounds(defaultMainBounds());
+      } catch {
+        /* ignore */
+      }
+      mainWindow.show();
       applyAlwaysOnTop(true);
+      try {
+        mainWindow.moveTop();
+      } catch {
+        /* ignore */
+      }
       mainWindow.focus();
+      try {
+        app.focus({ steal: true });
+      } catch {
+        /* ignore */
+      }
     }
   });
 }
@@ -50,6 +73,7 @@ const {
   seedSampleCases,
   updateQueueCardStatus,
   normalizeLob,
+  cardHasAttachedPlaywright,
 } = require("./documents");
 const {
   getOpenAiConfig,
@@ -67,6 +91,8 @@ const {
   appendIssueDescription,
   createIssue,
   cloneIssue,
+  listProjectEpics,
+  linkIssueToEpic,
   attachFile,
   collectDeskAttachmentPaths,
   appendJiraAction,
@@ -75,9 +101,10 @@ const {
   isJiraDoneStatus,
   findLinkedCardId,
   ensureLinkedIssues,
+  finalizePastWorkRelated,
+  mergeScrapedPastWork,
 } = require("./jira");
 const {
-  buildAgentDashboard,
   loadMandatorySummaryForTicket,
   extractJiraKey,
   isGeneratedJiraKey,
@@ -93,6 +120,7 @@ const {
   repairFailedStep,
   judgeValueMatch,
   polishJiraCommentDraft,
+  polishTeamsChatDraft,
   explainPage,
   isUsefulExplainSnippet,
   draftJiraFromScreenshot,
@@ -109,10 +137,16 @@ const {
   cardPrefersPdf,
   workingPdfPath,
 } = require("./pdf-fill");
-const { saveExecutionArtifacts } = require("./audit-pdf");
+const { saveExecutionArtifacts, executionBaseName, osUserId } = require("./audit-pdf");
+const workbookStore = require("./workbook");
 const { createPdfViewServer } = require("./pdf-server");
-const { loadCaptureDashRows, setCaptureRecording, getCaptureStatus } = require("./capture-forward");
+const { loadCaptureDashRows, setCaptureRecording, getCaptureStatus, sopStepsFromPlaywright, forwardCaptureEvent } = require("./capture-forward");
+const playwrightScriptRun = require("./playwright-script-run");
+const playwrightCapture = require("./playwright-capture");
 const { resolveExplainPastWork } = require("./explain-context");
+const { persistPastWorkIssues, ensurePastWorkCatalog, loadPastWorkRows, rowToIssue } = require("./past-work-store");
+const { rebuildExpertIndex, expertIndexStatus } = require("./expert-index");
+const { findExpert } = require("./expert-rank");
 const browserAgent = require("./browser-agent");
 const outlook = require("./outlook");
 const mom = require("./mom");
@@ -121,6 +155,10 @@ const momTeams = require("./mom-teams");
 const { recordFeedback } = require("./feedback-log");
 const inbox = require("./inbox");
 const actionsStore = require("./actions-store");
+const teamsChatStore = require("./teams-chat-store");
+const teamsChatAx = require("./teams-chat-ax");
+const teamsChatOverlay = require("./teams-chat-overlay");
+const { importActionItemsFromOutlook } = require("./email-actions");
 const {
   discoverFromActivePage,
   draftUnmatchedCaptures,
@@ -130,6 +168,7 @@ const {
 } = require("./process-discovery");
 const { loadLatestReport } = require("./process-intelligence");
 const sopsStore = require("./sops-store");
+const learnedChoices = require("./learned-choices");
 const { execFile } = require("child_process");
 
 function bundledSopsDir() {
@@ -257,20 +296,22 @@ function loadSopsFromDir(sopsDir, map) {
 }
 
 async function loadAllSops() {
-  try {
-    const fromWorkbook = await sopsStore.loadPublishedSopMap();
-    if (Object.keys(fromWorkbook).length) return fromWorkbook;
-  } catch (err) {
-    console.error("[livetrack] workbook SOP load failed", err.message);
-  }
   const map = {};
   for (const dir of sopsSearchDirs()) {
     loadSopsFromDir(dir, map);
+  }
+  try {
+    const fromWorkbook = await sopsStore.loadPublishedSopMap();
+    Object.assign(map, fromWorkbook);
+  } catch (err) {
+    console.error("[livetrack] workbook SOP load failed", err.message);
   }
   return map;
 }
 
 let sops = {};
+/** sop id → LearnedChoices rows. Static SOP choices are not stored here. */
+let learnedBySop = new Map();
 /** Sync copy of process-intelligence failures for IPC (riskForCard is async). */
 let cardRiskById = new Map();
 
@@ -295,8 +336,18 @@ async function refreshCardRiskCache() {
   }
 }
 
+async function reloadLearnedChoices() {
+  try {
+    learnedBySop = await learnedChoices.groupedBySop();
+  } catch (err) {
+    console.error("[livetrack] learned choices load failed", err.message || err);
+  }
+  return learnedBySop;
+}
+
 async function reloadSops() {
   sops = await loadAllSops();
+  await reloadLearnedChoices();
   return sops;
 }
 
@@ -319,12 +370,16 @@ let activeRun = null;
 /** Agent-approved values for the current run — edits here are intentional, not mistakes. */
 let activeRunAgentApproved = null;
 let activeWatch = null;
+/** Playwright auto-run: execute script without rewriting the card's SOP step list. */
+const playwrightSilentRuns = new Set();
 /** @type {Map<string, Map<string, object>>} cardId → stepId → action record */
 const cardActions = new Map();
 /** @type {Map<string, Map<string, { step_id: string, step_start_time?: string, step_end_time?: string, label?: string }>>} */
 const cardStepTiming = new Map();
 /** @type {Map<string, string>} cardId → ISO when current run/session started */
 const cardRunStartedAt = new Map();
+/** @type {Map<string, string>} cardId → run id shared by QueueStepTimes and Executions */
+const cardRunIds = new Map();
 /** @type {Map<string, object[]>} cardId → wrong-value attempts (for tracking) */
 const cardMistakes = new Map();
 /** Prevent double-save for the same card in a short window */
@@ -368,7 +423,13 @@ function recordCardAction(cardId, update) {
   if (!cardId || !update?.stepId) return;
   if (update.status !== "done") return;
   const action = update.action;
-  if (action && action !== "fill" && action !== "click" && action !== "check") {
+  if (
+    action &&
+    action !== "fill" &&
+    action !== "click" &&
+    action !== "check" &&
+    action !== "navigate"
+  ) {
     return;
   }
   // Accept captures that include action/key, or infer from SOP later at finalize
@@ -389,15 +450,49 @@ function recordCardAction(cardId, update) {
   });
 }
 
+function buildCardRunId(cardId, whenIso) {
+  const card = queue.find((c) => c.id === cardId);
+  const base = executionBaseName(normalizeLob(card?.lob), cardId, osUserId());
+  const stamp = String(whenIso || new Date().toISOString()).replace(/[:.]/g, "-");
+  return `${base}_${stamp}`;
+}
+
 function markCardRunStarted(cardId, when = new Date().toISOString()) {
   if (!cardId) return;
   if (!cardRunStartedAt.has(cardId)) {
     cardRunStartedAt.set(cardId, when);
   }
+  if (!cardRunIds.has(cardId)) {
+    cardRunIds.set(cardId, buildCardRunId(cardId, cardRunStartedAt.get(cardId)));
+  }
 }
 
 function clearCardRunStarted(cardId) {
-  if (cardId) cardRunStartedAt.delete(cardId);
+  if (!cardId) return;
+  cardRunStartedAt.delete(cardId);
+  cardRunIds.delete(cardId);
+}
+
+function queueStepTimeKey(row) {
+  return `${row?.run_id || ""}\0${row?.step_id || ""}`;
+}
+
+/** Write one completed step to QueueStepTimes without blocking the step handler. */
+function persistQueueStepTime(cardId, row) {
+  if (!cardId || !row?.step_id || !row.step_end_time) return;
+  const runId = cardRunIds.get(cardId);
+  if (!runId) return;
+  const payload = {
+    queue_card_id: String(cardId),
+    run_id: runId,
+    step_id: String(row.step_id),
+    label: row.label || "",
+    step_start_time: row.step_start_time || "",
+    step_end_time: row.step_end_time || "",
+  };
+  workbookStore.upsertRows("QueueStepTimes", [payload], queueStepTimeKey).catch((err) => {
+    console.error("[coact] queue step time", err?.message || err);
+  });
 }
 
 /** Track step_start_time / step_end_time for weekly digest avg time-per-step. */
@@ -436,6 +531,7 @@ function recordStepTiming(cardId, update) {
       row.step_start_time = prev || started || now;
     }
     row.step_end_time = now;
+    persistQueueStepTime(cardId, row);
   }
 }
 
@@ -744,8 +840,15 @@ async function finalizeExecutionArtifacts(
         action: s.action,
         key: s.valueFrom || s.id,
         value:
-          s.action === "fill"
-            ? String(card.data?.[s.valueFrom] ?? card.data?.[s.id] ?? "")
+          s.action === "fill" || s.action === "check" || s.action === "select"
+            ? String(
+                (Array.isArray(s.allowedValues) &&
+                  s.allowedValues.map((v) => String(v ?? "").trim()).find(Boolean)) ||
+                  card.data?.[s.valueFrom] ||
+                  card.data?.[s.id] ||
+                  s.value ||
+                  ""
+              )
             : s.findByText || s.label || "clicked",
         label: s.label || s.id,
         source: fillMode === "manual" ? "manual" : "automated",
@@ -758,8 +861,11 @@ async function finalizeExecutionArtifacts(
       if (step && (!a.key || a.key === a.stepId) && step.valueFrom) {
         a.key = step.valueFrom;
       }
-      if (step?.action === "fill" && !a.value && card.data) {
-        a.value = String(card.data[step.valueFrom] ?? card.data[step.id] ?? "");
+      if ((step?.action === "fill" || step?.action === "check" || step?.action === "select") && !a.value) {
+        const choice = Array.isArray(step.allowedValues)
+          ? step.allowedValues.map((v) => String(v ?? "").trim()).find(Boolean)
+          : "";
+        a.value = String(choice || card.data?.[step.valueFrom] || card.data?.[step.id] || step.value || "");
       }
     }
   }
@@ -792,6 +898,7 @@ async function finalizeExecutionArtifacts(
       pageUrl,
       stepsTiming: stepsTimingListForCard(cardId),
       runStartedAt: cardRunStartedAt.get(cardId) || "",
+      runId: cardRunIds.get(cardId) || "",
       status: isComplete ? "complete" : outcome === "run_failed" ? "failed" : outcome === "run_cancelled" ? "cancelled" : outcome,
     });
     console.log(
@@ -987,9 +1094,16 @@ function defaultMainBounds() {
   };
 }
 
+let sampleCasesSeeded = false;
+
 async function refreshQueue() {
   migrateLegacyDocumentsCoact();
-  await seedSampleCases(documentsRoot);
+  // Seeding rewrites the workbook once per missing demo card. Doing that on
+  // every Queue Studio publish made /publish exceed its timeout and quit the app.
+  if (!sampleCasesSeeded) {
+    sampleCasesSeeded = true;
+    await seedSampleCases(documentsRoot);
+  }
   let userId = "";
   try {
     userId = os.userInfo().username || "";
@@ -1102,11 +1216,19 @@ function startAlwaysOnTopKeepAlive() {
       if (tailWindow && !tailWindow.isDestroyed() && tailWindow.isVisible()) {
         assertAlwaysOnTop(tailWindow);
       }
+      const overlay = teamsChatOverlay.getOverlayWindow?.();
+      if (overlay && !overlay.isDestroyed() && overlay.isVisible()) {
+        assertAlwaysOnTop(overlay);
+      }
       return;
     }
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (!mainWindow.isVisible() || mainWindow.isMinimized()) return;
     assertAlwaysOnTop(mainWindow);
+    const overlay = teamsChatOverlay.getOverlayWindow?.();
+    if (overlay && !overlay.isDestroyed() && overlay.isVisible()) {
+      assertAlwaysOnTop(overlay);
+    }
   }, 5000);
 }
 
@@ -1120,6 +1242,11 @@ function quitLiveActApp() {
   if (app.isQuitting) return;
   app.isQuitting = true;
   stopAlwaysOnTopKeepAlive();
+  try {
+    teamsChatOverlay.stopTeamsChatOverlay();
+  } catch {
+    /* ignore */
+  }
   stopJiraPolling();
   try {
     if (bridge) bridge.close();
@@ -1549,17 +1676,121 @@ function handleAppStep(update) {
   if (!update?.cardId) return;
   recordCardAction(update.cardId, update);
   recordStepTiming(update.cardId, update);
+  if (update.status === "done") {
+    noteLearnedAnswer(update.cardId, update.stepId, update.value, update.action);
+  }
+  if (playwrightSilentRuns.has(update.cardId)) return;
   sendToRenderer("step-update", update);
+}
+
+function playwrightStepCount(card) {
+  const script = card?.playwright;
+  const nested = script?.playwright?.steps;
+  if (Array.isArray(nested) && nested.length) return nested.length;
+  return Array.isArray(script?.steps) ? script.steps.length : 0;
+}
+
+function queueStepAtPlayIndex(uiSteps, playIndex, playCount) {
+  if (!uiSteps.length) return { step: null, index: -1 };
+  if (playIndex < 0) return { step: uiSteps[0], index: 0 };
+  if (uiSteps.length === 1) return { step: uiSteps[0], index: 0 };
+  const n = Math.max(playCount, 1);
+  const t = Math.min(1, (Number(playIndex) + 1) / n);
+  const index = Math.min(
+    uiSteps.length - 1,
+    Math.max(1, Math.ceil(t * (uiSteps.length - 1))),
+  );
+  return { step: uiSteps[index], index };
+}
+
+function emitDisplayedQueueStep(card, uiStep, status, extra = {}) {
+  if (!uiStep?.id) return;
+  handleAppStep({
+    cardId: card.id,
+    stepId: uiStep.id,
+    status,
+    action: extra.action || uiStep.action || "fill",
+    label: uiStep.label || extra.label || "",
+    key: uiStep.id,
+    value: extra.value != null ? String(extra.value) : "",
+    source: "automated",
+    pageUrl: extra.pageUrl || "",
+  });
+}
+
+function paintDisplayedQueueUpTo(card, uiSteps, uiIndex, status, extra = {}) {
+  if (!uiSteps.length || uiIndex < 0) return;
+  for (let j = 0; j < uiIndex; j += 1) {
+    emitDisplayedQueueStep(card, uiSteps[j], "done", extra);
+  }
+  emitDisplayedQueueStep(card, uiSteps[uiIndex], status, extra);
+}
+
+function markDisplayedQueueSteps(card, sop, status, extra = {}) {
+  const uiSteps = uiStepsForCard(card, sop);
+  for (const step of uiSteps) {
+    emitDisplayedQueueStep(card, step, status, extra);
+  }
+}
+
+async function attachPlaywrightTracking(card, { browser, page, startUrl }) {
+  try {
+    browserAgent.stopWatch();
+    browserAgent.setPreferredUrl(startUrl || "");
+    browserAgent.adoptBrowser(browser, page);
+  } catch (err) {
+    console.warn("[playwright] adopt tracker", err?.message || err);
+  }
+  startCdpUrlPoll();
+  const url = startUrl || (page && !page.isClosed() ? page.url() : "");
+  publishTrackerStatus({
+    tabUrl: url || null,
+    tabTitle: "",
+    activated: true,
+    appConnected: true,
+  });
+  try {
+    await setCaptureRecording({
+      action: "start",
+      cardId: card.id,
+      queueCard: card.title || "",
+      lob: card.lob || "",
+      user: os.userInfo().username || "",
+    });
+  } catch (err) {
+    console.warn("[playwright] start capture", err?.message || err);
+  }
+  try {
+    await playwrightCapture.attachToBrowser(browser);
+  } catch (err) {
+    console.warn("[playwright] attach capture", err?.message || err);
+  }
+}
+
+function stopPlaywrightCaptureRecording() {
+  setCaptureRecording({ action: "stop" }).catch(() => {});
+  try {
+    const stop = browserAgent.stopCaptureRecording?.();
+    if (stop && typeof stop.then === "function") stop.catch(() => {});
+  } catch {
+    /* capture stop is optional */
+  }
 }
 
 function handleAppRunFinished(result) {
   const cardId = result.cardId;
+  const mode = result.mode || (activeRun?.cardId === cardId ? activeRun.mode : null);
+  if (cardId) playwrightSilentRuns.delete(cardId);
   sendToRenderer("run-finished", {
     cardId,
     status: result.status,
     reason: result.reason || null,
     failedStepLabel: result.failedStepLabel || null,
+    mode,
   });
+  if (mode === "playwright") {
+    stopPlaywrightCaptureRecording();
+  }
   if (result.status === "run_complete" && cardId) {
     finalizeExecutionArtifacts(cardId, { fillMode: "automated" }).catch((err) => {
       console.error("[coact] app fill finalize", err);
@@ -1575,7 +1806,7 @@ function handleAppRunFinished(result) {
       console.error("[coact] app fill incomplete", err);
     });
   }
-  if (activeRun?.cardId === cardId && activeRun?.mode === "app") {
+  if (activeRun?.cardId === cardId && (activeRun?.mode === "app" || activeRun?.mode === "playwright")) {
     activeRun = null;
   }
 }
@@ -1589,13 +1820,14 @@ async function startAppHtmlRun(card, sop, options = {}) {
     await browserAgent.connect({ launch: true });
   }
 
-  const startIndex = Math.max(
-    0,
-    Math.min(Number(options?.startIndex) || 0, sop.steps.length),
-  );
-  const completedStepIds = Array.isArray(options?.completedStepIds)
-    ? options.completedStepIds
-    : [];
+  const startIndex = options?.playwrightAuto
+    ? 0
+    : Math.max(0, Math.min(Number(options?.startIndex) || 0, sop.steps.length));
+  const completedStepIds = options?.playwrightAuto
+    ? []
+    : Array.isArray(options?.completedStepIds)
+      ? options.completedStepIds
+      : [];
 
   clearCardActions(card.id);
   clearCardMistakes(card.id);
@@ -1606,6 +1838,8 @@ async function startAppHtmlRun(card, sop, options = {}) {
   activeRun = { cardId: card.id, mode: "app" };
   activeWatch = { cardId: card.id, mode: "app" };
   markCardRunStarted(card.id);
+  if (options?.playwrightAuto) playwrightSilentRuns.add(card.id);
+  else playwrightSilentRuns.delete(card.id);
   startCdpUrlPoll();
   publishTrackerStatus();
 
@@ -1613,8 +1847,8 @@ async function startAppHtmlRun(card, sop, options = {}) {
     browserAgent
       .runSop({
         cardId: card.id,
-        sop,
-        data: mergeRunData(card.data, options?.dataOverrides),
+        sop: sopForWatch(sop),
+        data: mergeRunData(options?.runData || card.data, options?.dataOverrides),
         startIndex,
         completedStepIds,
         agentApprovedValues: options?.agentApprovedValues || {},
@@ -1630,11 +1864,12 @@ async function startAppHtmlRun(card, sop, options = {}) {
       });
   });
 
+  const originalSop = sops[card.sopId] || null;
   return {
     ok: true,
     mode: "app",
-    startIndex,
-    steps: sop.steps.map((step) => stepForUi(step, "pending")),
+    startIndex: options?.playwrightAuto ? 0 : startIndex,
+    steps: uiStepsForCard(card, originalSop),
   };
 }
 
@@ -1680,7 +1915,7 @@ function beginAppWatch(card, sop) {
   activeWatch = { cardId: card.id, mode: "app" };
   browserAgent.watchSop({
     cardId: card.id,
-    sop,
+    sop: sopForWatch(sop),
     data: card.data || {},
     onStep: handleAppStep,
   });
@@ -1702,6 +1937,7 @@ function jiraSnapshotFingerprint(snap, recentActions) {
     sopStage: i.sopStage,
     urgencyScore: i.urgencyScore,
     linkedCardId: i.linkedCardId,
+    related: (i.relatedTickets || []).map((t) => `${t.key}:${t.summary || ""}`),
     updated: i.updated || i.updatedAt || null,
   }));
   const recent = (recentActions || []).map((a) => ({
@@ -1771,7 +2007,12 @@ async function refreshJira({ force = false } = {}) {
     }
     jiraPollInFlight = true;
     try {
-      let result = await searchIssues(config, { queueCards: queue });
+      let result = await searchIssues(config, {
+        queueCards: queue,
+        scrapeTickets: false,
+        pastWork: false,
+        forceRefresh: force,
+      });
       // Always pull queue-linked keys so Done sync works even if JQL hid them
       result = await ensureLinkedIssues(config, result, queue);
       jiraSnapshot = { ...result, configured: true };
@@ -1785,7 +2026,7 @@ async function refreshJira({ force = false } = {}) {
           jiraSync: true,
         }));
       }
-      publishJiraSnapshot();
+      publishJiraSnapshot({ force });
       return jiraSnapshot;
     } catch (err) {
       const raw = String(err?.message || err || "Could not refresh Jira");
@@ -2282,28 +2523,118 @@ async function approveMomSession({ text } = {}) {
   };
 }
 
+function sopForWatch(sop) {
+  if (!sop?.id) return sop;
+  return learnedChoices.applyLearnedToSop(sop, learnedBySop.get(sop.id) || []);
+}
+
+function refreshLearnedWatch(card, sop, step) {
+  if (!card || !sop || !step) return;
+  const rows = learnedBySop.get(sop.id) || [];
+  const merged = learnedChoices.mergedChoicesForStep(step, rows);
+  if (merged) {
+    sendToRenderer("step-update", {
+      cardId: card.id,
+      stepId: step.id,
+      allowedValues: merged,
+      choicesUpdated: true,
+    });
+  }
+  const watching =
+    activeWatch?.cardId === card.id || activeRun?.cardId === card.id;
+  if (!watching || !bridge?.isExtensionConnected()) return;
+  const agent =
+    activeRunAgentApproved?.cardId === card.id ? activeRunAgentApproved : null;
+  bridge.sendWatchCard({
+    cardId: card.id,
+    title: card.title,
+    sop: learnedChoices.applyLearnedToSop(sop, rows),
+    data: card.data || {},
+    target: browserTargetFor(card, sop),
+    resetProgress: false,
+    clientId: activeWatch?.clientId || activeRun?.clientId,
+    ...(agent
+      ? { agentApproved: true, agentApprovedValues: agent.values || {} }
+      : {}),
+  });
+}
+
+async function rememberMarkedAnswer(cardId, stepId, value) {
+  const text = String(value ?? "").trim();
+  if (!cardId || !stepId || !text) return { saved: false };
+  const card = queue.find((c) => c.id === cardId);
+  const sop = card ? sops[card.sopId] : null;
+  const step = sop?.steps?.find((s) => s.id === stepId);
+  if (!card || !sop || !learnedChoices.isMarkedChoiceStep(step)) return { saved: false };
+  const staticValues = learnedChoices.staticChoiceList(step);
+  const known = learnedBySop.get(sop.id) || [];
+  if (learnedChoices.isDuplicateChoice(sop.id, step.id, text, staticValues, known)) {
+    return { saved: false, reason: "duplicate" };
+  }
+  const result = await learnedChoices.rememberChoice({
+    sopId: sop.id,
+    stepId: step.id,
+    value: text,
+    staticValues,
+  });
+  if (!result.saved || !result.row) return result;
+  const next = learnedBySop.get(sop.id) || [];
+  if (result.revised) {
+    let idx = -1;
+    for (let i = 0; i < next.length; i++) {
+      if (String(next[i]?.step_id || "") === String(step.id)) idx = i;
+    }
+    if (idx >= 0) next[idx] = result.row;
+    else next.push(result.row);
+  } else {
+    next.push(result.row);
+  }
+  learnedBySop.set(sop.id, next);
+  refreshLearnedWatch(card, sop, step);
+  return result;
+}
+
+function noteLearnedAnswer(cardId, stepId, value, action) {
+  const act = String(action || "").toLowerCase();
+  if (act && act !== "fill" && act !== "select") return;
+  void rememberMarkedAnswer(cardId, stepId, value).catch((err) => {
+    console.error("[livetrack] learned choice", err?.message || err);
+  });
+}
+
 /** UI/coach steps must keep valueFrom / allowedValues / mandatory so Approve can resolve. */
-function stepForUi(step, status = "pending") {
+function stepForUi(step, status = "pending", sopId = "") {
   if (!step) return null;
-  return {
+  const learned = sopId ? mergedUiChoices(step, sopId) : null;
+  const row = {
     id: step.id,
     label: step.label,
     action: step.action,
     status,
     valueFrom: step.valueFrom ?? null,
     value: step.value ?? null,
-    allowedValues: Array.isArray(step.allowedValues)
-      ? step.allowedValues
-      : undefined,
+    allowedValues: learned
+      ? learned
+      : Array.isArray(step.allowedValues)
+        ? step.allowedValues
+        : undefined,
     mandatory: Boolean(step.mandatory),
     optional: Boolean(step.optional),
   };
+  const explanation = String(step.explanation || "").trim();
+  if (explanation) row.explanation = explanation;
+  return row;
+}
+
+function mergedUiChoices(step, sopId) {
+  const merged = learnedChoices.mergedChoicesForStep(step, learnedBySop.get(sopId) || []);
+  return merged && merged.length ? merged : null;
 }
 
 function dummyStepsFor(card) {
   const sop = sops[card.sopId];
   if (sop?.steps?.length) {
-    return sop.steps.map((step) => stepForUi(step, "pending"));
+    return sop.steps.map((step) => stepForUi(step, "pending", sop.id));
   }
   return [
     {
@@ -2364,18 +2695,56 @@ function enrichCard(card) {
     // last process-intelligence report (see process-intelligence.js). Null
     // until a report has been generated (dashboard runs this on startup).
     risk: cardRiskById.get(String(card.id)) || null,
+    sourceDir: card.sourceDir || null,
+    playDir: card.playDir || null,
+    hasPlaywright: cardHasAttachedPlaywright(card),
+  };
+}
+
+function uiStepsForCard(card, sop, status = "pending") {
+  const steps =
+    sop && Array.isArray(sop.steps) && sop.steps.length ? sop.steps : dummyStepsFor(card);
+  return (steps || []).map((step) => stepForUi(step, status, sop?.id || card?.sopId || ""));
+}
+
+function playwrightRunForCard(card, sop) {
+  if (!cardHasAttachedPlaywright(card)) {
+    return { sop: sop || null, data: card?.data && typeof card.data === "object" ? { ...card.data } : {}, auto: false };
+  }
+  const merged = card?.data && typeof card.data === "object" ? { ...card.data } : {};
+  const converted = sopStepsFromPlaywright(card.playwright, merged);
+  for (const [k, v] of Object.entries(converted.values || {})) {
+    if (v == null || v === "") continue;
+    if (merged[k] == null || merged[k] === "") merged[k] = v;
+  }
+  const startUrl = converted.startUrl || card.formUrl || sop?.formUrl || "";
+  const base = sop || {
+    id: card.sopId || card.id,
+    name: card.title,
+    steps: [],
+  };
+  return {
+    sop: {
+      ...base,
+      id: base.id || card.sopId,
+      formUrl: startUrl || base.formUrl,
+      steps: converted.steps,
+    },
+    data: merged,
+    auto: true,
   };
 }
 
 function browserTargetFor(card, sop) {
+  const extras = cardHasAttachedPlaywright(card)
+    ? []
+    : ["new-hire.html", "17322/demo/new-hire", "4173/new-hire"];
   return {
     formUrl: card.formUrl || sop?.formUrl || null,
     formMatch: [
       ...(Array.isArray(card.formMatch) ? card.formMatch : []),
       ...(Array.isArray(sop?.formMatch) ? sop.formMatch : []),
-      "new-hire.html",
-      "17322/demo/new-hire",
-      "4173/new-hire",
+      ...extras,
     ],
   };
 }
@@ -2538,6 +2907,9 @@ app.whenReady().then(async () => {
   await reloadSops();
   await refreshQueue();
   watchSopsDir();
+  ensurePastWorkCatalog().catch((err) => {
+    console.warn("[livetrack] past work sheet", err?.message || err);
+  });
 
   try {
     const { screen } = require("electron");
@@ -2564,12 +2936,27 @@ app.whenReady().then(async () => {
 
   try {
     bridge = createBridge({
+      onHeartbeat(hb) {
+        sendToRenderer("extension-heartbeat", {
+          connected: Boolean(hb?.connected),
+          extensionConnected: Boolean(hb?.connected),
+          extensionClients: Number(hb?.clients) || 0,
+          lastStatusAt: Number(hb?.lastStatusAt) || 0,
+          lastPongAt: Number(hb?.lastPongAt) || 0,
+          captureFlow: Boolean(hb?.capture),
+          at: Number(hb?.at) || Date.now(),
+        });
+      },
       onCaptureEvent(event) {
         try {
           pdfViewServer?.capture?.ingest(event);
         } catch {
           /* ignore */
         }
+        sendToRenderer("extension-heartbeat", {
+          captureFlow: true,
+          at: Date.now(),
+        });
       },
       onReloadQueue() {
         return publishQueueToRenderer();
@@ -2629,7 +3016,7 @@ app.whenReady().then(async () => {
           if (status.activated) payload.activated = true;
         }
 
-        if (!connectedNow && activeRun?.mode !== "app") {
+        if (!connectedNow && activeRun?.mode !== "app" && activeRun?.mode !== "playwright") {
           activeRun = null;
           if (activeWatch?.cardId && activeWatch.mode !== "app") {
             activeWatch = { cardId: activeWatch.cardId, clientId: null };
@@ -2676,6 +3063,14 @@ app.whenReady().then(async () => {
         recordCardMistake(update.cardId, update);
         recordStepTiming(update.cardId, update);
         recordCardAction(update.cardId, update);
+        if (update.status === "done") {
+          noteLearnedAnswer(
+            update.cardId,
+            update.stepId,
+            update.value ?? update.actual,
+            update.action,
+          );
+        }
 
         if (update.cardId && (update.pageUrl || update.formReference)) {
           const prev = cardPageContext.get(update.cardId) || {};
@@ -2743,7 +3138,8 @@ app.whenReady().then(async () => {
           suggestedValue: update.suggestedValue || update.expected || null,
           key: update.key || null,
           label: update.label || null,
-          valueMatched: update.valueMatched === true,
+          valueMatched:
+            typeof update.valueMatched === "boolean" ? update.valueMatched : null,
         });
 
         if (
@@ -2753,7 +3149,7 @@ app.whenReady().then(async () => {
         ) {
           updateTailStatus({
             ok: update.status === "done",
-            bad: update.status === "failed",
+            bad: update.status === "failed" || update.status === "missing",
           });
         }
       },
@@ -2798,10 +3194,35 @@ app.whenReady().then(async () => {
     bridge = null;
   }
 
+  try {
+    require("./capture-step-shot").configureStepShots({
+      isExtensionConnected: () => Boolean(bridge?.isExtensionConnected?.()),
+      requestTabShot: (requestId) =>
+        bridge?.requestTabShot ? bridge.requestTabShot(requestId) : Promise.resolve({ ok: false }),
+      captureVisiblePng: () => browserAgent.captureVisiblePng(),
+      captureDesktopPng: async () => {
+        try {
+          const shot = await require("./snipper").captureFrontmostWindow();
+          if (!shot?.ok || !shot.path || !fs.existsSync(shot.path)) return { ok: false };
+          const buffer = fs.readFileSync(shot.path);
+          return { ok: buffer.length > 80, buffer };
+        } catch (err) {
+          return { ok: false, error: err?.message || "desktop_shot_failed" };
+        }
+      },
+    });
+  } catch (err) {
+    console.warn("[livetrack] step screenshots", err?.message || err);
+  }
+
   // Prefer accessory policy (above) over dock-hide dance for floating
   createWindow();
   startJiraPolling();
   startMomPolling();
+  teamsChatOverlay.startTeamsChatOverlay({
+    isCaptureActive: () => screenCaptureActive,
+    pinFloatingWindow,
+  });
   browserAgent.connect({ launch: false }).then((res) => {
     if (res.ok) startCdpUrlPoll();
     publishTrackerStatus();
@@ -2861,7 +3282,7 @@ ipcMain.handle("get-bootstrap", async () => {
 });
 
 async function publishQueueToRenderer({ raise = false } = {}) {
-  reloadSops();
+  await reloadSops();
   const loaded = await refreshQueue();
   const payload = {
     queue: queue.map(enrichCard),
@@ -2964,9 +3385,9 @@ async function runPdfCard(card, sop, options = {}) {
 
   const stepsUi = sop.steps.map((step, i) => {
     if (i < startIndex || completedStepIds.has(step.id)) {
-      return stepForUi(step, "done");
+      return stepForUi(step, "done", sop?.id);
     }
-    return stepForUi(step, "pending");
+    return stepForUi(step, "pending", sop?.id);
   });
 
   setTimeout(() => {
@@ -2999,6 +3420,7 @@ async function runPdfCard(card, sop, options = {}) {
         data: runData,
         onStep: async ({ stepId, status, error }) => {
           const step = sop.steps.find((s) => s.id === stepId);
+          const stepStatus = status === "done" ? "done" : "failed";
           if (status === "done" && step) {
             recordCardAction(card.id, {
               stepId,
@@ -3013,10 +3435,15 @@ async function runPdfCard(card, sop, options = {}) {
               source: "pdf",
             });
           }
+          recordStepTiming(card.id, {
+            stepId,
+            status: stepStatus,
+            label: step?.label || stepId,
+          });
           sendToRenderer("step-update", {
             cardId: card.id,
             stepId,
-            status: status === "done" ? "done" : "failed",
+            status: stepStatus,
             error: error || null,
             source: "pdf",
           });
@@ -3030,6 +3457,11 @@ async function runPdfCard(card, sop, options = {}) {
 
       for (const step of sop.steps) {
         if (step.action === "highlight" || step.action === "wait") {
+          recordStepTiming(card.id, {
+            stepId: step.id,
+            status: "done",
+            label: step.label || step.id,
+          });
           sendToRenderer("step-update", {
             cardId: card.id,
             stepId: step.id,
@@ -3120,24 +3552,166 @@ async function clearPdfCard(card, sop) {
     mode: "pdf",
     cleared: true,
     path: viewPath,
-    steps: (sop.steps || []).map((step) => stepForUi(step, "pending")),
+    steps: (sop.steps || []).map((step) => stepForUi(step, "pending", sop?.id)),
   };
 }
 
 ipcMain.handle("run-card", async (_event, cardId, options = {}) => {
-  refreshQueue();
-  reloadSops();
+  await refreshQueue();
+  await reloadSops();
   const card = queue.find((c) => c.id === cardId);
   if (!card) return { ok: false, error: "not_found" };
 
-  const sop = sops[card.sopId];
-  if (!sop) return { ok: false, error: "sop_missing" };
-
-  if (!card.data || Object.keys(card.data).length === 0) {
-    return { ok: false, error: "data_missing" };
+  if (cardHasAttachedPlaywright(card)) {
+    const originalSop = sops[card.sopId] || null;
+    const appFile = card.playDir
+      ? path.join(card.playDir, "application.json")
+      : "";
+    const application = appFile && fs.existsSync(appFile)
+      ? JSON.parse(fs.readFileSync(appFile, "utf8"))
+      : playwrightScriptRun.defaultApplication();
+    playwrightSilentRuns.delete(card.id);
+    clearCardActions(card.id);
+    clearCardMistakes(card.id);
+    clearCardStepTiming(card.id);
+    clearCardRunStarted(card.id);
+    finalizedAt.delete(card.id);
+    finalizedStatus.delete(card.id);
+    activeRun = { cardId: card.id, mode: "playwright" };
+    activeWatch = { cardId: card.id, mode: "playwright" };
+    markCardRunStarted(card.id);
+    const startUrl =
+      String(options.startUrl || "").trim() ||
+      card.formUrl ||
+      card.playwright?.startUrl ||
+      application.jobUrl ||
+      "";
+    const displayedSteps = uiStepsForCard(card, originalSop);
+    const playCount = playwrightStepCount(card);
+    let lastPlayIndex = 0;
+    setImmediate(() => {
+      playwrightScriptRun
+        .runPlaywrightScript({
+          script: card.playwright,
+          application,
+          startUrl,
+          onLog: (msg, extra) => {
+            console.log(`[playwright] ${msg}${extra ? ` — ${extra}` : ""}`);
+          },
+          onReady: (session) => attachPlaywrightTracking(card, session),
+          onFormReady: () => {
+            paintDisplayedQueueUpTo(card, displayedSteps, 0, "done", {
+              action: "navigate",
+            });
+          },
+          onPage: (meta) => {
+            const url = String(meta?.url || "");
+            const title = String(meta?.title || "");
+            if (/^(https?:|file:)/i.test(url)) lastCdpUrl = url;
+            lastCdpTitle = title;
+            if (url) lastExtensionTabUrl = url;
+            publishTrackerStatus({
+              tabUrl: url || null,
+              tabTitle: title,
+              activated: true,
+              appConnected: true,
+            });
+          },
+          onStep: ({ index, step, status, pageUrl }) => {
+            if (status === "notice") {
+              sendToRenderer("step-update", {
+                cardId: card.id,
+                status: "reasoning",
+                reason: step?.reason || "Waiting — Take over if you need to type",
+              });
+              return;
+            }
+            if (status === "skipped") status = "done";
+            if (status !== "running" && status !== "done") return;
+            lastPlayIndex = Number(index) || 0;
+            const mapped = queueStepAtPlayIndex(displayedSteps, index, playCount);
+            paintDisplayedQueueUpTo(card, displayedSteps, mapped.index, status, {
+              action: step?.action,
+              label: step?.label,
+              value: step?.value,
+              pageUrl,
+            });
+            if (status === "done") {
+              forwardCaptureEvent({
+                action: String(step?.action || "").toLowerCase() === "click" ? "click" : "fill",
+                label: step?.label || mapped.step?.label,
+                fieldName: step?.label || mapped.step?.label,
+                value: step?.value != null ? String(step.value) : "",
+                pageUrl: pageUrl || "",
+                cardId: card.id,
+                kind: "playwright",
+                source: "human",
+                actor: "user",
+              }).catch(() => {});
+            }
+          },
+        })
+        .then((res) => {
+          if (res?.ok) {
+            markDisplayedQueueSteps(card, originalSop, "done");
+          } else if (!res?.cancelled) {
+            const mapped = queueStepAtPlayIndex(
+              displayedSteps,
+              lastPlayIndex,
+              playCount,
+            );
+            paintDisplayedQueueUpTo(card, displayedSteps, mapped.index, "failed", {
+              pageUrl: "",
+            });
+          }
+          handleAppRunFinished({
+            cardId: card.id,
+            mode: "playwright",
+            status: res?.ok
+              ? "run_complete"
+              : res?.cancelled
+                ? "run_cancelled"
+                : "run_failed",
+            reason: res?.error || null,
+            failedStepLabel: res?.failedStepLabel || null,
+          });
+        })
+        .catch((err) => {
+          handleAppRunFinished({
+            cardId: card.id,
+            mode: "playwright",
+            status: "run_failed",
+            reason: err?.message || String(err),
+          });
+        });
+    });
+    return {
+      ok: true,
+      mode: "playwright",
+      startIndex: 0,
+      steps: uiStepsForCard(card, originalSop),
+    };
   }
 
-  const runData = mergeRunData(card.data, options?.dataOverrides);
+  const playRun = playwrightRunForCard(card, sops[card.sopId] || null);
+  const originalSop = sops[card.sopId] || null;
+  const sop = playRun.sop;
+  if (!sop || !Array.isArray(sop.steps) || !sop.steps.length) {
+    return { ok: false, error: "sop_missing" };
+  }
+
+  const runData = mergeRunData(playRun.data, options?.dataOverrides);
+  if (!playRun.auto && (!runData || Object.keys(runData).length === 0)) {
+    return { ok: false, error: "data_missing" };
+  }
+  const runStartIndex = playRun.auto
+    ? 0
+    : Math.max(0, Math.min(Number(options?.startIndex) || 0, sop.steps.length));
+  const runCompleted = playRun.auto
+    ? []
+    : Array.isArray(options?.completedStepIds)
+      ? options.completedStepIds
+      : [];
   const agentApprovedValues =
     options?.agentApprovedValues && typeof options.agentApprovedValues === "object"
       ? Object.fromEntries(
@@ -3152,7 +3726,9 @@ ipcMain.handle("run-card", async (_event, cardId, options = {}) => {
   // When Agent approved, ensure every fill step has a stepId → value for the extension fill loop
   if (agentApproved) {
     for (const step of sop.steps || []) {
-      if (String(step?.action || "").toLowerCase() !== "fill" || !step?.id) continue;
+      if (!step?.id) continue;
+      const act = String(step?.action || "").toLowerCase();
+      if (act !== "fill" && act !== "typeahead") continue;
       if (agentApprovedValues[step.id]) continue;
       const key = step.valueFrom != null ? step.valueFrom : step.id;
       const fromRun =
@@ -3166,14 +3742,21 @@ ipcMain.handle("run-card", async (_event, cardId, options = {}) => {
           : "";
       if (raw) agentApprovedValues[step.id] = raw;
     }
+    await Promise.all(
+      Object.entries(agentApprovedValues).map(([stepId, value]) =>
+        rememberMarkedAnswer(card.id, stepId, value).catch((err) => {
+          console.error("[livetrack] learned choice", err?.message || err);
+          return { saved: false };
+        }),
+      ),
+    );
   }
   const { prefer, pdfPath } = cardPrefersPdf(card, sop);
   const htmlOpen = htmlFormTabOpen(card, sop);
   const onPdfTab = urlLooksLikePdf(lastExtensionTabUrl);
   const htmlUrl = webFormUrl(card, sop);
 
-  // PDF file tab, or no HTML mapping: fill on disk
-  if (pdfPath && prefer && !htmlOpen && !htmlUrl) {
+  if (pdfPath && prefer && !htmlOpen && !htmlUrl && !playRun.auto) {
     activeRunAgentApproved = agentApproved
       ? {
           cardId: card.id,
@@ -3184,23 +3767,21 @@ ipcMain.handle("run-card", async (_event, cardId, options = {}) => {
     return runPdfCard(card, sop, options);
   }
 
-  const wantHtml = !onPdfTab || htmlOpen || Boolean(htmlUrl);
+  const wantHtml = !onPdfTab || htmlOpen || Boolean(htmlUrl) || playRun.auto;
   if (wantHtml) {
-    const cdp = await browserAgent.connect({ launch: false });
+    let cdp = await browserAgent.connect({ launch: false });
+    if (!cdp.ok) cdp = await browserAgent.connect({ launch: true });
     if (cdp.ok) {
       const appRun = await startAppHtmlRun(card, sop, {
         ...options,
-        startIndex: Math.max(
-          0,
-          Math.min(Number(options?.startIndex) || 0, sop.steps.length),
-        ),
-        completedStepIds: Array.isArray(options?.completedStepIds)
-          ? options.completedStepIds
-          : [],
+        runData,
+        playwrightAuto: Boolean(playRun.auto),
+        startIndex: runStartIndex,
+        completedStepIds: runCompleted,
         agentApprovedValues,
       });
       if (appRun.ok) {
-        activeRunAgentApproved = agentApproved
+        activeRunAgentApproved = agentApproved || playRun.auto
           ? {
               cardId: card.id,
               values: agentApprovedValues,
@@ -3241,19 +3822,20 @@ ipcMain.handle("run-card", async (_event, cardId, options = {}) => {
     await ensureWebFormTab(card, sop);
   }
 
-  const startIndex = Math.max(
-    0,
-    Math.min(Number(options?.startIndex) || 0, sop.steps.length),
-  );
-  const completedStepIds = Array.isArray(options?.completedStepIds)
-    ? options.completedStepIds
-    : [];
+  const startIndex = playRun.auto
+    ? 0
+    : Math.max(0, Math.min(Number(options?.startIndex) || 0, sop.steps.length));
+  const completedStepIds = playRun.auto
+    ? []
+    : Array.isArray(options?.completedStepIds)
+      ? options.completedStepIds
+      : [];
 
   const delivery = bridge.sendRunCard({
     cardId: card.id,
     title: card.title,
     data: runData,
-    sop,
+    sop: sopForWatch(sop),
     target: browserTargetFor(card, sop),
     startIndex,
     completedStepIds,
@@ -3290,7 +3872,7 @@ ipcMain.handle("run-card", async (_event, cardId, options = {}) => {
   return {
     ok: true,
     startIndex,
-    steps: sop.steps.map((step) => stepForUi(step, "pending")),
+    steps: uiStepsForCard(card, originalSop),
   };
 });
 
@@ -3355,7 +3937,7 @@ ipcMain.handle("watch-card", async (_event, cardId, options = {}) => {
   const card = queue.find((c) => c.id === cardId);
   if (!card) return { ok: false, error: "not_found" };
   const sop = sops[card.sopId];
-  if (!sop) return { ok: false, error: "sop_missing" };
+  if (!sop && !cardHasAttachedPlaywright(card)) return { ok: false, error: "sop_missing" };
 
   activeWatch = { cardId: card.id, mode: undefined };
 
@@ -3374,34 +3956,23 @@ ipcMain.handle("watch-card", async (_event, cardId, options = {}) => {
     }
   }
 
-  const htmlUrl = webFormUrl(card, sop);
-  const cdp = await browserAgent.connect({ launch: false });
-  if (cdp.ok) {
-    if (htmlUrl) await browserAgent.openOrFocus(htmlUrl);
-    beginAppWatch(card, sop);
-    return {
-      ok: true,
-      watching: true,
-      via: "playwright",
-      steps: sop.steps.map((step) => stepForUi(step, "pending")),
-    };
-  }
-
-  if (bridge?.isExtensionConnected()) {
-    if (htmlUrl && !htmlFormTabOpen(card, sop)) {
-      bridge.sendOpenUrl?.({
-        url: htmlUrl,
-        cardId: card.id,
-      });
-    }
+  // Prefer the Chrome extension whenever it is connected. A leftover CDP /
+  // Playwright Chrome on 9222 used to steal watch and left the extension
+  // tab with no step tracking.
+  if (bridge?.isExtensionConnected() && sop) {
     const delivery = bridge.sendWatchCard({
       cardId: card.id,
       title: card.title,
-      sop,
+      sop: sopForWatch(sop),
       data: card.data || {},
       target: browserTargetFor(card, sop),
       resetProgress: Boolean(options?.resetProgress),
       clearFields: Boolean(options?.clearFields),
+      resetAllProgress: Boolean(options?.resetAllProgress),
+      acceptStepId: String(options?.acceptStepId || "").trim() || undefined,
+      completedStepIds: Array.isArray(options?.completedStepIds)
+        ? options.completedStepIds.filter(Boolean)
+        : undefined,
     });
     activeWatch = {
       cardId: card.id,
@@ -3414,8 +3985,35 @@ ipcMain.handle("watch-card", async (_event, cardId, options = {}) => {
     return {
       ok: Boolean(delivery.ok),
       watching: Boolean(delivery.ok),
+      via: "extension",
       error: delivery.error || null,
-      steps: sop.steps.map((step) => stepForUi(step, "pending")),
+      steps: sop.steps.map((step) => stepForUi(step, "pending", sop.id)),
+    };
+  }
+
+  if (cardHasAttachedPlaywright(card)) {
+    browserAgent.stopWatch();
+    const htmlUrl = webFormUrl(card, sop) || card.formUrl || "";
+    if (htmlUrl) browserAgent.setPreferredUrl(htmlUrl);
+    if (browserAgent.isConnected()) startCdpUrlPoll();
+    activeWatch = { cardId: card.id, mode: "playwright" };
+    publishTrackerStatus();
+    return {
+      ok: true,
+      watching: true,
+      via: "playwright",
+      steps: uiStepsForCard(card, sop),
+    };
+  }
+
+  const cdp = await browserAgent.connect({ launch: false });
+  if (cdp.ok && !options?.clearFields && sop) {
+    beginAppWatch(card, sop);
+    return {
+      ok: true,
+      watching: true,
+      via: "playwright",
+      steps: sop.steps.map((step) => stepForUi(step, "pending", sop.id)),
     };
   }
 
@@ -3423,11 +4021,15 @@ ipcMain.handle("watch-card", async (_event, cardId, options = {}) => {
     ok: false,
     error: "browser_offline",
     reason:
-      "Chrome is not on port 9222. Quit Chrome, relaunch with --remote-debugging-port=9222 --remote-allow-origins='*', then retry.",
+      "Chrome extension is not connected. In chrome://extensions reload LiveTrack Form Agent, then open the form tab. Or launch Chrome with --remote-debugging-port=9222.",
   };
 });
 
 ipcMain.handle("control-run", (_event, action) => {
+  if (activeRun?.mode === "playwright" || activeWatch?.mode === "playwright") {
+    playwrightScriptRun.control(action);
+    return { ok: true, via: "playwright" };
+  }
   if (activeRun?.mode === "app" || activeWatch?.mode === "app") {
     browserAgent.control(action);
   }
@@ -3564,10 +4166,16 @@ ipcMain.handle("apply-step", async (_event, payload = {}) => {
   if (!step) return { ok: false, error: "step_missing" };
 
   try {
-    return await applyStepCompatible(card, sop, step, {
+    const applied = await applyStepCompatible(card, sop, step, {
       valueOverride: payload.valueOverride,
       broadMatch: Boolean(payload.broadMatch),
     });
+    if (applied?.ok && payload.valueOverride) {
+      await rememberMarkedAnswer(card.id, step.id, payload.valueOverride).catch((err) => {
+        console.error("[livetrack] learned choice", err?.message || err);
+      });
+    }
+    return applied;
   } catch (err) {
     console.error("[coact] apply-step failed", err);
     return { ok: false, error: err.message || String(err) };
@@ -3654,6 +4262,24 @@ ipcMain.handle("copy-text", (_event, text) => {
   if (!value) return { ok: false };
   clipboard.writeText(value);
   return { ok: true, text: value };
+});
+
+ipcMain.handle("read-clipboard-text", () => {
+  const text = String(clipboard.readText() || "").trim();
+  return { ok: Boolean(text), text };
+});
+
+ipcMain.handle("focus-main-window", () => {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      applyAlwaysOnTop(true);
+      mainWindow.show();
+      mainWindow.focus();
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
 });
 
 ipcMain.handle("quit-app", () => {
@@ -3856,6 +4482,13 @@ ipcMain.handle("save-openai-settings", (_event, payload) => {
       payload?.jiraCardKeyField != null ? String(payload.jiraCardKeyField) : undefined,
     jiraProjectKey:
       payload?.jiraProjectKey != null ? String(payload.jiraProjectKey) : undefined,
+    expertJql: payload?.expertJql != null ? String(payload.expertJql) : undefined,
+    expertSystemTags:
+      payload?.expertSystemTags != null ? String(payload.expertSystemTags) : undefined,
+    confluenceSpaceKeys:
+      payload?.confluenceSpaceKeys != null ? String(payload.confluenceSpaceKeys) : undefined,
+    expertInactiveEmails:
+      payload?.expertInactiveEmails != null ? String(payload.expertInactiveEmails) : undefined,
     digestOptIn: payload?.digestOptIn != null ? Boolean(payload.digestOptIn) : undefined,
     digestSlackWebhookUrl:
       payload?.digestSlackWebhookUrl != null
@@ -3893,7 +4526,7 @@ ipcMain.handle("save-openai-settings", (_event, payload) => {
   return { ok: true, ...result };
 });
 
-ipcMain.handle("outlook-connect", async () => {
+ipcMain.handle("outlook-connect", async (_event, payload = {}) => {
   const cfg = outlook.getOutlookConfig();
   // Drop tokens from a previous Azure app so device-code uses the new client cleanly
   const stored = require("./settings").loadSettings();
@@ -3906,12 +4539,22 @@ ipcMain.handle("outlook-connect", async () => {
     clientId: cfg.clientId,
   });
   if (!started.ok) return started;
+  const userCode = String(started.userCode || "").trim();
+  if (userCode) {
+    try {
+      clipboard.writeText(userCode);
+    } catch {
+      /* ignore */
+    }
+  }
   sendToRenderer(
     "outlook-device-code",
     ipcSafe({
-      userCode: started.userCode,
+      userCode,
       verificationUri: started.verificationUri,
+      verificationUriComplete: started.verificationUriComplete || "",
       message: started.message,
+      includeMail: started.includeMail !== false,
     }),
   );
   const openUrl = started.verificationUriComplete || started.verificationUri;
@@ -3926,7 +4569,50 @@ ipcMain.handle("outlook-connect", async () => {
   if (!tokened.ok) return { ...tokened, ...outlook.publicStatus() };
   const me = await outlook.fetchMe();
   await refreshMomCalendar();
-  return { ok: true, ...outlook.publicStatus(), accountName: me.accountName || "" };
+  let mailImport = {
+    ok: false,
+    imported: 0,
+    skipped: 0,
+    scanned: 0,
+    actions: [],
+  };
+  try {
+    mailImport = await importActionItemsFromOutlook({
+      user: localUsername(),
+      accountName: me.accountName || outlook.getOutlookConfig().accountName || "",
+      givenName: me.givenName || outlook.getOutlookConfig().accountGivenName || "",
+      greetingName: getAppSettings().momGreetingName || "",
+      emails: [
+        getAppSettings().outlookPreferredEmail,
+        me.me?.mail,
+        me.me?.userPrincipalName,
+      ].filter(Boolean),
+    });
+    if (mailImport?.ok) {
+      sendToRenderer(
+        "actions-updated",
+        ipcSafe({
+          reason: "email",
+          pending: await actionsStore.pendingCount({ user: localUsername() }),
+        }),
+      );
+    }
+  } catch (err) {
+    mailImport = {
+      ok: false,
+      error: err?.message || String(err),
+      imported: 0,
+      skipped: 0,
+      scanned: 0,
+      actions: [],
+    };
+  }
+  return {
+    ok: true,
+    ...outlook.publicStatus(),
+    accountName: me.accountName || "",
+    mailImport,
+  };
 });
 
 ipcMain.handle("outlook-cancel-connect", () => {
@@ -4152,6 +4838,174 @@ ipcMain.handle("jira-get-snapshot", () => {
     ...(jiraSnapshot || { ok: false, issues: [], staleCount: 0 }),
     recentActions: recentJiraActions(5),
   };
+});
+
+ipcMain.handle("jira-past-work", async (_event, payload = {}) => {
+  try {
+    await ensureLocalJiraMock();
+  } catch (err) {
+    console.warn("[livetrack] jira mock", err?.message || err);
+  }
+  const config = getJiraConfig();
+  if (!isJiraConfigured(config)) {
+    return {
+      ok: false,
+      configured: false,
+      issues: [],
+      error: "Configure Jira in Settings (base URL, email, API token).",
+    };
+  }
+  const cachedPastWork = async () => {
+    try {
+      const rows = await loadPastWorkRows();
+      return (Array.isArray(rows) ? rows : []).map(rowToIssue).filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+  try {
+    const excludeKeys = (jiraSnapshot?.issues || [])
+      .filter((issue) => issue?.inOpenSprint)
+      .map((issue) => issue.key);
+    const forceRefresh = payload?.force !== false;
+    const work = (async () => {
+      const result = await searchIssues(config, {
+        maxResults: 80,
+        queueCards: [],
+        openSprint: false,
+        scrapeTickets: true,
+        pastWork: true,
+        forceRefresh,
+        excludeKeys,
+      });
+      let pastWorkSaved = 0;
+      let pastWorkPath = "";
+      let pastWorkError = "";
+      const catalogIssues = Array.isArray(result?.catalogIssues) ? result.catalogIssues : [];
+      const { catalogIssues: _catalog, ...snapshot } = result || {};
+      const scraped = [];
+      const seenKeys = new Set();
+      for (const issue of [...catalogIssues, ...(snapshot.issues || [])]) {
+        const key = String(issue?.key || "").trim().toUpperCase();
+        if (!key || seenKeys.has(key)) continue;
+        seenKeys.add(key);
+        scraped.push(issue);
+      }
+      const cached = await cachedPastWork();
+      const issues = mergeScrapedPastWork(
+        cached,
+        scraped.length ? scraped : snapshot.issues || [],
+        { baseUrl: config?.baseUrl || "" }
+      );
+      for (const issue of issues) {
+        if (!issue?.key) continue;
+        const rel = (issue.relatedTickets || []).map((row) => row.key).join(",");
+        console.log(`[livetrack] past related ${issue.key} relatedTickets=${rel || "(none)"}`);
+      }
+      if (result?.ok) {
+        try {
+          const persist = await persistPastWorkIssues(issues);
+          pastWorkSaved = Number(persist?.saved) || 0;
+          pastWorkPath = Array.isArray(persist?.paths)
+            ? persist.paths[0] || persist.paths[persist.paths.length - 1]
+            : "";
+          pastWorkError = persist?.xlsxOk === false ? persist.xlsxError || "Could not save PastWork sheet" : "";
+          console.log(
+            `[livetrack] PastWork sheet saved ${pastWorkSaved} row(s)${pastWorkError ? ` (${pastWorkError})` : ""}`
+          );
+        } catch (err) {
+          pastWorkError = err?.message || "Could not save PastWork sheet";
+          console.warn("[livetrack] persist past work", pastWorkError);
+        }
+      }
+      return {
+        ...snapshot,
+        issues,
+        pastWorkSaved,
+        pastWorkPath,
+        pastWorkError,
+      };
+    })();
+    let timer;
+    try {
+      return await Promise.race([
+        work,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Past work refresh timed out")), 22000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    const issues = finalizePastWorkRelated(await cachedPastWork());
+    return {
+      ok: false,
+      configured: true,
+      fromCache: issues.length > 0,
+      issues,
+      error: err?.message || "Could not load past work sample",
+    };
+  }
+});
+
+ipcMain.handle("jira-past-work-load", async () => {
+  try {
+    const rows = await loadPastWorkRows();
+    const issues = finalizePastWorkRelated(
+      (Array.isArray(rows) ? rows : []).map(rowToIssue).filter(Boolean)
+    );
+    return {
+      ok: true,
+      fromCache: true,
+      issues,
+      pastWorkSaved: issues.length,
+      fetchedAt: "",
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      fromCache: true,
+      issues: [],
+      error: err?.message || "Could not load saved Past work",
+    };
+  }
+});
+
+ipcMain.handle("jira-past-work-save", async (_event, issues = []) => {
+  try {
+    const persist = await persistPastWorkIssues(issues);
+    return {
+      ok: true,
+      saved: Number(persist?.saved) || 0,
+      paths: persist?.paths || [],
+      xlsxOk: persist?.xlsxOk !== false,
+      xlsxError: persist?.xlsxError || "",
+    };
+  } catch (err) {
+    return { ok: false, saved: 0, error: err?.message || "Could not save PastWork sheet" };
+  }
+});
+
+ipcMain.handle("expert-index-status", () => expertIndexStatus());
+
+ipcMain.handle("expert-index-rebuild", async () => {
+  try {
+    return await rebuildExpertIndex({ forceRefresh: true });
+  } catch (err) {
+    return { ok: false, error: err?.message || "Could not rebuild expert index.", records: [] };
+  }
+});
+
+ipcMain.handle("find-expert", async (_event, payload = {}) => {
+  try {
+    return await findExpert(payload.query || payload.queryText || "", {
+      systemFilter: payload.systemFilter || "",
+      limit: payload.limit || 5,
+    });
+  } catch (err) {
+    return { ok: false, error: err?.message || "Find expert failed.", people: [] };
+  }
 });
 
 ipcMain.handle("jira-open-issue", async (_event, url) => {
@@ -4696,6 +5550,12 @@ ipcMain.handle("desk-refine-ticket", async (_event, payload) => {
   return deskDraftPayload(draft);
 });
 
+ipcMain.handle("desk-list-epics", async () => {
+  const config = getJiraConfig();
+  if (!isJiraConfigured(config)) return { ok: false, epics: [], error: "Jira is not configured." };
+  return listProjectEpics(config, config.jiraProjectKey);
+});
+
 ipcMain.handle("desk-create-jira-issue", async (_event, payload) => {
   const config = getJiraConfig();
   if (!isJiraConfigured(config)) {
@@ -4724,6 +5584,7 @@ ipcMain.handle("desk-create-jira-issue", async (_event, payload) => {
   } else if (pageUrl && !description.includes(pageUrl)) {
     description = `${description}\n\nURL: ${pageUrl}`;
   }
+  const epicKey = String(payload?.epicKey || "").trim();
   const extraFiles = payload?.extraFiles || payload?.attachments || [];
   const attachPaths = collectDeskAttachmentPaths({ screenshotPath, extraFiles });
   let created;
@@ -4738,7 +5599,13 @@ ipcMain.handle("desk-create-jira-issue", async (_event, payload) => {
     ]
       .filter(Boolean)
       .join("\n");
-    created = await cloneIssue(config, { sourceKey, extraNote, acceptanceCriteria });
+    created = await cloneIssue(config, {
+      sourceKey,
+      summary,
+      description,
+      extraNote,
+      acceptanceCriteria,
+    });
   } else {
     created = await createIssue(config, {
       summary,
@@ -4770,6 +5637,10 @@ ipcMain.handle("desk-create-jira-issue", async (_event, payload) => {
     });
   }
   const attachError = attachments.find((item) => !item.ok && item.error);
+  let epicLink = null;
+  if (epicKey) {
+    epicLink = await linkIssueToEpic(config, created.issueKey, epicKey);
+  }
   appendJiraAction({
     action: mode,
     issueKey: created.issueKey,
@@ -4777,6 +5648,7 @@ ipcMain.handle("desk-create-jira-issue", async (_event, payload) => {
     ok: true,
     url: created.url || "",
     summary,
+    epicKey: epicLink?.ok ? epicKey : "",
     bodyPreview: (summary || created.issueKey).slice(0, 80),
   });
   try {
@@ -4790,6 +5662,9 @@ ipcMain.handle("desk-create-jira-issue", async (_event, payload) => {
     attached: attachments.some((item) => item.ok),
     attachments,
     attachError: attachError?.error || null,
+    epicKey: epicKey || "",
+    epicLinked: Boolean(epicLink?.ok && !epicLink?.skipped),
+    epicError: epicLink && !epicLink.ok ? epicLink.error || "Could not set the epic link." : null,
     recentActions: recentJiraActions(5),
   };
 });
@@ -4976,11 +5851,38 @@ ipcMain.handle("desk-created-tickets", async () => {
   return { ok: true, tickets };
 });
 
-ipcMain.handle("set-capture-recording", async (_event, payload) => {
+function withIpcDeadline(promise, ms, fallback) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timer)),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(fallback), ms);
+    }),
+  ]);
+}
+
+let captureRecordingOp = 0;
+let lastRecordingIntent = { action: "stop", payload: {} };
+
+function notifyCaptureRecording(res, cardId = "") {
+  const live = pdfViewServer?.capture?.recordingPayload?.() || res || {};
+  try {
+    bridge?.sendCaptureRecording?.({
+      recording: Boolean(live.recording),
+      recordingSessionId: live.recordingSessionId || null,
+      cardId: String(cardId || live.cardId || "").trim(),
+    });
+  } catch {
+    /* extension notify is optional */
+  }
+  return live;
+}
+
+function captureRecordingArgs(payload) {
   const cardId = String(payload?.cardId || "").trim();
   const card = cardId ? queue.find((c) => c.id === cardId) : null;
   const action = String(payload?.action || "").toLowerCase();
-  const result = await setCaptureRecording({
+  return {
     action:
       action === "pause" || action === "resume" || action === "start"
         ? action
@@ -4989,23 +5891,62 @@ ipcMain.handle("set-capture-recording", async (_event, payload) => {
     queueCard: String(payload?.queueCard || card?.title || ""),
     lob: String(payload?.lob || card?.lob || ""),
     user: os.userInfo().username || "",
-  });
+  };
+}
+
+ipcMain.handle("set-capture-recording", async (_event, payload) => {
+  const op = ++captureRecordingOp;
+  lastRecordingIntent = { action: String(payload?.action || "stop").toLowerCase(), payload };
+  const args = captureRecordingArgs(payload);
+  const action = args.action;
+  let result = await setCaptureRecording(args);
+  if (op !== captureRecordingOp) {
+    result = await setCaptureRecording(captureRecordingArgs(lastRecordingIntent.payload));
+    const live = notifyCaptureRecording(result, args.cardId);
+    return { ...result, ...live, draftedCount: 0, txnCount: 0, playwright: null, superseded: true };
+  }
+  notifyCaptureRecording(result, args.cardId);
   const extensionOn = Boolean(bridge?.isExtensionConnected());
   let playwright = null;
   try {
-    if (extensionOn) {
-      // Prefer extension capture; tear down any leftover Playwright listeners.
+    const stillLatest = () => op === captureRecordingOp;
+    if (!stillLatest()) {
+      playwright = { ok: true, superseded: true };
+    } else if (action === "stop" || action === "pause") {
+      playwright = await withIpcDeadline(
+        browserAgent.stopCaptureRecording(),
+        4000,
+        { ok: true, error: "playwright_stop_timeout", active: false }
+      );
+    } else if (extensionOn) {
       if (browserAgent.captureRecordingStatus?.()?.active) {
-        await browserAgent.stopCaptureRecording();
+        playwright = await withIpcDeadline(
+          browserAgent.stopCaptureRecording(),
+          4000,
+          { ok: true, via: "extension", active: false, error: "stop_timeout" }
+        );
       }
-      playwright = { ok: true, via: "extension", active: false };
+      playwright = playwright || { ok: true, via: "extension", active: false };
     } else if (
       (action === "start" || action === "resume") &&
-      result?.recording
+      result?.recording &&
+      stillLatest()
     ) {
-      playwright = await browserAgent.startCaptureRecording();
-    } else if (action === "stop" || action === "pause" || !result?.recording) {
-      playwright = await browserAgent.stopCaptureRecording();
+      playwright = await withIpcDeadline(
+        browserAgent.startCaptureRecording(),
+        10000,
+        { ok: false, error: "playwright_start_timeout", active: false }
+      );
+      if (!stillLatest()) {
+        await withIpcDeadline(browserAgent.stopCaptureRecording(), 4000, null);
+        result = await setCaptureRecording(captureRecordingArgs(lastRecordingIntent.payload));
+      }
+    } else if (!result?.recording) {
+      playwright = await withIpcDeadline(
+        browserAgent.stopCaptureRecording(),
+        4000,
+        { ok: true, error: "playwright_stop_timeout", active: false }
+      );
     } else {
       playwright = browserAgent.captureRecordingStatus?.() || null;
     }
@@ -5018,14 +5959,14 @@ ipcMain.handle("set-capture-recording", async (_event, payload) => {
   }
   let drafted = [];
   let txnCount = 0;
-  if (action !== "pause" && action !== "resume" && action !== "start") {
+  if (op === captureRecordingOp && action === "stop") {
     try {
-      const out = await draftUnmatchedCaptures(queue);
+      const out = await withIpcDeadline(draftUnmatchedCaptures(queue), 6000, null);
       drafted = out?.drafted || [];
       txnCount = Array.isArray(out?.transactions) ? out.transactions.length : 0;
       if (drafted.length) {
         try {
-          await reloadSops();
+          await withIpcDeadline(reloadSops(), 4000, null);
         } catch (err) {
           console.warn("[livetrack] reload SOPs after capture draft", err?.message || err);
         }
@@ -5034,23 +5975,33 @@ ipcMain.handle("set-capture-recording", async (_event, payload) => {
       console.warn("[livetrack] unmatched capture draft", err?.message || err);
     }
   }
-  try {
-    bridge?.sendCaptureRecording?.({
-      recording: Boolean(result?.recording),
-      recordingSessionId: result?.recordingSessionId || null,
-      cardId,
-    });
-  } catch {
-    /* extension notify is optional */
+  const live = notifyCaptureRecording(result, args.cardId);
+  return { ...result, ...live, draftedCount: drafted.length, txnCount, playwright };
+});
+
+ipcMain.handle("attach-step-explanation", async (_event, payload) => {
+  const capture = pdfViewServer?.capture;
+  if (!capture?.attachStepExplanation) {
+    return { ok: false, error: "capture_unavailable" };
   }
-  return { ...result, draftedCount: drafted.length, txnCount, playwright };
+  try {
+    return capture.attachStepExplanation(payload || {});
+  } catch (err) {
+    return { ok: false, error: err?.message || "Could not save the step explanation." };
+  }
 });
 
 ipcMain.handle("get-capture-status", async () => {
   try {
     const status = await getCaptureStatus();
     const playwright = browserAgent.captureRecordingStatus?.() || status.playwright || null;
-    return { ...status, playwright };
+    return {
+      ...status,
+      playwright,
+      playwrightRun: activeRun?.mode === "playwright",
+      playwrightOwned: Boolean(browserAgent.isPlaywrightOwned?.()),
+      recordingCardId: activeRun?.cardId || "",
+    };
   } catch (err) {
     return { ok: false, recording: false, transactions: [], error: err?.message || String(err) };
   }
@@ -5077,7 +6028,6 @@ ipcMain.handle("get-analytics", async (_event, payload = {}) => {
 });
 
 ipcMain.handle("get-execution-dashboard", async () => {
-  const config = getJiraConfig();
   try {
     let captureDashRows = [];
     try {
@@ -5085,21 +6035,34 @@ ipcMain.handle("get-execution-dashboard", async () => {
     } catch (err) {
       console.warn("[coact] capture dash", err?.message || err);
     }
-    captureDashRows = (captureDashRows || []).map((row) => {
-      const sopId = String(row.draftSopId || "").trim();
-      const published = sopId && sops[sopId];
-      if (published && published.status && published.status !== "draft" && published.status !== "rejected") {
-        return { ...row, discoveryStatus: "approved", unmatched: false };
-      }
-      return row;
-    });
-    return await buildAgentDashboard({
-      queueCards: queue,
-      days: 365,
-      jiraBaseUrl: config.jiraBaseUrl || "",
-      jiraCardKeyField: config.jiraCardKeyField || "jiraKey",
-      captureDashRows,
-    });
+    const rows = (captureDashRows || [])
+      .map((row) => {
+        const sopId = String(row.draftSopId || "").trim();
+        const published = sopId && sops[sopId];
+        if (
+          published &&
+          published.status &&
+          published.status !== "draft" &&
+          published.status !== "rejected"
+        ) {
+          return { ...row, discoveryStatus: "approved", unmatched: false };
+        }
+        return row;
+      })
+      .sort((a, b) =>
+        String(b.completed_at || b.run_date).localeCompare(
+          String(a.completed_at || a.run_date),
+        ),
+      )
+      .slice(0, 5);
+    return {
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      dateFrom: null,
+      dateTo: null,
+      total: rows.length,
+      rows,
+    };
   } catch (err) {
     return {
       ok: false,
@@ -5316,7 +6279,7 @@ ipcMain.handle("chat-prompt", async (event, payload) => {
           cardId: liveCard.id,
           title: liveCard.title,
           data: liveCard.data,
-          sop: liveSop,
+          sop: sopForWatch(liveSop),
           target: browserTargetFor(liveCard, liveSop),
           startIndex: 0,
           completedStepIds: [],
@@ -5352,7 +6315,7 @@ ipcMain.handle("chat-prompt", async (event, payload) => {
         return bridge.sendWatchCard({
           cardId: liveCard.id,
           title: liveCard.title,
-          sop: liveSop,
+          sop: sopForWatch(liveSop),
           target: browserTargetFor(liveCard, liveSop),
           resetProgress: false,
         });
@@ -5364,7 +6327,7 @@ ipcMain.handle("chat-prompt", async (event, payload) => {
         return bridge.sendWatchCard({
           cardId: liveCard.id,
           title: liveCard.title,
-          sop: liveSop,
+          sop: sopForWatch(liveSop),
           target: browserTargetFor(liveCard, liveSop),
           clearFields: true,
           resetProgress: true,
@@ -5653,6 +6616,105 @@ ipcMain.handle("actions-pending-count", async () => {
     return { ok: true, pending, overdue };
   } catch (err) {
     return { ok: false, error: err?.message || String(err), pending: 0, overdue: 0 };
+  }
+});
+
+ipcMain.handle("actions-import-outlook", async () => {
+  try {
+    const cfg = outlook.getOutlookConfig();
+    const s = getAppSettings();
+    const res = await importActionItemsFromOutlook({
+      user: localUsername(),
+      accountName: cfg.accountName || "",
+      givenName: cfg.accountGivenName || "",
+      greetingName: s.momGreetingName || "",
+      emails: [s.outlookPreferredEmail].filter(Boolean),
+    });
+    if (res?.ok) {
+      sendToRenderer(
+        "actions-updated",
+        ipcSafe({
+          reason: "email",
+          pending: await actionsStore.pendingCount({ user: localUsername() }),
+        }),
+      );
+    }
+    return res;
+  } catch (err) {
+    return {
+      ok: false,
+      error: err?.message || String(err),
+      imported: 0,
+      skipped: 0,
+      scanned: 0,
+      actions: [],
+    };
+  }
+});
+
+let teamsChatRefineInFlight = false;
+ipcMain.handle("teams-chat-refine", async () => {
+  if (teamsChatRefineInFlight) {
+    return { ok: false, error: "Already refining." };
+  }
+  if (process.platform !== "darwin") {
+    return { ok: false, error: "Teams compose refine is only available on macOS." };
+  }
+  teamsChatRefineInFlight = true;
+  teamsChatOverlay.setBusy(true);
+  try {
+    const access = teamsChatAx.ensureAccessibility();
+    if (!access.ok) return access;
+    const win = await teamsChatAx.findTeamsWindow();
+    if (!win?.ok) {
+      return { ok: false, error: "Microsoft Teams is not open." };
+    }
+    const read = await teamsChatAx.readCompose({ processName: win.process });
+    const draft = String(read?.text || "").trim();
+    if (!draft) {
+      return { ok: false, error: "Type a message in Teams first, then click AI." };
+    }
+    const polish = await polishTeamsChatDraft({
+      draft,
+      conversation: win.conversation,
+    });
+    if (!polish?.ok) {
+      return { ok: false, error: polish?.error || "Could not refine the message." };
+    }
+    const refined = String(polish.polished || "").trim();
+    if (!refined) {
+      return { ok: false, error: "AI returned an empty message." };
+    }
+    const written = await teamsChatAx.writeCompose(refined, { processName: win.process });
+    if (!written?.ok) {
+      return { ok: false, error: "Could not put the refined text back in Teams." };
+    }
+    const saved = await teamsChatStore.addTeamsChat({
+      user: localUsername(),
+      conversation: win.conversation,
+      original: draft,
+      refined,
+      usedAi: Boolean(polish.usedAi),
+    });
+    sendToRenderer(
+      "teams-chat-updated",
+      ipcSafe({
+        reason: "refine",
+        record: saved?.record || null,
+      }),
+    );
+    return {
+      ok: true,
+      refined,
+      usedAi: Boolean(polish.usedAi),
+      note: polish.note || "",
+      conversation: win.conversation,
+    };
+  } catch (err) {
+    return { ok: false, error: err?.message || "Could not refine the Teams message." };
+  } finally {
+    teamsChatRefineInFlight = false;
+    teamsChatOverlay.setBusy(false);
   }
 });
 

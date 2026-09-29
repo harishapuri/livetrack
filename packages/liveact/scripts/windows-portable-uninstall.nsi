@@ -1,7 +1,7 @@
 ; LiveTrack portable uninstaller (standalone).
 ; Removes portable leftovers + known user data. Does NOT run the NSIS Setup uninstaller.
 ;
-; Built by scripts/build-portable-uninstaller.js → LiveTrack-Uninstall-Portable-*.exe
+; Built by scripts/build-portable-uninstaller.js -> LiveTrack-Uninstall-Portable-*.exe
 
 Unicode true
 Name "LiveTrack Portable Uninstall"
@@ -11,7 +11,7 @@ OutFile "${OUT_FILE}"
 RequestExecutionLevel user
 ShowInstDetails show
 InstallDir "$EXEDIR"
-SetCompressor /SOLID lzma
+SetCompressor zlib
 
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
@@ -24,11 +24,11 @@ Function .onInit
   ${If} ${Errors}
     MessageBox MB_YESNO|MB_ICONQUESTION \
       "Uninstall LiveTrack portable and remove local data?$\r$\n$\r$\nThis will:$\r$\n\
-• Quit LiveTrack if it is running$\r$\n\
-• Delete LiveTrack-Portable-*.exe next to this uninstaller$\r$\n\
-• Remove user data under Projects\coact, Documents\Coact, .coact$\r$\n\
-• Remove AppData\LiveTrack (Roaming + Local)$\r$\n$\r$\n\
-The NSIS Setup install (if present) is left alone — use Apps & Features for that." \
+- Quit LiveTrack if it is running$\r$\n\
+- Delete LiveTrack-Portable-*.exe next to this uninstaller$\r$\n\
+- Remove user data under Projects\coact, Documents\Coact, .coact$\r$\n\
+- Remove AppData\LiveTrack (Roaming + Local)$\r$\n$\r$\n\
+The NSIS Setup install (if present) is left alone - use Apps & Features for that." \
       IDYES continue
     Quit
     continue:
@@ -69,7 +69,7 @@ Section "Uninstall"
   RMDir /r "$APPDATA\LiveTrack"
   RMDir /r "$LOCALAPPDATA\LiveTrack"
 
-  ; Harmless if missing — portable builds rarely create these
+  ; Harmless if missing - portable builds rarely create these
   Delete "$DESKTOP\LiveTrack.lnk"
   Delete "$SMPROGRAMS\LiveTrack.lnk"
   RMDir /r "$SMPROGRAMS\LiveTrack"

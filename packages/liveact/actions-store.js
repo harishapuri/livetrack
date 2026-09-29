@@ -279,9 +279,88 @@ async function importFromMomRefined({
   return { ok: true, imported: created.length, skipped, actions: created };
 }
 
+function mailMeetingId(messageId) {
+  const id = String(messageId || "").trim();
+  return id ? `mail:${id}` : "";
+}
+
+/**
+ * Import tasks extracted from Outlook (or similar) mail.
+ * Dedupes by mail message id + owner + title, including already-done items.
+ */
+async function importFromEmail({ items = [], user = "", dueKind = "week" } = {}) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) {
+    return { ok: true, imported: 0, skipped: 0, actions: [] };
+  }
+  const existing = await readActionRows();
+  const seen = new Set(existing.map((a) => fingerprint(a.title, a.owner, a.meetingId)));
+  const created = [];
+  let skipped = 0;
+  for (const raw of list) {
+    const title = String(raw?.title || "").trim();
+    if (!title) {
+      skipped += 1;
+      continue;
+    }
+    const owner = String(raw?.owner || "").trim();
+    const meetingId = mailMeetingId(raw?.messageId);
+    const fp = fingerprint(title, owner, meetingId);
+    if (seen.has(fp)) {
+      skipped += 1;
+      continue;
+    }
+    const res = await addAction({
+      title,
+      owner,
+      user,
+      dueKind: raw?.dueKind || dueKind,
+      source: "email",
+      meetingId,
+      meetingSubject: "",
+      meta: {
+        fromEmail: true,
+        from: String(raw?.from || "").trim(),
+        webLink: String(raw?.webLink || "").trim(),
+        receivedDateTime: String(raw?.receivedDateTime || "").trim(),
+      },
+    });
+    if (res.ok) {
+      created.push(res.action);
+      seen.add(fp);
+    } else {
+      skipped += 1;
+    }
+  }
+  return { ok: true, imported: created.length, skipped, actions: created };
+}
+
+async function clearBySource({ source = "email", user = null } = {}) {
+  const src = String(source || "").trim();
+  if (!src) return { ok: false, error: "Missing source", removed: 0 };
+  const { Actions } = await workbookStore.readTables(["Actions"], defaultProjectRoot());
+  const rows = Actions || [];
+  const needle = user != null ? String(user).trim().toLowerCase() : "";
+  const kept = [];
+  let removed = 0;
+  for (const row of rows) {
+    const sameSource = String(row.source || "").trim() === src;
+    const sameUser = !needle || String(row.user || "").trim().toLowerCase() === needle;
+    if (sameSource && sameUser) {
+      removed += 1;
+      continue;
+    }
+    kept.push(row);
+  }
+  if (removed) await workbookStore.replaceRows("Actions", kept, defaultProjectRoot());
+  return { ok: true, removed };
+}
+
 module.exports = {
   parseMomActionItems,
   importFromMomRefined,
+  importFromEmail,
+  clearBySource,
   addAction,
   listActions,
   markDone,

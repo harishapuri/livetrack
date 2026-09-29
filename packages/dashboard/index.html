@@ -32,6 +32,8 @@
       </div>
       <nav class="dash-nav" aria-label="Dashboard sections">
         <a href="#/executions" data-nav="executions">Executions</a>
+        <a href="#/approvals" data-nav="approvals">Approvals</a>
+        <a href="#/studio" data-nav="studio">Queue studio</a>
         <a href="#/analytics" data-nav="analytics">Analytics</a>
         <a href="#/digest" data-nav="digest">Weekly digest</a>
         <a href="#/assignments" data-nav="assignments">Assignments</a>
@@ -40,6 +42,17 @@
       </nav>
       <div class="meta" id="metaLine">Loading…</div>
     </header>
+    <div class="dash-action-strip">
+      <button
+        type="button"
+        class="btn-danger"
+        id="btnRemoveChecksTop"
+        title="Delete every Yes/No check step from the loaded SOP, then save and publish"
+      >
+        Remove checks &amp; publish
+      </button>
+      <p class="status" id="studioTopStatus"></p>
+    </div>
 
     <div id="pane-executions" class="dash-pane" data-pane="executions">
       <section class="filters" aria-label="Filters">
@@ -124,7 +137,7 @@
             <span class="capture-live-toggle-meta" id="captureLiveMeta">Click to open</span>
           </button>
           <div id="captureLiveBody" hidden>
-            <p class="hint" id="captureLiveHint">One JSON object per capture-agent transaction</p>
+            <p class="hint" id="captureLiveHint">Values, clicks, and Playwright locators — one JSON object per recording</p>
             <div class="table-wrap">
               <table>
                 <thead>
@@ -141,8 +154,8 @@
           </div>
         </section>
 
-        <section class="panel wide" aria-labelledby="cardTitle">
-          <h2 id="cardTitle">Queue card wide</h2>
+        <section class="panel wide" aria-labelledby="execQueueCardHeading">
+          <h2 id="execQueueCardHeading">Queue card wide</h2>
           <p class="hint">Executions grouped by queue card</p>
           <div class="table-wrap">
             <table>
@@ -311,7 +324,7 @@
 
         <section class="panel">
           <h2>2. Card settings</h2>
-          <p class="hint">LOB, id, title, SOP, status, URLs, assignees</p>
+          <p class="hint">LOB, id, card name, SOP, status, URLs, assignees</p>
           <div class="form-grid">
             <label>
               <span>LOB</span>
@@ -322,7 +335,7 @@
               <input id="cardId" placeholder="acme-supplies" />
             </label>
             <label class="span-2">
-              <span>Title</span>
+              <span>Card name</span>
               <input id="cardTitle" placeholder="Acme Supplies — vendor onboarding" />
             </label>
             <label>
@@ -386,6 +399,23 @@
             <button type="button" class="btn-ghost" id="btnAddClick">+ Click</button>
             <button type="button" class="btn-ghost" id="btnAddFill">+ Fill</button>
             <button type="button" class="btn-ghost" id="btnAddCheck">+ Check</button>
+            <button
+              type="button"
+              class="btn-danger"
+              id="btnRemoveChecks"
+              title="Delete every Yes/No check step from this SOP, then save and publish"
+            >
+              Remove checks &amp; publish
+            </button>
+            <label class="check-inline studio-mandatory-all" title="Check to mark every step mandatory">
+              <input type="checkbox" id="chkAllMandatory" />
+              all mandatory
+            </label>
+            <button type="button" class="btn-ghost" id="btnUncheckMandatory" title="Clear mandatory on every step">
+              Uncheck mandatory
+            </button>
+            <button type="button" class="btn-ghost" id="btnExpandSteps">Expand all</button>
+            <button type="button" class="btn-ghost" id="btnCollapseSteps">Collapse all</button>
           </div>
           <div class="steps-list" id="stepsList"></div>
           <p class="status" id="sopStatus"></p>
@@ -393,14 +423,17 @@
 
         <section class="panel wide">
           <h2>4. Case data (<code>data.json</code>)</h2>
-          <p class="hint">Keys should match SOP <code>valueFrom</code> fields</p>
+          <p class="hint">Playwright script JSON: <code>ticket</code>, <code>startUrl</code>, and <code>clicks</code> with locators. Extra keys are fill values for SOP <code>valueFrom</code> fields.</p>
           <div class="data-toolbar">
             <button type="button" class="btn-ghost" id="btnPrettyJson">Format JSON</button>
             <button type="button" class="btn-ghost" id="btnAddDataField">+ Field</button>
             <button type="button" class="btn-ghost" id="btnClearData">Clear</button>
           </div>
-          <textarea id="dataJson" spellcheck="false" placeholder='{"fullName": "…", "email": "…"}'></textarea>
-          <div class="field-editor" id="fieldEditor" aria-label="Field editors"></div>
+          <details class="fold-block" id="caseDataFold" open>
+            <summary class="fold-summary">Playwright JSON &amp; field values</summary>
+            <textarea id="dataJson" spellcheck="false" placeholder='{"ticket": "…", "startUrl": "…", "clicks": []}'></textarea>
+            <div class="field-editor" id="fieldEditor" aria-label="Field editors"></div>
+          </details>
           <div class="actions-row save-row">
             <button type="button" class="btn-primary" id="btnSavePublish" hidden>Save &amp; publish</button>
             <button type="button" class="btn-primary" id="btnCreatePublish">Create &amp; publish</button>
@@ -516,28 +549,17 @@
           <input id="approvalSme" type="text" placeholder="your OS username" />
         </label>
         <button type="button" class="btn-filter" id="btnRefreshApprovals">Refresh</button>
+        <button type="button" class="btn-filter" id="btnExpandApprovals">Expand all</button>
+        <button type="button" class="btn-filter" id="btnCollapseApprovals">Collapse all</button>
       </section>
       <p class="hint" style="margin: 0 24px 12px">
-        Recorded processes with no matching queue card wait here. Edit in Queue studio, then approve to publish the SOP and add the card to LiveTrack.
+        Each card is a recorded process waiting for SME approval. Copy the Playwright JSON (ticket, start URL, clicks, locators), edit in Queue studio, then approve to publish.
       </p>
       <main class="grid">
         <div class="panel wide">
           <h2>Queue cards waiting for SME approval</h2>
           <p class="hint" id="approvalsHint">Drafts stay hidden from operators until you approve.</p>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Proposed card</th>
-                  <th>Source URL</th>
-                  <th>Steps</th>
-                  <th>Recorded</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="approvalsBody"></tbody>
-            </table>
-          </div>
+          <div id="approvalsList" class="approval-cards"></div>
         </div>
       </main>
     </div>
@@ -579,7 +601,10 @@
 
         <div class="panel wide">
           <h2>Pending SOP drafts</h2>
-          <p class="hint">Queue cards waiting for SME review show up as draft SOP proposals until published.</p>
+          <p class="hint">
+            Queue cards waiting for SME review live on the
+            <a href="#/approvals">Approvals</a> page, with Playwright click/locator JSON per recording.
+          </p>
         </div>
 
         <div class="panel wide">
@@ -732,12 +757,14 @@
     <script src="app.js"></script>
     <script src="./analytics/app.js"></script>
     <script src="./digest/app.js"></script>
-    <script src="./queue-studio/app.js"></script>
+    <script src="./queue-studio/normalize-steps.js"></script>
+    <script src="./queue-studio/app.js?v=step-choices"></script>
     <script src="./approvals/app.js"></script>
     <script src="./assignments/app.js"></script>
     <script src="./reviews/app.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
     <script src="./converter/app.js"></script>
+    <script src="collapse.js"></script>
   </body>
 </html>

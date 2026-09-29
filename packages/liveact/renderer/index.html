@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LiveTrack</title>
-    <link rel="stylesheet" href="styles.css?v=wf28" />
+    <link rel="stylesheet" href="styles.css?v=wf37" />
   </head>
   <body>
     <div class="app chat-app" id="appRoot">
@@ -21,14 +21,18 @@
             <span class="side-nav-label">Jira</span>
             <span class="jira-badge side-badge hidden" id="jiraBadge">0</span>
           </button>
-          <button type="button" class="side-nav-btn" data-nav="mom" id="navMom" title="Minutes of Meeting" aria-expanded="false">
+          <button type="button" class="side-nav-btn" data-nav="past" id="navPast" title="Past work sample" aria-expanded="false">
+            <span class="side-nav-ico" aria-hidden="true">P</span>
+            <span class="side-nav-label">Past</span>
+          </button>
+          <button type="button" class="side-nav-btn" data-nav="expert" id="navExpert" title="Find the expert" aria-expanded="false">
+            <span class="side-nav-ico" aria-hidden="true">E</span>
+            <span class="side-nav-label">Experts</span>
+          </button>
+          <button type="button" class="side-nav-btn" data-nav="mom" id="navMom" title="Minutes of Meeting and action items" aria-expanded="false">
             <span class="side-nav-ico" aria-hidden="true">M</span>
             <span class="side-nav-label">MOM</span>
             <span class="jira-badge side-badge hidden" id="momBadge">●</span>
-          </button>
-          <button type="button" class="side-nav-btn" data-nav="actions" id="navActions" title="Action items" aria-expanded="false">
-            <span class="side-nav-ico" aria-hidden="true">✓</span>
-            <span class="side-nav-label">Actions</span>
             <span class="jira-badge side-badge hidden" id="actionsBadge">0</span>
           </button>
           <button type="button" class="side-nav-btn" data-nav="ai" id="navAi" title="Ask LiveTrack" aria-expanded="false">
@@ -67,6 +71,15 @@
               </div>
             </div>
             <div class="header-actions">
+              <span
+                id="extLinkBlinker"
+                class="ext-link-blinker link-down"
+                role="status"
+                aria-live="polite"
+                title="Chrome extension not connected"
+              >
+                <span class="ext-link-dot" aria-hidden="true"></span>
+              </span>
               <button type="button" class="status-pill rec-toggle" id="btnRecord" aria-pressed="false" title="Start recording">
                 <span class="dot"></span>
                 <span id="recToggleText">Record</span>
@@ -131,9 +144,9 @@
                         id="btnVoiceGuide"
                         class="btn ghost tiny js-voice-guide"
                         type="button"
-                        title="Coaching starts when you open a card — tap Stop to mute"
+                        title="Speak every step — tap Coach"
                       >
-                        Stop
+                        Coach
                       </button>
                     </div>
                     <ol id="stepList" class="step-list compact-fit" aria-live="polite"></ol>
@@ -219,6 +232,45 @@
                       </div>
                     </div>
                   </div>
+                  <div
+                    id="playUrlModal"
+                    class="agent-approve-modal hidden"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="playUrlTitle"
+                  >
+                    <div class="agent-approve-card">
+                      <div class="agent-approve-head">
+                        <h3 id="playUrlTitle">Vanguard job URL</h3>
+                        <button
+                          id="btnClosePlayUrlModal"
+                          class="agent-approve-close"
+                          type="button"
+                          aria-label="Close"
+                          title="Close"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <p class="muted tiny-copy">Paste the Vanguard apply URL, then Launch. Same filled application is used.</p>
+                      <textarea
+                        id="playUrlInput"
+                        class="play-url-input"
+                        rows="4"
+                        autocomplete="off"
+                        spellcheck="false"
+                        placeholder="Paste https://…apply URL here"
+                      ></textarea>
+                      <div class="controls play-url-tools">
+                        <button id="btnPastePlayUrl" class="btn ghost tiny" type="button">Paste</button>
+                        <button id="btnClearPlayUrl" class="btn ghost tiny" type="button">Clear</button>
+                      </div>
+                      <div class="controls agent-approve-actions">
+                        <button id="btnCancelPlayUrl" class="btn danger" type="button">Cancel</button>
+                        <button id="btnLaunchPlayUrl" class="btn success" type="button">Launch</button>
+                      </div>
+                    </div>
+                  </div>
                 </section>
               </main>
             </div>
@@ -258,6 +310,45 @@
               </div>
             </div>
 
+            <div class="nav-pane hidden" id="panePast" data-pane="past" aria-hidden="true">
+              <div class="jira-panel pane-fill">
+                <div class="genai-shell-head">
+                  <strong>Past work sample</strong>
+                  <div class="controls" style="gap:6px">
+                    <button id="btnPastRefresh" class="btn ghost tiny" type="button">Refresh</button>
+                  </div>
+                </div>
+                  <p class="muted tiny-copy jira-meta" id="pastMeta">Refresh writes Jira key, description, and related tickets into the PastWork sheet in livetrack.xlsx</p>
+                <div class="jira-list" id="pastList" aria-live="polite"></div>
+              </div>
+            </div>
+
+            <div class="nav-pane hidden" id="paneExpert" data-pane="expert" aria-hidden="true">
+              <div class="jira-panel pane-fill expert-panel">
+                <div class="genai-shell-head">
+                  <strong>Find the expert</strong>
+                  <div class="controls" style="gap:6px">
+                    <button id="btnExpertRebuild" class="btn ghost tiny" type="button">Rebuild index</button>
+                  </div>
+                </div>
+                <p class="muted tiny-copy jira-meta" id="expertMeta">Search Jira for who has worked a topic. Rebuild index is optional.</p>
+                <form id="expertSearchForm" class="expert-search">
+                  <input
+                    id="expertQueryInput"
+                    class="queue-search"
+                    type="search"
+                    placeholder="Who knows LOS onboarding?"
+                    autocomplete="off"
+                  />
+                  <select id="expertSystemFilter" class="expert-filter" aria-label="System filter">
+                    <option value="">All systems</option>
+                  </select>
+                  <button id="btnExpertSearch" class="btn primary tiny" type="submit">Find</button>
+                </form>
+                <div class="jira-list" id="expertList" aria-live="polite"></div>
+              </div>
+            </div>
+
             <div class="nav-pane hidden" id="paneMom" data-pane="mom" aria-hidden="true">
               <div class="mom-panel pane-fill">
                 <div class="mom-toolbar">
@@ -288,27 +379,25 @@
                       <strong>Live transcript</strong>
                     </button>
                     <div class="mom-fold-body">
-                      <p class="muted tiny-copy mom-speaker-hint">People in the call show as a conversation. Your lines sit on the right; everyone else is on the left.</p>
+                      <p class="muted tiny-copy mom-speaker-hint">Speech is transcribed as bullet points as it is heard.</p>
                       <div id="momTranscript" class="mom-transcript mom-turns" aria-live="polite">Not recording.</div>
-                    </div>
-                  </section>
-                  <section class="mom-fold mom-minutes-card collapsed hidden" id="momMinutesCard" data-mom-fold="minutes" hidden>
-                    <button type="button" class="mom-fold-toggle" id="btnMomMinutesToggle" aria-expanded="false">
-                      <strong id="momMinutesTitle">Refined minutes</strong>
-                    </button>
-                    <div class="mom-fold-body">
-                      <div id="momMinutesToolbar" class="mom-minutes-toolbar">
-                        <button id="btnMomCopy" class="btn ghost tiny" type="button">Copy</button>
-                      </div>
-                      <div id="momMinutesApproveBar" class="mom-approve-bar hidden" hidden>
-                        <p class="muted tiny-copy" id="momApproveHint">Review the minutes. Approve to save them for today, or edit and refine again.</p>
-                        <div class="mom-actions">
-                          <button id="btnMomApprove" class="btn primary tiny" type="button">Approve minutes</button>
-                          <button id="btnMomEditRefine" class="btn ghost tiny" type="button">Edit &amp; refine</button>
-                          <button id="btnMomReRefine" class="btn ghost tiny hidden" type="button" hidden>Refine again</button>
+                      <div id="momMinutesBlock" class="mom-minutes-block hidden" hidden>
+                        <div class="mom-minutes-head">
+                          <strong id="momMinutesTitle">Minutes</strong>
+                          <div id="momMinutesToolbar" class="mom-minutes-toolbar">
+                            <button id="btnMomCopy" class="btn ghost tiny" type="button">Copy</button>
+                          </div>
+                        </div>
+                        <textarea id="momMinutes" class="mom-transcript mom-minutes-editor" readonly rows="10" spellcheck="true" aria-label="Meeting minutes"></textarea>
+                        <div id="momMinutesApproveBar" class="mom-approve-bar hidden" hidden>
+                          <p class="muted tiny-copy" id="momApproveHint">Review the minutes. Approve to save them for today, or edit and refine again.</p>
+                          <div class="mom-actions">
+                            <button id="btnMomApprove" class="btn primary tiny" type="button">Approve minutes</button>
+                            <button id="btnMomEditRefine" class="btn ghost tiny" type="button">Edit &amp; refine</button>
+                            <button id="btnMomReRefine" class="btn ghost tiny hidden" type="button" hidden>Refine again</button>
+                          </div>
                         </div>
                       </div>
-                      <textarea id="momMinutes" class="mom-transcript mom-minutes-editor" readonly rows="12" spellcheck="true" aria-label="Meeting minutes"></textarea>
                     </div>
                   </section>
                   <section class="mom-fold collapsed" id="momPastCard" data-mom-fold="past">
@@ -320,20 +409,11 @@
                       <div class="mom-list" id="momPastList" aria-live="polite"></div>
                     </div>
                   </section>
-                </div>
-              </div>
-            </div>
-
-            <div class="nav-pane hidden" id="paneActions" data-pane="actions" aria-hidden="true">
-              <div class="desk-panel pane-fill">
-                <div class="genai-shell-head">
-                  <strong>Actions</strong>
-                </div>
-                <section class="desk-card desk-fold collapsed" id="actionsAddFold">
-                  <button type="button" class="desk-fold-toggle" id="btnActionsAddToggle" aria-expanded="false">
-                    <strong>Add note</strong>
-                  </button>
-                  <div class="desk-fold-body">
+                  <section class="mom-fold collapsed" id="actionsAddFold" data-mom-fold="actions-add">
+                    <button type="button" class="mom-fold-toggle" id="btnActionsAddToggle" aria-expanded="false">
+                      <strong>Add note</strong>
+                    </button>
+                    <div class="mom-fold-body">
                     <label class="desk-field">
                       <span>Task</span>
                       <input id="actionsTitle" type="text" placeholder="What do you need to finish?" autocomplete="off" />
@@ -354,19 +434,25 @@
                       <button id="btnActionsAdd" class="btn primary tiny" type="button">Add</button>
                     </div>
                     <p class="desk-status muted tiny-copy" id="actionsStatus"></p>
-                  </div>
-                </section>
-                <section class="desk-card">
-                  <div class="actions-list-head">
-                    <h3>Open items</h3>
-                    <label class="actions-show-done">
-                      <input id="actionsShowDone" type="checkbox" />
-                      <span>Show done</span>
-                    </label>
-                  </div>
-                  <p class="muted tiny-copy hidden" id="actionsOverdueHint" hidden></p>
-                  <ul class="actions-list" id="actionsList"></ul>
-                </section>
+                    </div>
+                  </section>
+                  <section class="mom-fold collapsed" id="actionsListFold" data-mom-fold="actions-list">
+                    <button type="button" class="mom-fold-toggle" id="btnActionsListToggle" aria-expanded="false">
+                      <strong>Open items</strong>
+                    </button>
+                    <div class="mom-fold-body">
+                    <div class="actions-list-head">
+                      <span class="muted tiny-copy">Mail and notes</span>
+                      <label class="actions-show-done">
+                        <input id="actionsShowDone" type="checkbox" />
+                        <span>Show done</span>
+                      </label>
+                    </div>
+                    <p class="muted tiny-copy hidden" id="actionsOverdueHint" hidden></p>
+                    <ul class="actions-list" id="actionsList"></ul>
+                    </div>
+                  </section>
+                </div>
               </div>
             </div>
 
@@ -471,9 +557,15 @@
                       <ul id="deskProposedList" class="desk-proposed-list"></ul>
                     </div>
                     <label class="desk-field">
-                      <span>Clone from</span>
+                      <span>Create as</span>
                       <select id="deskCloneSelect">
-                        <option value="">Pick a ticket to clone</option>
+                        <option value="">New ticket</option>
+                      </select>
+                    </label>
+                    <label class="desk-field">
+                      <span>Epic</span>
+                      <select id="deskEpicSelect">
+                        <option value="">No epic</option>
                       </select>
                     </label>
                     <label class="desk-field">
@@ -626,6 +718,7 @@
                 <div class="genai-shell-head">
                   <strong id="dashHeading">Dash</strong>
                   <div class="controls" style="gap:6px">
+                    <button id="btnDashApprovals" class="btn ghost tiny" type="button">Approvals</button>
                     <button id="btnDashRefresh" class="btn ghost tiny" type="button">Refresh</button>
                   </div>
                 </div>
@@ -771,6 +864,42 @@
                 <span>Project key or name</span>
                 <input id="jiraProjectKeyInput" type="text" placeholder="MBA" autocomplete="off" />
               </label>
+              <label class="field">
+                <span>Pilot systems / tags</span>
+                <input
+                  id="expertSystemTagsInput"
+                  type="text"
+                  placeholder="UPI, LOS, VPN"
+                  autocomplete="off"
+                />
+              </label>
+              <label class="field">
+                <span>Expert JQL (optional)</span>
+                <input
+                  id="expertJqlInput"
+                  type="text"
+                  placeholder="Leave blank to use project + Resolved/Done"
+                  autocomplete="off"
+                />
+              </label>
+              <label class="field">
+                <span>Confluence space keys</span>
+                <input
+                  id="confluenceSpaceKeysInput"
+                  type="text"
+                  placeholder="ITSOP (optional)"
+                  autocomplete="off"
+                />
+              </label>
+              <label class="field">
+                <span>Inactive emails to hide</span>
+                <input
+                  id="expertInactiveEmailsInput"
+                  type="text"
+                  placeholder="former.colleague@company.com"
+                  autocomplete="off"
+                />
+              </label>
               <div class="jira-test-row">
                 <button id="btnJiraTestConnection" class="btn ghost" type="button">Test Jira connection</button>
                 <p class="muted tiny-copy jira-test-status" id="jiraTestStatus" aria-live="polite"></p>
@@ -779,7 +908,7 @@
           </div>
           <div class="settings-jira settings-fold collapsed" id="settingsOutlook">
             <button type="button" class="settings-fold-toggle" id="btnSettingsOutlookToggle" aria-expanded="false">
-              <strong>Outlook (MOM)</strong>
+              <strong>Outlook (MOM &amp; mail)</strong>
             </button>
             <div class="settings-fold-body">
               <label class="field">
@@ -802,6 +931,9 @@
                 </div>
                 <p class="muted tiny-copy jira-test-status" id="outlookConnectStatus" aria-live="polite"></p>
               </div>
+              <p class="muted tiny-copy">
+                One Connect Outlook sign-in grants calendar (MOM meetings) and inbox (Actions). Accept both permissions on the Microsoft page.
+              </p>
               <details class="outlook-advanced" id="outlookAdvanced">
                 <summary class="muted tiny-copy">Advanced (Azure IDs)</summary>
                 <label class="field">
@@ -896,9 +1028,11 @@
         <button id="btnVoiceWaveStop" class="btn ghost tiny" type="button">Stop</button>
       </div>
     </div>
+    <script src="../step-explain.js"></script>
     <script src="voice.js"></script>
     <script src="mom-speakers.js"></script>
     <script src="mom-record.js"></script>
+    <script src="record-explain.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

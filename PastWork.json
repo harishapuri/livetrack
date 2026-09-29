@@ -1,0 +1,92 @@
+[
+  {
+    "jira_key": "MBA-1",
+    "summary": "(Sample) Account Registration",
+    "description": "Let new customers create an account and verify their email.",
+    "related_tickets": "",
+    "related_notes": "",
+    "status": "Done",
+    "issue_type": "Task",
+    "url": "https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-1"
+  },
+  {
+    "jira_key": "MBA-2",
+    "summary": "(Sample) Transaction Management",
+    "description": "Allow users to view their transaction history in the app.",
+    "related_tickets": "MBA-12, MBA-5",
+    "related_notes": "MBA-5 — Jira issue — key = MBA-5; MBA-12 — Jira issue — key = MBA-12",
+    "status": "Done",
+    "issue_type": "Task",
+    "url": "https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-2"
+  },
+  {
+    "jira_key": "MBA-3",
+    "summary": "(Sample) Implement Biometric Login",
+    "description": "Allow users to log in using fingerprint or facial recognition.",
+    "related_tickets": "CHG0404004, SCTASK9203003, RITM29292002020, RITM100101002, RITM0203030, MBA-5, RITM0000000, RITM19939393, MBA-7, MBA-12, RITM1111111, MBA-6",
+    "related_notes": "From comments: CHG0404004 stask9203003 RITM29292002020 I HAVE COMEPLETE CREATED RITM FOR THIS ,PLEASSE FINDREFERNEC ENUMEBR : RITM100101002 I HAVE COMEPLETE CREATED RITM FOR THIS ,PLEASSE FINDREFERNEC ENUMEBR : RITM100101002 I HAVE COMEPLETE CREATED RITM FOR THIS ,PLEASSE FINDREFERNEC ENUMEBR : RITM100101002 <p>I HAVE COMEPLETE CREATED RITM FOR THIS ,PLEASSE FINDREFERNEC ENUMEBR : RITM100101002</p> RITM29292002020 RITM29292002020 <p>RITM29292002020</p> stask9203003 stask9203003 <p>stask9203003</p> CHG0404004 CHG0404004 <p>CHG0404004</p> RITM1111111 RITM1111111 RITM1111111 <p>RITM1111111</p> i HAVE COMPLETE RITM0203030 i HAVE COMPLETE RITM0203030 i HAVE COMPLETE RITM0203030 <p>i HAVE COMPLETE RITM0203030</p> Ticket numbers: CHG0404004 — change — number=CHG0404004; SCTASK9203003 — catalog task — number=SCTASK9203003; RITM29292002020 — request — number=RITM29292002020; RITM100101002 — request — number=RITM100101002; RITM0203030 — request — number=RITM0203030; RITM0000000 — request — number=RITM0000000; RITM19939393 — request — number=RITM19939393; RITM1111111 — request — number=RITM1111111; MBA-6 — Jira issue — key = MBA-6; MBA-5 — Jira issue — key = MBA-5; MBA-7 — Jira issue — key = MBA-7; MBA-12 — Jira issue — key = MBA-12; numberINCHG0404004,SCTASK9203003,RITM29292002020,RITM100101002,RITM0203030,RITM0000000,RITM19939393,RITM1111111",
+    "status": "Done",
+    "issue_type": "Task",
+    "url": "https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-3"
+  },
+  {
+    "jira_key": "MBA-4",
+    "summary": "(Sample) Two-Factor Authentication Setup",
+    "description": "Implement two-factor authentication for enhanced security.",
+    "related_tickets": "RITM102003030, MBA-8, MBA-12",
+    "related_notes": "From comments: RITM102003030 RITM102003030 RITM102003030 <p>RITM102003030</p> Ticket numbers: RITM102003030 — request — number=RITM102003030; MBA-8 — Jira issue — key = MBA-8; MBA-12 — Jira issue — key = MBA-12",
+    "status": "In Progress",
+    "issue_type": "Task",
+    "url": "https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-4"
+  },
+  {
+    "jira_key": "MBA-5",
+    "summary": "(Sample) Implement Biometric Login in SAMPLE",
+    "description": "Allow users to view their transaction history in the app.",
+    "related_tickets": "RITM0203030, CHG0404004, SCTASK9203003, RITM29292002020, RITM100101002, MBA-3, MBA-12, RITM0000000, RITM19939393, MBA-7, MBA-2, RITM1111111, MBA-6",
+    "related_notes": "From comments: i HAVE COMPLETE RITM0203030 i HAVE COMPLETE RITM0203030 i HAVE COMPLETE RITM0203030 <p>i HAVE COMPLETE RITM0203030</p> RITM1111111 RITM1111111 RITM1111111 <p>RITM1111111</p> Testing completed for form reference / ticket number: MBA-3, Issue summary: (Sample) Implement Biometric Login. No mandatory SOP fields indexed for this card. CHG0404004 stask9203003 RITM29292002020 I HAVE COMEPLETE CREATED RITM FOR THIS ,PLEASSE FINDREFERNEC ENUMEBR : RITM100101002 I HAVE COMEPLETE CREATED RITM FOR THIS ,PLEASSE FINDREFERNEC ENUMEBR : RITM100101002 I HAVE COMEPLETE CREATED RITM FOR THIS ,PLEASSE FINDREFERNEC ENUMEBR : RITM100101002 <p>I HAVE COMEPLETE CREATED RITM FOR THIS ,PLEASSE FINDREFERNEC ENUMEBR : RITM100101002</p> RITM29292002020 RITM29292002020 <p>RITM29292002020</p> stask9203003 stask9203003 <p>stask9203003</p> CHG0404004 CHG0404004 <p>CHG0404004</p> Testing completed for form reference / ticket number: https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-3 https://hyepuri01029-1789081990173.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10318?size=medium MBA-3 Done , Issue summary: (Sample) Implement Biometric Login. No mandatory SOP fields indexed for this card. No mandatory SOP fields indexed for this card. <span class=\"jira-issue-macro resolved\" data-jira-key=\"MBA-3\" > <a href=\"https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-3\" class=\"jira-issue-macro-key issue-link\" title=\"(Sample) Implement Biometric Login\" > MBA-3 Ticket numbers: RITM0203030 — request — number=RITM0203030; CHG0404004 — change — number=CHG0404004; SCTASK9203003 — catalog task — number=SCTASK9203003; RITM29292002020 — request — number=RITM29292002020; RITM100101002 — request — number=RITM100101002; RITM0000000 — request — number=RITM0000000; RITM19939393 — request — number=RITM19939393; RITM1111111 — request — number=RITM1111111; MBA-6 — Jira issue — key = MBA-6; MBA-3 — Jira issue — key = MBA-3; MBA-2 — Jira issue — key = MBA-2; MBA-7 — Jira issue — key = MBA-7; MBA-12 — Jira issue — key = MBA-12; numberINRITM0203030,CHG0404004,SCTASK9203003,RITM29292002020,RITM100101002,RITM0000000,RITM19939393,RITM1111111",
+    "status": "In Progress",
+    "issue_type": "Task",
+    "url": "https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-5"
+  },
+  {
+    "jira_key": "MBA-6",
+    "summary": "Implement Biometric FAILIGN WITH 404",
+    "description": "Enable users to transfer funds between accounts.",
+    "related_tickets": "RITM1111111, CHG0404004, SCTASK9203003, RITM29292002020, RITM100101002, RITM0203030, MBA-3, MBA-5, MBA-7, MBA-12",
+    "related_notes": "From comments: RITM1111111 RITM1111111 RITM1111111 <p>RITM1111111</p> Testing completed for form reference / ticket number: MBA-3, Issue summary: (Sample) Implement Biometric Login. No mandatory SOP fields indexed for this card. CHG0404004 stask9203003 RITM29292002020 I HAVE COMEPLETE CREATED RITM FOR THIS ,PLEASSE FINDREFERNEC ENUMEBR : RITM100101002 I HAVE COMEPLETE CREATED RITM FOR THIS ,PLEASSE FINDREFERNEC ENUMEBR : RITM100101002 I HAVE COMEPLETE CREATED RITM FOR THIS ,PLEASSE FINDREFERNEC ENUMEBR : RITM100101002 <p>I HAVE COMEPLETE CREATED RITM FOR THIS ,PLEASSE FINDREFERNEC ENUMEBR : RITM100101002</p> RITM29292002020 RITM29292002020 <p>RITM29292002020</p> stask9203003 stask9203003 <p>stask9203003</p> CHG0404004 CHG0404004 <p>CHG0404004</p> Testing completed for form reference / ticket number: https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-3 https://hyepuri01029-1789081990173.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10318?size=medium MBA-3 Done , Issue summary: (Sample) Implement Biometric Login. No mandatory SOP fields indexed for this card. No mandatory SOP fields indexed for this card. <span class=\"jira-issue-macro resolved\" data-jira-key=\"MBA-3\" > <a href=\"https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-3\" class=\"jira-issue-macro-key issue-link\" title=\"(Sample) Implement Biometric Login\" > MBA-3 i HAVE COMPLETE RITM0203030 i HAVE COMPLETE RITM0203030 i HAVE COMPLETE RITM0203030 <p>i HAVE COMPLETE RITM0203030</p> Ticket numbers: RITM1111111 — request — number=RITM1111111; CHG0404004 — change — number=CHG0404004; SCTASK9203003 — catalog task — number=SCTASK9203003; RITM29292002020 — request — number=RITM29292002020; RITM100101002 — request — number=RITM100101002; RITM0203030 — request — number=RITM0203030; MBA-3 — Jira issue — key = MBA-3; MBA-5 — Jira issue — key = MBA-5; MBA-7 — Jira issue — key = MBA-7; MBA-12 — Jira issue — key = MBA-12; numberINRITM1111111,CHG0404004,SCTASK9203003,RITM29292002020,RITM100101002,RITM0203030",
+    "status": "Done",
+    "issue_type": "Task",
+    "url": "https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-6"
+  },
+  {
+    "jira_key": "MBA-7",
+    "summary": "Implement Biometric Login success",
+    "description": "The screen shows a confirmation message indicating that the user is signed in to LiveTrack Outlook. The message states, 'You're now signed in to LiveTrack outlook. You can now safely close this window.' There are no visible errors, but it may be beneficial to add a button for users to proceed to the main application instead of just closing the window. URL: https://login.live.com/ppsecure/post.srf?username=hapuri29%40outlook.com&client_id=f081b9cd-fcad-45b2-b418-5bf68b546fd7&uaid=80ae406c97ae4b60883f8585b763302b&pid=15343&opid=D461D149BEF03ECF&route=C515_SN1 Acceptance criteria: - The confirmation message should clearly indicate successful sign-in.,- A button to proceed to the main application should be present.,- The window should close without errors when the user chooses to close it.",
+    "related_tickets": "RITM0000000, CHG0404004, SCTASK9203003, RITM29292002020, RITM100101002, RITM0203030, RITM19939393, MBA-3, MBA-5, MBA-6, MBA-12",
+    "related_notes": "RITM0000000 — request — number=RITM0000000; CHG0404004 — change — number=CHG0404004; SCTASK9203003 — catalog task — number=SCTASK9203003; RITM29292002020 — request — number=RITM29292002020; RITM100101002 — request — number=RITM100101002; RITM0203030 — request — number=RITM0203030; RITM19939393 — request — number=RITM19939393; MBA-6 — Jira issue — key = MBA-6; MBA-3 — Jira issue — key = MBA-3; MBA-5 — Jira issue — key = MBA-5; MBA-12 — Jira issue — key = MBA-12; numberINRITM0000000,CHG0404004,SCTASK9203003,RITM29292002020,RITM100101002,RITM0203030,RITM19939393",
+    "status": "Done",
+    "issue_type": "Task",
+    "url": "https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-7"
+  },
+  {
+    "jira_key": "MBA-8",
+    "summary": "(Sample) Two-Factor Authentication Setup",
+    "description": "Implement two-factor authentication for enhanced security. Cloned from MBA-4 via LiveTrack Desk. Source ticket was not changed. Page: Atlassian account | security | api tokens URL: https://id.atlassian.com/manage-profile/security/api-tokens Acceptance criteria: - Verify that all critical vulnerabilities are assigned to the appropriate teams for remediation.,- Ensure that the remediation due dates for open vulnerabilities are updated and communicated.,- Confirm that the status of all vulnerabilities is accurately reflected in the tracker.,- Check that the spreadsheet is updated with real data instead of sample data for accurate tracking.",
+    "related_tickets": "RITM102003030, MBA-4, MBA-12",
+    "related_notes": "RITM102003030 — request — number=RITM102003030; MBA-4 — Jira issue — key = MBA-4; MBA-12 — Jira issue — key = MBA-12",
+    "status": "To Do",
+    "issue_type": "Task",
+    "url": "https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-8"
+  },
+  {
+    "jira_key": "MBA-12",
+    "summary": "Implement Biometric Login failed",
+    "description": "Implement two-factor authentication for enhanced security. Cloned from MBA-4 via LiveTrack Desk. Source ticket was not changed. Page: [MBA-5] (Sample) Implement Biometric Login in SAMPLE - Jira URL: https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-5 Acceptance criteria: - User has enabled Electron in System Settings → Privacy & Security → Screen Recording.,- User has fully quit the Electron application.,- User has restarted the Electron application to capture the correct UI.",
+    "related_tickets": "MBA-5, MBA-2, RITM19939393, CHG0404004, SCTASK9203003, RITM29292002020, RITM100101002, RITM0203030, RITM0000000, MBA-3, MBA-4, MBA-8, MBA-6, MBA-7",
+    "related_notes": "RITM19939393 — request — number=RITM19939393; CHG0404004 — change — number=CHG0404004; SCTASK9203003 — catalog task — number=SCTASK9203003; RITM29292002020 — request — number=RITM29292002020; RITM100101002 — request — number=RITM100101002; RITM0203030 — request — number=RITM0203030; RITM0000000 — request — number=RITM0000000; MBA-6 — Jira issue — key = MBA-6; MBA-3 — Jira issue — key = MBA-3; MBA-5 — Jira issue — key = MBA-5; MBA-4 — Jira issue — key = MBA-4; MBA-7 — Jira issue — key = MBA-7; MBA-8 — Jira issue — key = MBA-8; MBA-2 — Jira issue — key = MBA-2; numberINRITM19939393,CHG0404004,SCTASK9203003,RITM29292002020,RITM100101002,RITM0203030,RITM0000000",
+    "status": "Done",
+    "issue_type": "Task",
+    "url": "https://hyepuri01029-1789081990173.atlassian.net/browse/MBA-12"
+  }
+]

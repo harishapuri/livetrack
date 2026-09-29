@@ -349,11 +349,163 @@ function clicksOf(txn) {
   const raw = Array.isArray(txn.clicks) ? txn.clicks : payload.clicks;
   return (Array.isArray(raw) ? raw : [])
     .map((click) => ({
-      action: String(click?.action || "click"),
+      action: "click",
       label: String(click?.label || click?.value || "").trim(),
       selector: String(click?.selector || "").trim(),
+      value: String(click?.value || click?.label || "").trim(),
+      pageUrl: String(click?.pageUrl || "").trim(),
     }))
     .filter((click) => click.label);
+}
+
+function cleanQuestionLabel(text) {
+  let t = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  t = t.replace(/\*+$/, "").trim();
+  const cut = t.search(/\d+\s+items?\s+selected/i);
+  if (cut > 8) t = t.slice(0, cut).trim();
+  return t;
+}
+
+function isPlaceholderCaptureStep(step) {
+  const t = String(step?.value || step?.label || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return /^(select one|select an option|select\.\.\.|select…|please select( one)?|choose one|choose an option)$/.test(
+    t,
+  );
+}
+
+function playwrightLocator(step, action) {
+  const selector = String(step.selector || "").trim();
+  const label = cleanQuestionLabel(step.label || step.fieldName);
+  const name = String(step.value || step.label || "").trim();
+  const locator = {};
+  if (selector && !/^(button|input|a|div|span|label|select|textarea)$/i.test(selector)) {
+    locator.css = selector;
+  }
+  if (action === "click") {
+    locator.getByRole = { role: "button", name };
+    locator.getByText = name;
+  } else if (action === "check") {
+    if (label) locator.getByLabel = label;
+    if (name) locator.getByRole = { role: "radio", name };
+  } else if (action === "select") {
+    if (label) locator.getByLabel = label;
+    locator.getByRole = { role: "combobox", name: label || name };
+  } else if (label) {
+    locator.getByLabel = label;
+  }
+  return locator;
+}
+
+/**
+ * Collapsed, ordered steps for writing a Playwright script from a recording.
+ * Reclassifies footer/Add/Submit that were stored as field values.
+ */
+function playwrightFromTxn(txn) {
+  const pdf = require("./pdf-server");
+  const payload = payloadOf(txn);
+  const startUrl = String(txn.pageUrl || payload.url || "").trim();
+  const raw = stepsOf(txn);
+  const out = [];
+  const lastFillAt = new Map();
+  const pages = [];
+
+  function rememberPage(url) {
+    const u = String(url || "").trim();
+    if (u && pages[pages.length - 1] !== u) pages.push(u);
+  }
+
+  function pushClick(step) {
+    const name =
+      pdf.navigationClickName(step) ||
+      String(step.value || step.label || "click").trim();
+    const last = out[out.length - 1];
+    const selector = String(step.selector || "").trim();
+    if (last && last.action === "click" && last.value === name && last.selector === selector) {
+      return;
+    }
+    lastFillAt.clear();
+    const pageUrl = String(step.pageUrl || startUrl).trim();
+    rememberPage(pageUrl);
+    out.push(
+      require("./capture-step-shot").copyScreenshotMeta(step, {
+        action: "click",
+        label: name,
+        value: name,
+        selector,
+        pageUrl,
+        findByText: [name],
+        locator: playwrightLocator({ ...step, label: name, value: name }, "click"),
+      })
+    );
+  }
+
+  for (const step of raw) {
+    if (isPlaceholderCaptureStep(step)) continue;
+    if (pdf.isNavigationClick(step)) {
+      pushClick(step);
+      continue;
+    }
+    const actionRaw = String(step.action || "fill").toLowerCase();
+    const action =
+      actionRaw === "check" || actionRaw === "select" || actionRaw === "click"
+        ? actionRaw
+        : "fill";
+    if (action === "click") {
+      pushClick(step);
+      continue;
+    }
+    const value = String(step.value != null ? step.value : step.selectedText || "").trim();
+    if (pdf.isNavigationClickLabel(value)) {
+      pushClick({ ...step, value, label: value });
+      continue;
+    }
+    if (!value) continue;
+    const label = cleanQuestionLabel(step.label || step.fieldName) || String(step.label || "").trim();
+    const finder = cleanQuestionLabel(step.finder || "");
+    const selector = String(step.selector || "").trim();
+    const pageUrl = String(step.pageUrl || startUrl).trim();
+    rememberPage(pageUrl);
+    const key = `${pageUrl}|${selector || label}|${action}`;
+    const next = require("./capture-step-shot").copyScreenshotMeta(step, {
+      action,
+      label,
+      fieldName: String(step.fieldName || "").trim(),
+      value,
+      selector: step.guiId || selector,
+      guiId: String(step.guiId || "").trim(),
+      pageUrl,
+      locator: playwrightLocator({ ...step, label, selector: step.guiId || selector }, action),
+    });
+    const findByLabel = [label, finder].filter((item, index, all) => {
+      const text = String(item || "").trim();
+      if (!text) return false;
+      return all.findIndex((other) => String(other || "").trim().toLowerCase() === text.toLowerCase()) === index;
+    });
+    if (finder && finder.toLowerCase() !== label.toLowerCase()) next.finder = finder;
+    if (action === "fill" || action === "select") next.findByLabel = findByLabel;
+    if (action === "check") {
+      next.findByLabel = findByLabel;
+      next.findByText = value ? [value] : [];
+    }
+    const prevIdx = lastFillAt.get(key);
+    if (prevIdx != null && out[prevIdx] && out[prevIdx].action === action) {
+      out[prevIdx] = next;
+    } else {
+      lastFillAt.set(key, out.length);
+      out.push(next);
+    }
+  }
+
+  return {
+    startUrl,
+    pages,
+    steps: out.map((s, i) => ({ n: i + 1, ...s })),
+  };
 }
 
 function stepsOf(txn) {
@@ -361,17 +513,23 @@ function stepsOf(txn) {
   const raw = Array.isArray(txn.steps) ? txn.steps : payload.steps;
   if (Array.isArray(raw) && raw.length) {
     return raw
-      .map((step) => ({
-        action: String(step?.action || "fill"),
-        label: String(step?.label || step?.fieldName || step?.value || "").trim(),
-        fieldName: String(step?.fieldName || "").trim(),
-        selector: String(step?.selector || "").trim(),
-        value: step?.value != null && String(step.value).trim() !== ""
-          ? String(step.value)
-          : String(step?.selectedText || ""),
-        selectedText: String(step?.selectedText || "").trim(),
-        pageUrl: String(step?.pageUrl || "").trim(),
-      }))
+      .map((step) => {
+        const row = {
+          action: String(step?.action || "fill"),
+          label: String(step?.label || step?.fieldName || step?.value || "").trim(),
+          fieldName: String(step?.fieldName || "").trim(),
+          selector: String(step?.selector || "").trim(),
+          value: step?.value != null && String(step.value).trim() !== ""
+            ? String(step.value)
+            : String(step?.selectedText || ""),
+          selectedText: String(step?.selectedText || "").trim(),
+          pageUrl: String(step?.pageUrl || "").trim(),
+          finder: String(step?.finder || "").trim(),
+          guiId: String(step?.guiId || "").trim(),
+        };
+        require("./capture-step-shot").copyScreenshotMeta(step, row);
+        return row;
+      })
       .filter((step) => step.label || step.fieldName);
   }
   const clicks = clicksOf(txn);
@@ -729,7 +887,9 @@ function startCaptureRecording() {
 }
 
 async function getCaptureStatus() {
-  const health = await requestCapture("/health");
+  // Step capture can keep the agent busy. A short health timeout looked like
+  // "not recording" and the desktop then stopped the session.
+  const health = await requestCapture("/health", { timeout: 8000 });
   let transactions = [];
   if (health.ok) {
     try {
@@ -844,7 +1004,7 @@ function mergeTxn(prev, next) {
 }
 
 function persistCaptureTransactions(transactions) {
-  const stamped = (transactions || []).map((txn) => withCaptureRef(txn));
+  const stamped = (transactions || []).map((txn) => enrichTxnWithPlaywright(withCaptureRef(txn)));
   writeCaptureTxnSnapshot(stamped);
   const wb = require("./workbook");
   const txnRows = [];
@@ -1101,6 +1261,25 @@ function cleanCaptureDisplayPairs(steps = [], values = {}) {
     pushPair(key, value, "field entry");
   }
 
+  const answered = new Set(
+    pairs
+      .filter(
+        (p) =>
+          p.type !== "click" &&
+          p.key.toLowerCase() !== p.value.toLowerCase() &&
+          p.value.toLowerCase() !== "checked",
+      )
+      .map((p) => p.value.toLowerCase()),
+  );
+  const kept = pairs.filter((p) => {
+    if (p.type === "click") return true;
+    if (p.value.toLowerCase() === "checked" && answered.has(p.key.toLowerCase())) return false;
+    if (p.key.toLowerCase() === p.value.toLowerCase() && answered.has(p.value.toLowerCase())) return false;
+    return true;
+  });
+  pairs.length = 0;
+  pairs.push(...kept);
+
   if (!pairs.length && values && typeof values === "object") {
     for (const [key, value] of Object.entries(values)) {
       if (pdf.looksLikeOpaqueId?.(value)) continue;
@@ -1124,9 +1303,10 @@ function captureTransactionsToDashRows(transactions) {
       if (isNoiseCaptureUrl(pageUrl)) return null;
       const resolved = resolveCaptureTicket(txn, payload);
       const ticket = resolved.ticket;
-      const clicks = clicksOf(txn);
+      const playwright = playwrightFromTxn(txn);
+      const clicks = playwrightClicks(playwright);
       const steps = stepsOf(txn);
-      const pairs = cleanCaptureDisplayPairs(steps, values);
+      const pairs = cleanCaptureDisplayPairs(steps, valuesWithoutNav(values));
       const mandatory = (pairs.length
         ? pairs
             .filter((p) => p.type !== "click")
@@ -1180,6 +1360,7 @@ function captureTransactionsToDashRows(transactions) {
         pageUrl,
         clicks,
         steps,
+        playwright,
         unmatched,
         discoveryStatus,
         draftSopId: payload.draftSopId || txn.draftSopId || "",
@@ -1188,9 +1369,65 @@ function captureTransactionsToDashRows(transactions) {
     .filter(Boolean);
 }
 
+function txnCompletedStamp(txn) {
+  return String(txn?.completedAt || txn?.ts || txn?.startedAt || "");
+}
+
+function latestCaptureTransactions(list, limit = 5) {
+  return [...(list || [])]
+    .sort((a, b) => txnCompletedStamp(b).localeCompare(txnCompletedStamp(a)))
+    .slice(0, limit);
+}
+
+function preferNewerTxn(prev, next) {
+  if (!prev) return next;
+  if (!next) return prev;
+  const prevStamp = txnCompletedStamp(prev);
+  const nextStamp = txnCompletedStamp(next);
+  const nextRich = txnRichness(next);
+  const prevRich = txnRichness(prev);
+  if (nextStamp > prevStamp && nextRich > 0) return next;
+  if (prevStamp > nextStamp && prevRich > 0) return prev;
+  return nextRich >= prevRich ? next : prev;
+}
+
+/**
+ * Dash open path. Latest values come from today's event log and the live
+ * capture agent. The snapshot file is only a backup — it stays on the last
+ * recording that was fully saved, so reading it alone shows old fields.
+ * Do not scan Excel or rewrite the workbook on open.
+ */
 async function loadCaptureDashRows() {
-  const all = await mergeLiveAndPersistedTransactions();
-  return captureTransactionsToDashRows(all);
+  const snapshot = latestCaptureTransactions(loadSnapshotCaptureTransactions(), 5);
+  let live = [];
+  try {
+    live = await fetchCaptureTransactions();
+  } catch {
+    live = [];
+  }
+  let recent = [];
+  try {
+    const from = new Date();
+    from.setDate(from.getDate() - 1);
+    recent = transactionsFromJsonl({ dateFrom: from.toISOString().slice(0, 10) });
+  } catch {
+    recent = [];
+  }
+  const byId = new Map();
+  for (const txn of [...snapshot, ...recent, ...latestCaptureTransactions(live, 5)]) {
+    const id = txnKey(txn);
+    if (!id) continue;
+    byId.set(id, preferNewerTxn(byId.get(id), txn));
+  }
+  let all = [...byId.values()];
+  if (!all.length) {
+    try {
+      all = await loadPersistedCaptureTransactions();
+    } catch {
+      all = [];
+    }
+  }
+  return captureTransactionsToDashRows(latestCaptureTransactions(all, 5));
 }
 
 const VALUE_ACTIONS = new Set(["input", "change", "select", "check", "fill"]);
@@ -1328,14 +1565,72 @@ function summarizeCaptureByUser({ transactions = [], events = [], now = Date.now
     );
 }
 
+function valuesWithoutNav(values) {
+  const pdf = require("./pdf-server");
+  const out = {};
+  for (const [key, value] of Object.entries(values || {})) {
+    if (pdf.isNavigationClickLabel(value)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+function playwrightClicks(playwright) {
+  return (playwright?.steps || [])
+    .filter((s) => s.action === "click")
+    .map((s) =>
+      require("./capture-step-shot").copyScreenshotMeta(s, {
+        action: "click",
+        label: s.label,
+        selector: s.selector,
+        value: s.value,
+        pageUrl: s.pageUrl,
+        locator: s.locator,
+      })
+    );
+}
+
+function enrichTxnWithPlaywright(txn) {
+  if (!txn || typeof txn !== "object") return txn;
+  const pdf = require("./pdf-server");
+  const playwright = playwrightFromTxn(txn);
+  const clicks = playwrightClicks(playwright).map(({ locator, ...click }) => click);
+  const values = valuesWithoutNav(valuesOf(txn));
+  const steps = stepsOf(txn).map((step) => {
+    if (!pdf.isNavigationClick(step) && !pdf.isNavigationClickLabel(step.value)) return step;
+    const name = pdf.navigationClickName(step) || String(step.value || step.label || "click").trim();
+    return require("./capture-step-shot").copyScreenshotMeta(step, {
+      action: "click",
+      label: name,
+      selector: String(step.selector || "").trim(),
+      value: name,
+      pageUrl: String(step.pageUrl || "").trim(),
+    });
+  });
+  const payload = {
+    ...payloadOf(txn),
+    values,
+    clicks,
+    steps,
+  };
+  return {
+    ...txn,
+    fields: values,
+    clicks,
+    steps,
+    payload: JSON.stringify(payload),
+  };
+}
+
 function captureTransactionRecord(txn, { now = Date.now() } = {}) {
   const payload = payloadOf(txn);
-  const values = valuesOf(txn);
-  const clicks = clicksOf(txn);
+  const values = valuesWithoutNav(valuesOf(txn));
+  const playwright = playwrightFromTxn(txn);
+  const clicks = playwrightClicks(playwright);
   const completedAt = String(txn.completedAt || payload.completedAt || txn.ts || "");
   const ts = Date.parse(completedAt);
   const ticket = ticketOf(txn) || "";
-  const record = {
+  return {
     user: userOf(txn),
     ticket: ticket || null,
     transactionId: txn.transactionId || null,
@@ -1346,11 +1641,9 @@ function captureTransactionRecord(txn, { now = Date.now() } = {}) {
     completedAt: completedAt || null,
     live: Number.isFinite(ts) && now - ts <= LIVE_MS,
     values,
+    clicks,
+    playwright,
   };
-  if (clicks.length) record.clicks = clicks;
-  const steps = stepsOf(txn);
-  if (steps.length) record.steps = steps;
-  return record;
 }
 
 function listCaptureTransactionRecords(transactions, opts = {}) {
@@ -1359,7 +1652,8 @@ function listCaptureTransactionRecords(transactions, opts = {}) {
     const rec = captureTransactionRecord(txn, opts);
     if (
       (!rec.values || !Object.keys(rec.values).length) &&
-      !(rec.clicks && rec.clicks.length)
+      !(rec.clicks && rec.clicks.length) &&
+      !(rec.playwright && rec.playwright.steps && rec.playwright.steps.length)
     )
       continue;
     const key =
@@ -1379,7 +1673,20 @@ async function loadCaptureLiveSummary() {
   const from = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const events = readCaptureJsonl({ dateFrom: from });
   const persisted = await loadPersistedCaptureTransactions();
-  const transactions = [...persisted, ...(status.transactions || [])];
+  const snapshot = loadSnapshotCaptureTransactions();
+  let fromJsonl = [];
+  try {
+    fromJsonl = transactionsFromJsonl({ dateFrom: from });
+  } catch {
+    fromJsonl = [];
+  }
+  const byId = new Map();
+  for (const txn of [...persisted, ...snapshot, ...fromJsonl, ...(status.transactions || [])]) {
+    const id = txnKey(txn);
+    if (!id) continue;
+    byId.set(id, mergeTxn(byId.get(id), txn));
+  }
+  const transactions = [...byId.values()];
   const users = summarizeCaptureByUser({ transactions, events });
   return {
     ok: status.ok,
@@ -1390,6 +1697,383 @@ async function loadCaptureLiveSummary() {
     users,
     transactions: listCaptureTransactionRecords(transactions),
   };
+}
+
+async function loadMergedCaptureTransactions(opts = {}) {
+  const persisted = await loadPersistedCaptureTransactions();
+  const snapshot = loadSnapshotCaptureTransactions();
+  let fromJsonl = [];
+  try {
+    fromJsonl = transactionsFromJsonl();
+  } catch {
+    fromJsonl = [];
+  }
+  let live = [];
+  if (opts.live !== false) {
+    try {
+      live = await fetchCaptureTransactions();
+    } catch {
+      live = [];
+    }
+  }
+  const byId = new Map();
+  for (const txn of [...persisted, ...snapshot, ...fromJsonl, ...live]) {
+    const id = txnKey(txn);
+    if (!id) continue;
+    byId.set(id, mergeTxn(byId.get(id), txn));
+  }
+  return [...byId.values()];
+}
+
+function playwrightLocatorFromSopStep(step, value) {
+  const action = String(step?.action || "fill").toLowerCase();
+  const selector = String(step?.selector || "").trim();
+  const label = String(step?.label || "").replace(/\*+$/, "").trim();
+  const name = String(
+    (Array.isArray(step?.findByText) && step.findByText[0]) || value || label
+  ).trim();
+  const locator = {};
+  if (selector && !/^(button|input|a|div|span|label|select|textarea)$/i.test(selector)) {
+    locator.css = selector;
+  }
+  if (action === "click") {
+    locator.getByRole = { role: "button", name };
+    locator.getByText = name;
+  } else if (action === "check") {
+    if (label) locator.getByLabel = label;
+    if (name) locator.getByRole = { role: "radio", name };
+  } else if (label) {
+    locator.getByLabel = label;
+  }
+  return locator;
+}
+
+function playwrightScriptFromTxn(txn) {
+  if (!txn) return null;
+  const rec = captureTransactionRecord(txn);
+  return {
+    ticket: rec.ticket || null,
+    startUrl: rec.playwright?.startUrl || rec.pageUrl || "",
+    pageTitle: rec.pageTitle || "",
+    clicks: (rec.clicks || []).map((c) =>
+      require("./capture-step-shot").copyScreenshotMeta(c, {
+        action: "click",
+        label: c.label,
+        selector: c.selector,
+        locator: c.locator,
+      })
+    ),
+    values: rec.values || {},
+    playwright: rec.playwright || { startUrl: rec.pageUrl || "", pages: [], steps: [] },
+  };
+}
+
+function choiceOnStep(step) {
+  if (!Array.isArray(step?.allowedValues)) return "";
+  return step.allowedValues.map((v) => String(v ?? "").trim()).find(Boolean) || "";
+}
+
+function playwrightScriptFromSop(sop, txn = null) {
+  if (txn) return playwrightScriptFromTxn(txn);
+  const steps = Array.isArray(sop?.steps) ? sop.steps : [];
+  const values = sop?.sampleData && typeof sop.sampleData === "object" ? sop.sampleData : {};
+  const startUrl = String(sop?.formUrl || "").trim();
+  const clicks = [];
+  const pwSteps = steps.map((step, i) => {
+    const keyed = values[step.valueFrom || step.id];
+    const value =
+      choiceOnStep(step) ||
+      (keyed != null && keyed !== "" && typeof keyed !== "object" ? String(keyed) : "") ||
+      (step.value != null ? String(step.value).trim() : "");
+    const action = String(step.action || "fill").toLowerCase();
+    const row = {
+      n: i + 1,
+      action,
+      label: String(step.label || step.id || "").trim(),
+      selector: String(step.selector || "").trim(),
+      value: String(value || ""),
+      pageUrl: startUrl,
+      locator: playwrightLocatorFromSopStep(step, value),
+    };
+    if (action === "click") {
+      clicks.push(
+        require("./capture-step-shot").copyScreenshotMeta(step, {
+          action: "click",
+          label: row.label,
+          selector: row.selector,
+          locator: row.locator,
+        })
+      );
+    }
+    require("./capture-step-shot").copyScreenshotMeta(step, row);
+    return row;
+  });
+  return {
+    ticket: sop?.ticket || null,
+    startUrl,
+    pageTitle: String(sop?.name || "").replace(/^Draft:\s*/i, ""),
+    clicks,
+    values,
+    playwright: { startUrl, pages: startUrl ? [startUrl] : [], steps: pwSteps },
+  };
+}
+
+function compactPlaywrightScript(script) {
+  if (!script) return null;
+  return {
+    ticket: script.ticket || null,
+    startUrl: script.startUrl || "",
+    clicks: Array.isArray(script.clicks) ? script.clicks : [],
+  };
+}
+
+function parseMaybeJson(value) {
+  if (Array.isArray(value) || (value && typeof value === "object")) return value;
+  const s = String(value ?? "").trim();
+  if (!s || s.includes("[object Object]")) return null;
+  if ((s.startsWith("{") && s.endsWith("}")) || (s.startsWith("[") && s.endsWith("]"))) {
+    try {
+      return JSON.parse(s);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function playwrightStepsOf(script) {
+  if (!script || typeof script !== "object") return [];
+  const nested =
+    script.playwright && Array.isArray(script.playwright.steps) ? script.playwright.steps : [];
+  if (nested.length) return nested;
+  return Array.isArray(script.steps) ? script.steps : [];
+}
+
+function cardHasAttachedPlaywright(card) {
+  return playwrightStepsOf(card?.playwright).length > 0;
+}
+
+function shouldAutoRunCardPlaywright(card) {
+  return cardHasAttachedPlaywright(card);
+}
+
+function slugStepId(label, action, index) {
+  const slug = String(label || action || "step")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  return `${slug || "step"}-${index + 1}`;
+}
+
+function valueKeyForPlayStep(step, index) {
+  const from = String(step?.valueFrom || "").trim();
+  if (from) return from;
+  const label = String(step?.label || "").replace(/\*+$/, "").trim();
+  if (label) return label;
+  return slugStepId(step?.label, step?.action, index);
+}
+
+function locatorCss(locator, selector) {
+  const css = String(locator?.css || selector || "").trim();
+  return css;
+}
+
+function jobFieldSteps(step, startIndex) {
+  const job = step?.job && typeof step.job === "object" ? step.job : {};
+  const fields = [
+    ["jobTitle", "Job Title", `[id$="--jobTitle"]`, "fill"],
+    ["company", "Company", `[id$="--companyName"]`, "fill"],
+    ["location", "Location", `[id$="--location"]`, "fill"],
+    ["startMonth", "Start Month", `[id$="--startDate-dateSectionMonth-input"]`, "fill"],
+    ["startYear", "Start Year", `[id$="--startDate-dateSectionYear-input"]`, "fill"],
+    ["currentlyWorkHere", "Currently work here", `[id$="--currentlyWorkHere"]`, "check"],
+    ["endMonth", "End Month", `[id$="--endDate-dateSectionMonth-input"]`, "fill"],
+    ["endYear", "End Year", `[id$="--endDate-dateSectionYear-input"]`, "fill"],
+    ["roleDescription", "Role Description", `[id$="--roleDescription"]`, "fill"],
+  ];
+  const out = [];
+  let i = startIndex;
+  for (const [key, label, css, action] of fields) {
+    if (job[key] == null || job[key] === "") continue;
+    if (key === "currentlyWorkHere" && !job[key]) continue;
+    if ((key === "endMonth" || key === "endYear") && job.currentlyWorkHere) continue;
+    out.push({
+      raw: {
+        action,
+        label,
+        value: job[key] === true ? "true" : String(job[key]),
+        locator: { css, getByLabel: label },
+        selector: css,
+        pageUrl: step.pageUrl || "",
+      },
+      index: i,
+    });
+    i += 1;
+  }
+  return out;
+}
+
+function normalizePlayAction(action) {
+  const a = String(action || "fill").toLowerCase();
+  if (a === "typeahead" || a === "answer") return a;
+  if (a === "answerremaining") return "click";
+  if (a === "filljob") return "fill";
+  return a;
+}
+
+/**
+ * Convert a card-owned Playwright JSON into runnable SOP steps.
+ * Locators stay on the step; values come from extraData then the script.
+ */
+function sopStepsFromPlaywright(script, extraData = {}) {
+  const rows = playwrightStepsOf(script);
+  const extra = extraData && typeof extraData === "object" && !Array.isArray(extraData) ? extraData : {};
+  const expanded = [];
+  for (const step of rows) {
+    if (String(step?.action || "").toLowerCase() === "filljob") {
+      expanded.push(...jobFieldSteps(step, expanded.length).map((x) => x.raw));
+    } else {
+      expanded.push(step);
+    }
+  }
+  const startUrl = String(script?.startUrl || script?.playwright?.startUrl || extra.startUrl || "").trim();
+  const values = { ...extra };
+  if (script?.values && typeof script.values === "object") {
+    for (const [k, v] of Object.entries(script.values)) {
+      if (v == null || v === "" || typeof v === "object") continue;
+      if (values[k] == null || values[k] === "") values[k] = v;
+    }
+  }
+
+  const steps = expanded.map((step, i) => {
+    const action = normalizePlayAction(step.action);
+    const label = String(step.label || step.job?.jobTitle || action).trim();
+    const locator =
+      step.locator && typeof step.locator === "object" ? { ...step.locator } : {};
+    const selector = locatorCss(locator, step.selector);
+    const valueFrom = valueKeyForPlayStep(step, i);
+    const ownChoice =
+      choiceOnStep(step) ||
+      (step?.value != null && step.value !== "" && typeof step.value !== "object"
+        ? String(step.value).trim()
+        : "");
+    const keyed = extra[valueFrom] ?? extra[step.id] ?? values[valueFrom] ?? "";
+    const keyedText =
+      keyed != null && keyed !== "" && typeof keyed !== "object" ? String(keyed).trim() : "";
+    // The value recorded on this step wins over a shared field-name key.
+    const choice = ownChoice || keyedText;
+    if (choice && (values[valueFrom] == null || values[valueFrom] === "")) {
+      values[valueFrom] = choice;
+    }
+    const pageUrl = String(step.pageUrl || startUrl || "").trim();
+    const nextUrl = String(expanded[i + 1]?.pageUrl || "").trim();
+    const waitAfter =
+      step.waitAfter && typeof step.waitAfter === "object"
+        ? { ...step.waitAfter }
+        : nextUrl && pageUrl && nextUrl !== pageUrl
+          ? { urlIncludes: nextUrl }
+          : undefined;
+    const row = {
+      id: String(step.id || slugStepId(label, action, i)),
+      action,
+      label,
+      selector,
+      locator,
+      valueFrom,
+      pageUrl,
+    };
+    if (choice && /^(fill|check|select|answer|typeahead)$/.test(action)) {
+      row.allowedValues = [choice];
+      row.value = choice;
+    }
+    if (step.option) row.option = step.option;
+    if (step.kind) row.kind = step.kind;
+    if (step.section) row.section = step.section;
+    if (waitAfter) row.waitAfter = waitAfter;
+    require("./capture-step-shot").copyScreenshotMeta(step, row);
+    return row;
+  });
+  return { steps, values, startUrl };
+}
+
+function playwrightCaseData(script, extra = {}) {
+  const compact = compactPlaywrightScript(script) || { ticket: null, startUrl: "", clicks: [] };
+  const src = extra && typeof extra === "object" && !Array.isArray(extra) ? extra : {};
+  const existingClicks = Array.isArray(src.clicks) ? src.clicks : parseMaybeJson(src.clicks);
+  const clicks =
+    compact.clicks && compact.clicks.length
+      ? compact.clicks
+      : Array.isArray(existingClicks)
+        ? existingClicks
+        : [];
+  const out = {
+    ticket: compact.ticket || src.ticket || null,
+    startUrl: compact.startUrl || src.startUrl || "",
+    clicks,
+  };
+  const skip = new Set(["ticket", "startUrl", "clicks", "playwright", "values"]);
+  for (const [k, v] of Object.entries(src)) {
+    if (skip.has(k) || v == null || v === "") continue;
+    if (typeof v === "object") continue;
+    out[k] = v;
+  }
+  if (src.values && typeof src.values === "object" && !Array.isArray(src.values)) {
+    for (const [k, v] of Object.entries(src.values)) {
+      if (skip.has(k) || v == null || v === "") continue;
+      if (out[k] == null || out[k] === "") out[k] = v;
+    }
+  }
+  if (script?.values && typeof script.values === "object") {
+    for (const [k, v] of Object.entries(script.values)) {
+      if (skip.has(k) || v == null || v === "") continue;
+      if (out[k] == null || out[k] === "") out[k] = v;
+    }
+  }
+  return out;
+}
+
+function findCaptureTxnForCard(card, txns) {
+  const cid = String(card?.id || card?.cardId || "").trim();
+  const url = String(card?.formUrl || "").trim();
+  let best = null;
+  let bestScore = 0;
+  for (const txn of txns || []) {
+    const payload = payloadOf(txn);
+    let score = 0;
+    const pc = String(payload.cardId || txn.cardId || "").trim();
+    if (cid && pc && cid === pc) score += 50;
+    const turl = String(txn.pageUrl || payload.url || "").trim();
+    score += pageUrlMatchScore(turl, url);
+    if (score > bestScore) {
+      bestScore = score;
+      best = txn;
+    }
+  }
+  return bestScore >= 8 ? best : null;
+}
+
+function findCaptureTxnForSop(sop, txns) {
+  const sid = String(sop?.id || "").trim();
+  const rec = String(sop?.recordingSessionId || "").trim();
+  const url = String(sop?.formUrl || "").trim();
+  let best = null;
+  let bestScore = 0;
+  for (const txn of txns || []) {
+    const payload = payloadOf(txn);
+    let score = 0;
+    const tid = String(txn.transactionId || payload.recordingSessionId || "").trim();
+    if (rec && tid && rec === tid) score += 50;
+    const draft = String(payload.draftSopId || txn.draftSopId || "").trim();
+    if (sid && draft && sid === draft) score += 50;
+    const turl = String(txn.pageUrl || payload.url || "").trim();
+    score += pageUrlMatchScore(turl, url);
+    if (score > bestScore) {
+      bestScore = score;
+      best = txn;
+    }
+  }
+  return bestScore >= 8 ? best : null;
 }
 
 module.exports = {
@@ -1419,6 +2103,8 @@ module.exports = {
   payloadOf,
   clicksOf,
   stepsOf,
+  playwrightFromTxn,
+  enrichTxnWithPlaywright,
   captureMatchScore,
   pageUrlMatchScore,
   findLatestCaptureActivity,
@@ -1434,5 +2120,16 @@ module.exports = {
   captureTransactionRecord,
   listCaptureTransactionRecords,
   loadCaptureLiveSummary,
+  loadMergedCaptureTransactions,
+  playwrightScriptFromTxn,
+  playwrightScriptFromSop,
+  compactPlaywrightScript,
+  playwrightCaseData,
+  playwrightStepsOf,
+  cardHasAttachedPlaywright,
+  shouldAutoRunCardPlaywright,
+  sopStepsFromPlaywright,
+  findCaptureTxnForSop,
+  findCaptureTxnForCard,
   CAPTURE_PORT,
 };

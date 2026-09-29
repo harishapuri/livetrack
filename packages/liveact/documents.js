@@ -32,7 +32,8 @@ function liveActSharedRoot() {
 }
 
 /**
- * Runtime data home. Mother workbook is <root>/livetrack.xlsx.
+ * Runtime data home for queue, settings, and executions (~/Projects/coact).
+ * The mother workbook is ~/Desktop/livetrack/livetrack.xlsx.
  *
  * Packaged LiveTrack and `npm run dashboard` must share one root — otherwise
  * Record drafts land in ~/Projects/coact while the dashboard looks in the
@@ -203,6 +204,210 @@ function isCardDir(dir) {
   );
 }
 
+function cardPlayDir(caseDir) {
+  return path.join(caseDir, "play");
+}
+
+function playwrightStepsOf(script) {
+  if (!script || typeof script !== "object") return [];
+  const nested = script.playwright && Array.isArray(script.playwright.steps)
+    ? script.playwright.steps
+    : [];
+  if (nested.length) return nested;
+  return Array.isArray(script.steps) ? script.steps : [];
+}
+
+/** Load THIS card's play/*.json only — never sibling folders or SOP/URL matches. */
+function loadPlaywrightFromCardDir(caseDir) {
+  const playDir = cardPlayDir(caseDir);
+  if (!caseDir || !fs.existsSync(playDir)) {
+    return { playwright: null, playDir: null };
+  }
+  let stat;
+  try {
+    stat = fs.statSync(playDir);
+  } catch {
+    return { playwright: null, playDir: null };
+  }
+  if (!stat.isDirectory()) return { playwright: null, playDir: null };
+
+  const preferred = path.join(playDir, "playwright.json");
+  let file = fs.existsSync(preferred) ? preferred : "";
+  if (!file) {
+    const names = fs
+      .readdirSync(playDir)
+      .filter((n) => n.toLowerCase().endsWith(".json") && !n.startsWith("."))
+      .sort((a, b) => a.localeCompare(b));
+    if (names.length) file = path.join(playDir, names[0]);
+  }
+  if (!file) return { playwright: null, playDir };
+  const script = readJsonSafe(file);
+  if (!script || typeof script !== "object") return { playwright: null, playDir };
+  return { playwright: script, playDir };
+}
+
+function attachCardPlaywright(card, caseDir) {
+  if (!card) return card;
+  const dirs = [];
+  const primary = caseDir || card.sourceDir;
+  if (primary) dirs.push(primary);
+  if (card.id) {
+    try {
+      const fallback = lobCardDir(defaultDocumentsRoot(), card.id, card.lob || DEFAULT_LOB);
+      if (fallback && fallback !== primary) dirs.push(fallback);
+    } catch {
+      /* ignore */
+    }
+  }
+  let loaded = { playwright: null, playDir: null };
+  for (const dir of dirs) {
+    loaded = loadPlaywrightFromCardDir(dir);
+    if (playwrightStepsOf(loaded.playwright).length) break;
+  }
+  card.playDir = loaded.playDir;
+  card.playwright = loaded.playwright;
+  return card;
+}
+
+function cardHasAttachedPlaywright(card) {
+  return playwrightStepsOf(card?.playwright).length > 0;
+}
+
+/**
+ * Write a Playwright script into one card folder's play/ only.
+ * Never fans out by SOP id or form URL onto other cards.
+ */
+function persistQueuePlaywrightCaseData(cardDir, script, extraData = null) {
+  if (!cardDir) return { ok: false, error: "missing_card_dir" };
+  const playDir = cardPlayDir(cardDir);
+  ensureDir(playDir);
+  let toWrite = script;
+  if (script != null && typeof script === "object") {
+    try {
+      const { relocateShotsOntoCard } = require("./capture-step-shot");
+      const relocated = relocateShotsOntoCard(
+        { playwright: script, steps: script.steps },
+        cardDir
+      );
+      toWrite = relocated.playwright || script;
+    } catch {
+      toWrite = script;
+    }
+  }
+  if (toWrite != null) {
+    fs.writeFileSync(
+      path.join(playDir, "playwright.json"),
+      `${JSON.stringify(toWrite, null, 2)}\n`,
+      "utf8"
+    );
+  }
+  if (extraData && typeof extraData === "object" && !Array.isArray(extraData)) {
+    const dataPath = path.join(cardDir, "data.json");
+    const prev = fs.existsSync(dataPath) ? readJsonSafe(dataPath) || {} : {};
+    const next = { ...prev };
+    for (const [k, v] of Object.entries(extraData)) {
+      if (QUEUE_DATA_SKIP.has(k) || v == null || typeof v === "object") continue;
+      next[k] = v;
+    }
+    fs.writeFileSync(dataPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  }
+  return { ok: true, playDir, cardDir };
+}
+
+const QUEUE_DATA_SKIP = new Set([
+  "clicks",
+  "playwright",
+  "locator",
+  "steps",
+  "pages",
+  "values",
+  "job",
+]);
+
+function scalarQueueData(data) {
+  const out = {};
+  if (!data || typeof data !== "object" || Array.isArray(data)) return out;
+  for (const [k, v] of Object.entries(data)) {
+    if (QUEUE_DATA_SKIP.has(k) || v == null || v === "") continue;
+    if (typeof v === "object") continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+function writeCardDiskSidecars(dir, { data, meta }) {
+  ensureDir(dir);
+  if (meta && typeof meta === "object") {
+    fs.writeFileSync(path.join(dir, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+  }
+  if (data != null) {
+    fs.writeFileSync(
+      path.join(dir, "data.json"),
+      `${JSON.stringify(scalarQueueData(data), null, 2)}\n`,
+      "utf8"
+    );
+  }
+}
+
+function desktopPlaywrightCapturePath() {
+  const names = ["playwright", "playwrite"];
+  for (const name of names) {
+    const file = path.join(os.homedir(), "Desktop", name, "data", "sop.json");
+    if (fs.existsSync(file)) return file;
+  }
+  return "";
+}
+
+function desktopApplicationPath(sopPath) {
+  if (!sopPath) return "";
+  const file = path.join(path.dirname(sopPath), "application.json");
+  return fs.existsSync(file) ? file : "";
+}
+
+function flattenApplicationData(app, sop) {
+  const info = app?.myInformation && typeof app.myInformation === "object" ? app.myInformation : {};
+  const edu = app?.education && typeof app.education === "object" ? app.education : {};
+  const vol =
+    app?.voluntaryDisclosures && typeof app.voluntaryDisclosures === "object"
+      ? app.voluntaryDisclosures
+      : {};
+  const out = {
+    ticket: sop?.ticket || "",
+    startUrl: sop?.startUrl || app?.jobUrl || "",
+    firstName: info.firstName || "",
+    lastName: info.lastName || "",
+    addressLine1: info.addressLine1 || "",
+    city: info.city || "",
+    state: info.state || "",
+    postalCode: info.postalCode || "",
+    phoneType: info.phoneType || "",
+    phoneNumber: info.phoneNumber || "",
+    howDidYouHear: info.howDidYouHearSearch || info.howDidYouHear || "",
+    school: edu.school || "",
+    degree: edu.degree || "",
+    fieldOfStudy: edu.fieldOfStudy || "",
+    lastYear: edu.lastYear || "",
+    gpa: edu.gpa || "",
+    gender: vol.gender || "",
+    veteran: vol.veteran || "",
+  };
+  if (Array.isArray(app?.websites) && app.websites[0]) out.url = app.websites[0];
+  if (Array.isArray(app?.skills) && app.skills[0]) out.skills = app.skills[0];
+  return scalarQueueData(out);
+}
+
+function seedFullstackPlaywrightCard(rootDir) {
+  const dir = lobCardDir(rootDir, "fullstack");
+  if (!fs.existsSync(dir)) return dir;
+  const capturePath = desktopPlaywrightCapturePath();
+  const sop = capturePath ? readJsonSafe(capturePath) : null;
+  const playFile = path.join(cardPlayDir(dir), "playwright.json");
+  if (sop && playwrightStepsOf(sop).length && !fs.existsSync(playFile)) {
+    persistQueuePlaywrightCaseData(dir, sop);
+  }
+  return dir;
+}
+
 function loadCardFromDir(caseDir, folderName, lob) {
   const dataPath = path.join(caseDir, "data.json");
   const metaPath = path.join(caseDir, "meta.json");
@@ -212,6 +417,7 @@ function loadCardFromDir(caseDir, folderName, lob) {
   const allFiles = listFilesRecursive(caseDir);
   const documents = allFiles
     .filter((f) => f.name !== "data.json" && f.name !== "meta.json")
+    .filter((f) => String(f.relativePath || "").split(path.sep)[0] !== "play")
     .filter((f) => DOC_EXTENSIONS.has(f.ext) || f.ext === "")
     .map((f) => ({
       name: f.name,
@@ -219,7 +425,7 @@ function loadCardFromDir(caseDir, folderName, lob) {
       relativePath: f.relativePath,
     }));
 
-  return {
+  const card = {
     id: meta.id || folderName,
     title: meta.title || titleFromFolder(folderName, data),
     sopId: meta.sopId || "vendor-onboarding",
@@ -230,9 +436,10 @@ function loadCardFromDir(caseDir, folderName, lob) {
     pdfPath: meta.pdfPath || null,
     formMatch: Array.isArray(meta.formMatch) ? meta.formMatch : [],
     assignees: normalizeAssignees(meta.assignees),
-    data,
+    data: scalarQueueData(data),
     documents,
   };
+  return attachCardPlaywright(card, caseDir);
 }
 
 /**
@@ -418,9 +625,13 @@ function documentsForCardDir(caseDir) {
 function cardFromWorkbookRow(row, rootDir, dataByCard) {
   const lob = normalizeLob(row.lob);
   const id = String(row.card_id || "").trim();
-  const caseDir = row.source_dir || lobCardDir(rootDir, id, lob);
-  const exists = Boolean(caseDir && fs.existsSync(caseDir));
-  return {
+  let caseDir = row.source_dir || "";
+  if (!caseDir || !fs.existsSync(caseDir)) {
+    const fallback = lobCardDir(rootDir, id, lob);
+    if (fs.existsSync(fallback)) caseDir = fallback;
+  }
+  const exists = Boolean(caseDir && fs.existsSync(caseDir) && isCardDir(caseDir));
+  const card = {
     id,
     title: row.title || id,
     sopId: row.sop_id || "vendor-onboarding",
@@ -431,10 +642,11 @@ function cardFromWorkbookRow(row, rootDir, dataByCard) {
     pdfPath: row.pdf_path || null,
     formMatch: row.form_match ? String(row.form_match).split("|").filter(Boolean) : [],
     assignees: normalizeAssignees(String(row.assignees || "").split(",")),
-    data: dataByCard.get(cardKey(lob, id)) || {},
+    data: scalarQueueData(dataByCard.get(cardKey(lob, id)) || {}),
     documents: documentsForCardDir(caseDir),
     _sourceExists: exists,
   };
+  return attachCardPlaywright(card, exists ? caseDir : "");
 }
 
 /**
@@ -487,6 +699,27 @@ function migrateFlatCardsToLob(rootDir, lob = DEFAULT_LOB) {
  *   - Else empty assignees = everyone; hide cards assigned only to other users
  *   - LOB .lob.json assignees still gate the whole LOB when set
  */
+function parseQueueFieldValue(value) {
+  if (value == null) return "";
+  if (typeof value !== "string") return value;
+  const s = value.trim();
+  if (s.includes("[object Object]")) return "";
+  if ((s.startsWith("{") && s.endsWith("}")) || (s.startsWith("[") && s.endsWith("]"))) {
+    try {
+      return JSON.parse(s);
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
+function serializeQueueFieldValue(value) {
+  if (value == null) return "";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
 async function loadQueueFromDocuments(rootDir = defaultDocumentsRoot(), opts = {}) {
   migrateLegacyDocumentsCoact();
   if (fs.existsSync(rootDir)) {
@@ -506,7 +739,7 @@ async function loadQueueFromDocuments(rootDir = defaultDocumentsRoot(), opts = {
   for (const row of QueueData || []) {
     const key = cardKey(row.lob, row.card_id);
     if (!dataByCard.has(key)) dataByCard.set(key, {});
-    if (row.field_key) dataByCard.get(key)[row.field_key] = row.field_value;
+    if (row.field_key) dataByCard.get(key)[row.field_key] = parseQueueFieldValue(row.field_value);
   }
 
   const lobs = [];
@@ -525,6 +758,7 @@ async function loadQueueFromDocuments(rootDir = defaultDocumentsRoot(), opts = {
     const id = String(row.card_id || "").trim();
     if (!id) continue;
     const mapped = cardFromWorkbookRow(row, rootDir, dataByCard);
+    if (!mapped._sourceExists) continue;
     const key = cardKey(mapped.lob, mapped.id);
     const prev = byKey.get(key);
     if (!prev || (!prev._sourceExists && mapped._sourceExists)) {
@@ -542,6 +776,7 @@ async function loadQueueFromDocuments(rootDir = defaultDocumentsRoot(), opts = {
     }
     if (byKey.has(key)) continue;
     const fromDisk = loadCardFromDir(entry.dir, entry.id, entry.lob);
+    fromDisk.id = entry.id;
     fromDisk.lob = normalizeLob(fromDisk.lob || entry.lob);
     if (!fromDisk.data || !Object.keys(fromDisk.data).length) {
       fromDisk.data = dataByCard.get(key) || fromDisk.data || {};
@@ -571,8 +806,9 @@ async function loadQueueFromDocuments(rootDir = defaultDocumentsRoot(), opts = {
   return { rootDir, cards: visible, lobs, allCardCount: cards.length };
 }
 
-function writeCardFiles(dir, { data, meta }) {
+function writeCardFiles(dir, { data, meta, previous } = {}) {
   ensureDir(dir);
+  writeCardDiskSidecars(dir, { data, meta });
   const workbookStore = require("./workbook");
   const projectRoot = defaultProjectRoot();
   const lob = normalizeLob(meta?.lob);
@@ -596,19 +832,21 @@ function writeCardFiles(dir, { data, meta }) {
       source_dir: dir,
       updated_at: now,
     };
+    const drop = new Set([cardKey(lob, cardId)]);
+    if (previous?.id) drop.add(cardKey(previous.lob || lob, previous.id));
     const nextCards = [
-      ...(QueueCards || []).filter((r) => cardKey(r.lob, r.card_id) !== cardKey(lob, cardId)),
+      ...(QueueCards || []).filter((r) => !drop.has(cardKey(r.lob, r.card_id))),
       cardRow,
     ];
     await workbookStore.replaceRows("QueueCards", nextCards, projectRoot);
     if (data != null) {
       const nextData = [
-        ...(QueueData || []).filter((r) => cardKey(r.lob, r.card_id) !== cardKey(lob, cardId)),
-        ...Object.entries(data).map(([field_key, field_value]) => ({
+        ...(QueueData || []).filter((r) => !drop.has(cardKey(r.lob, r.card_id))),
+        ...Object.entries(scalarQueueData(data)).map(([field_key, field_value]) => ({
           lob,
           card_id: cardId,
           field_key,
-          field_value: field_value == null ? "" : String(field_value),
+          field_value: serializeQueueFieldValue(field_value),
         })),
       ];
       await workbookStore.replaceRows("QueueData", nextData, projectRoot);
@@ -695,6 +933,9 @@ async function seedSampleCases(rootDir = defaultDocumentsRoot()) {
     /* QueueLobs is optional until the workbook exists */
   }
 
+  // Operators can drop this file to stop demo/sample cards from coming back
+  // after they are removed from the queue.
+  if (!fs.existsSync(path.join(rootDir, ".skip-demo-seed"))) {
   const samples = [
     {
       folder: "acme-supplies",
@@ -855,6 +1096,32 @@ async function seedSampleCases(rootDir = defaultDocumentsRoot()) {
     console.error("[coact] demo site seed failed", err.message);
   }
 
+  await seedIfMissing(lobCardDir(rootDir, "servicenow-cr-search"), {
+    data: { query: "" },
+    meta: {
+      id: "servicenow-cr-search",
+      title: "ServiceNow — Search change requests",
+      sopId: "servicenow-change-request-search",
+      status: "queued",
+      lob: DEFAULT_LOB,
+      formMatch: [
+        "service-now.com",
+        "servicenow.com",
+        "change_request",
+        "ServiceNow",
+      ],
+    },
+    readme:
+      "Open a logged-in ServiceNow tab. In LiveTrack, enter a CHG number or keywords, Approve, then Start. LiveTrack filters the change request list in the browser (no ServiceNow API).",
+  });
+  }
+
+  try {
+    seedFullstackPlaywrightCard(rootDir);
+  } catch (err) {
+    console.error("[coact] fullstack playwright seed failed", err.message);
+  }
+
   return { seeded: true, rootDir };
 }
 
@@ -876,6 +1143,12 @@ module.exports = {
   writeCardFiles,
   lobCardDir,
   loadCardFromDir,
+  loadPlaywrightFromCardDir,
+  persistQueuePlaywrightCaseData,
+  playwrightStepsOf,
+  cardHasAttachedPlaywright,
+  attachCardPlaywright,
+  cardPlayDir,
   cardKey,
   normalizeLob,
   updateQueueCardStatus,

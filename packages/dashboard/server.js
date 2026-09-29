@@ -3,8 +3,8 @@
  * Supervisor dashboard (single UI)
  *
  *   npm run dashboard
- *   → http://127.0.0.1:4175/              all sections (hash routes)
- *   → /#/executions /#/analytics /#/digest /#/studio /#/assignments /#/reviews /#/converter
+   *   → http://127.0.0.1:4175/              all sections (hash routes)
+   *   → /#/executions /#/approvals /#/studio /#/analytics /#/digest /#/assignments /#/reviews /#/converter
  *
  *   node dashboard/server.js --from=2026-07-01 --to=2026-07-18
  */
@@ -17,6 +17,7 @@ const { generateDashboardData } = require("../liveact/dashboard-stats");
 const {
   DEFAULT_LOB,
   defaultDocumentsRoot,
+  defaultProjectRoot,
   defaultUserSopsDir,
   loadQueueFromDocuments,
   writeCardFiles,
@@ -26,6 +27,7 @@ const {
   loadLobConfig,
   saveLobConfig,
   normalizeAssignees,
+  normalizeLob,
 } = require("../liveact/documents");
 const { BRIDGE_PORT } = require("../shared/protocol");
 const learningPipeline = require("../liveact/learning-pipeline");
@@ -35,7 +37,14 @@ const {
   summarizeFeedback,
   recordFeedback,
 } = require("../liveact/feedback-log");
-const { loadCaptureLiveSummary } = require("../liveact/capture-forward");
+const {
+  loadCaptureLiveSummary,
+  loadMergedCaptureTransactions,
+  playwrightScriptFromSop,
+  compactPlaywrightScript,
+  playwrightCaseData,
+  findCaptureTxnForSop,
+} = require("../liveact/capture-forward");
 const inbox = require("../liveact/inbox");
 const sopsStore = require("../liveact/sops-store");
 const workbookStore = require("../liveact/workbook");
@@ -168,6 +177,33 @@ async function allSopsById() {
   return map;
 }
 
+async function loadCaptureTxnIndex() {
+  try {
+    return await loadMergedCaptureTransactions({ live: false });
+  } catch (err) {
+    console.warn("[dashboard] capture merge", err?.message || err);
+    return [];
+  }
+}
+
+function enrichSopPlaywright(sop, txns) {
+  if (!sop) return sop;
+  const txn = findCaptureTxnForSop(sop, txns);
+  const script = playwrightScriptFromSop(sop, txn);
+  const sampleData = playwrightCaseData(script, sop.sampleData);
+  return {
+    ...sop,
+    ticket: sampleData.ticket || sop.ticket || "",
+    playwright: script,
+    sampleData,
+  };
+}
+
+/** Scripts are owned by the card play/ folder. Never attach by SOP id or URL. */
+function enrichCardPlaywright(card) {
+  return card;
+}
+
 async function resolveSopRecord(id, { regenerate = true } = {}) {
   const cleaned = safeId(id);
   if (!cleaned) return null;
@@ -267,9 +303,39 @@ function listLobNames(rootDir) {
 
 function findCard(lob, id) {
   const root = defaultDocumentsRoot();
-  const dir = lobCardDir(root, id, lob);
-  if (!fs.existsSync(dir) || !isCardDir(dir)) return null;
-  return loadCardFromDir(dir, id, lob);
+  const direct = lobCardDir(root, id, lob);
+  if (fs.existsSync(direct) && isCardDir(direct)) {
+    const card = loadCardFromDir(direct, id, lob);
+    // Folder name is the id. A stale meta.json id must not point saves at a missing path.
+    card.id = id;
+    card.lob = normalizeLob(lob);
+    return card;
+  }
+  const lobDir = path.join(root, normalizeLob(lob));
+  if (!fs.existsSync(lobDir)) return null;
+  let names = [];
+  try {
+    names = fs.readdirSync(lobDir);
+  } catch {
+    return null;
+  }
+  for (const name of names) {
+    const dir = path.join(lobDir, name);
+    if (!isCardDir(dir)) continue;
+    const metaPath = path.join(dir, "meta.json");
+    let meta = {};
+    try {
+      if (fs.existsSync(metaPath)) meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+    } catch {
+      meta = {};
+    }
+    if (String(meta.id || "") !== id && name !== id) continue;
+    const card = loadCardFromDir(dir, name, lob);
+    card.id = name;
+    card.lob = normalizeLob(lob);
+    return card;
+  }
+  return null;
 }
 
 function serveFile(filePath, root, res) {
@@ -362,42 +428,48 @@ function buildCardMeta(body, existing = {}) {
   return meta;
 }
 
-function publishToLiveAct() {
+function requestLiveAct(pathname, { method = "GET", timeout = 30000, body = null } = {}) {
   return new Promise((resolve) => {
-    const url = new URL("/publish", LIVEACT_BRIDGE);
+    const url = new URL(pathname, LIVEACT_BRIDGE);
+    const payload = body == null ? null : body;
     const req = http.request(
       {
         hostname: url.hostname,
         port: url.port,
-        path: url.pathname,
-        method: "POST",
-        timeout: 4000,
-        headers: { "Content-Type": "application/json", "Content-Length": 2 },
+        path: `${url.pathname}${url.search}`,
+        method,
+        timeout,
+        headers: payload
+          ? {
+              "Content-Type": "application/json",
+              "Content-Length": Buffer.byteLength(payload),
+            }
+          : {},
       },
       (res) => {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
         res.on("end", () => {
-          let body = {};
+          let parsed = {};
           try {
-            body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+            parsed = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
           } catch {
-            body = {};
+            parsed = {};
           }
-          if (res.statusCode >= 200 && res.statusCode < 300 && body.ok !== false) {
+          if (res.statusCode >= 200 && res.statusCode < 300 && parsed.ok !== false) {
             resolve({
               ok: true,
               liveAct: true,
-              cardCount: body.cardCount ?? null,
-              allCardCount: body.allCardCount ?? null,
-              cardIds: body.cardIds || [],
-              ...body,
+              cardCount: parsed.cardCount ?? null,
+              allCardCount: parsed.allCardCount ?? null,
+              cardIds: parsed.cardIds || [],
+              ...parsed,
             });
           } else {
             resolve({
               ok: false,
               liveAct: false,
-              error: body.error || `liveAct HTTP ${res.statusCode}`,
+              error: parsed.error || `LiveTrack HTTP ${res.statusCode}`,
             });
           }
         });
@@ -405,25 +477,58 @@ function publishToLiveAct() {
     );
     req.on("timeout", () => {
       req.destroy();
-      resolve({
-        ok: false,
-        liveAct: false,
-        error: "liveAct did not respond — is the app running?",
-      });
+      resolve({ ok: false, liveAct: false, timedOut: true });
     });
     req.on("error", (err) => {
       resolve({
         ok: false,
         liveAct: false,
-        error:
-          err?.code === "ECONNREFUSED"
-            ? "liveAct is not running (start the desktop app, then publish again)"
-            : err?.message || "Cannot reach liveAct",
+        code: err?.code || "",
+        error: err?.message || "Cannot reach LiveTrack",
       });
     });
-    req.write("{}");
+    if (payload) req.write(payload);
     req.end();
   });
+}
+
+async function publishToLiveAct() {
+  const health = await requestLiveAct("/health", { method: "GET", timeout: 2000 });
+  if (!health.ok) {
+    if (health.code === "ECONNREFUSED") {
+      // The workbook write already happened. A closed desktop app has nothing to reload.
+      return {
+        ok: true,
+        liveAct: false,
+        offline: true,
+        published: false,
+        note: "LiveTrack is not open; it will load this update when it starts.",
+      };
+    }
+    return {
+      ok: false,
+      liveAct: false,
+      error: health.timedOut
+        ? "LiveTrack is not responding on port 17321"
+        : health.error || "Cannot reach LiveTrack",
+    };
+  }
+  // Queue reload reads the whole SOP workbook. A quiet reload is ~40s; leave
+  // headroom so a save is not reported as timed out while LiveTrack is still working.
+  const result = await requestLiveAct("/publish", {
+    method: "POST",
+    timeout: 120000,
+    body: "{}",
+  });
+  if (result.timedOut) {
+    return {
+      ok: false,
+      liveAct: false,
+      error:
+        "LiveTrack is running, but reloading the queue took too long. Wait a few seconds and save again.",
+    };
+  }
+  return result;
 }
 
 async function handleApi(req, res, pathname) {
@@ -434,21 +539,44 @@ async function handleApi(req, res, pathname) {
   }
 
   if (pathname === "/api/sops/pending" && req.method === "GET") {
+    try {
+      const queue = await loadQueueFromDocuments();
+      await require("../liveact/process-discovery").draftUnmatchedCaptures(queue.cards || []);
+    } catch (err) {
+      console.warn("[dashboard] draft unmatched captures", err?.message || err);
+    }
+    let txns = [];
+    try {
+      txns = await loadMergedCaptureTransactions({ live: false });
+    } catch (err) {
+      console.warn("[dashboard] pending capture merge", err?.message || err);
+    }
     const pending = [...(await allSopsById()).values()]
       .map((rec) => rec.sop)
       .filter((sop) => sop.status === "draft")
-      .map((sop) => ({
-        id: sop.id,
-        name: sop.name || sop.id,
-        formUrl: sop.formUrl || "",
-        steps: sop.steps || [],
-        sampleData: sop.sampleData && typeof sop.sampleData === "object" ? sop.sampleData : {},
-        source: sop.source || "",
-        description: sop.description || "",
-        recordingSessionId: sop.recordingSessionId || "",
-        discoveredAt: sop.discoveredAt || "",
-        status: sop.status,
-      }));
+      .map((sop) => {
+        const txn = findCaptureTxnForSop(sop, txns);
+        const script = playwrightScriptFromSop(sop, txn);
+        const compact = compactPlaywrightScript(script);
+        return {
+          id: sop.id,
+          name: sop.name || sop.id,
+          formUrl: sop.formUrl || "",
+          steps: sop.steps || [],
+          sampleData: sop.sampleData && typeof sop.sampleData === "object" ? sop.sampleData : {},
+          source: sop.source || "",
+          description: sop.description || "",
+          recordingSessionId: sop.recordingSessionId || "",
+          discoveredAt: sop.discoveredAt || "",
+          status: sop.status,
+          ticket: compact?.ticket || sop.ticket || "",
+          startUrl: compact?.startUrl || sop.formUrl || "",
+          clicks: compact?.clicks || [],
+          playwright: script,
+          sampleData: playwrightCaseData(script, sop.sampleData),
+        };
+      })
+      .sort((a, b) => String(b.discoveredAt || "").localeCompare(String(a.discoveredAt || "")));
     send(res, 200, { pending });
     return true;
   }
@@ -464,7 +592,7 @@ async function handleApi(req, res, pathname) {
         send(res, 404, { ok: false, error: `SOP not found: ${id}` });
         return true;
       }
-      const sop = rec.sop;
+      const sop = enrichSopPlaywright(rec.sop, await loadCaptureTxnIndex());
       if (action === "approve") {
         sop.status = "published";
         sop.approvedAt = new Date().toISOString();
@@ -671,6 +799,31 @@ async function handleApi(req, res, pathname) {
     return true;
   }
 
+  if (pathname === "/api/step-shots" && req.method === "GET") {
+    const url = new URL(req.url || "/", "http://127.0.0.1");
+    const shotPath = String(url.searchParams.get("path") || "").trim();
+    const lob = safeLob(url.searchParams.get("lob") || "");
+    const cardId = safeId(url.searchParams.get("cardId") || "");
+    let cardDir = "";
+    if (lob && cardId) {
+      const card = findCard(lob, cardId);
+      cardDir = card?.sourceDir || lobCardDir(defaultDocumentsRoot(), cardId, lob);
+    }
+    const { resolveAllowedShotPath } = require("../liveact/capture-step-shot");
+    const file = resolveAllowedShotPath(shotPath, { cardDir });
+    if (!file) {
+      send(res, 404, { error: "Screenshot not found" });
+      return true;
+    }
+    try {
+      const buf = fs.readFileSync(file);
+      send(res, 200, buf, { "Content-Type": "image/png" });
+    } catch (e) {
+      send(res, 404, { error: e.message || "Screenshot not found" });
+    }
+    return true;
+  }
+
   const sopGet = pathname.match(/^\/api\/sops\/([^/]+)$/);
   if (sopGet && req.method === "GET") {
     const id = safeId(decodeURIComponent(sopGet[1]));
@@ -683,7 +836,12 @@ async function handleApi(req, res, pathname) {
       send(res, 404, { error: `SOP not found: ${id}` });
       return true;
     }
-    send(res, 200, { sop: rec.sop, path: "livetrack.xlsx", regenerated: Boolean(rec.regenerated) });
+    const txns = await loadCaptureTxnIndex();
+    send(res, 200, {
+      sop: enrichSopPlaywright(rec.sop, txns),
+      path: "livetrack.xlsx",
+      regenerated: Boolean(rec.regenerated),
+    });
     return true;
   }
 
@@ -863,7 +1021,7 @@ async function handleApi(req, res, pathname) {
       }
 
       const root = defaultDocumentsRoot();
-      const fromDir = lobCardDir(root, id, lob);
+      const fromDir = existing.sourceDir || lobCardDir(root, existing.id || id, existing.lob || lob);
       const toDir = lobCardDir(root, nextId, nextLob);
       const moving = path.resolve(fromDir) !== path.resolve(toDir);
 
@@ -892,9 +1050,10 @@ async function handleApi(req, res, pathname) {
         fs.renameSync(fromDir, toDir);
       }
 
-      writeCardFiles(toDir, {
+      await writeCardFiles(toDir, {
         data,
         meta,
+        previous: moving ? { lob, id } : null,
         readme: body.readme != null ? String(body.readme) : undefined,
       });
 
@@ -913,20 +1072,44 @@ async function handleApi(req, res, pathname) {
   }
 
   if (cardGet && req.method === "DELETE") {
-    const lob = safeLob(decodeURIComponent(cardGet[1]));
-    const id = safeId(decodeURIComponent(cardGet[2]));
-    if (!id) {
-      send(res, 400, { error: "Invalid card id" });
-      return true;
+    try {
+      const lob = safeLob(decodeURIComponent(cardGet[1]));
+      const id = safeId(decodeURIComponent(cardGet[2]));
+      if (!id) {
+        send(res, 400, { error: "Invalid card id" });
+        return true;
+      }
+      const existing = findCard(lob, id);
+      if (!existing) {
+        send(res, 404, { error: "Card not found" });
+        return true;
+      }
+      const ids = new Set(
+        [id, String(existing.id || "").trim()].filter(Boolean)
+      );
+      const dirs = new Set();
+      if (existing.sourceDir) dirs.add(path.resolve(existing.sourceDir));
+      for (const cardId of ids) {
+        dirs.add(path.resolve(lobCardDir(defaultDocumentsRoot(), cardId, lob)));
+      }
+      for (const dir of dirs) removeDirRecursive(dir);
+
+      await workbookStore.withWorkbook(defaultProjectRoot(), async (wb) => {
+        for (const key of ["QueueCards", "QueueData", "QueueDocuments"]) {
+          const spec = workbookStore.SHEETS[key];
+          const rows = workbookStore.readSheetObjects(wb, spec).filter((row) => {
+            const rowLob = normalizeLob(row.lob);
+            const rowId = String(row.card_id || "").trim();
+            return !(rowLob === lob && ids.has(rowId));
+          });
+          workbookStore.replaceSheet(wb, spec, rows);
+        }
+      });
+      publishToLiveAct().catch(() => {});
+      send(res, 200, { ok: true, lob, id, deleted: true });
+    } catch (e) {
+      send(res, 500, { ok: false, error: e.message || "Delete failed" });
     }
-    const existing = findCard(lob, id);
-    if (!existing) {
-      send(res, 404, { error: "Card not found" });
-      return true;
-    }
-    const dir = lobCardDir(defaultDocumentsRoot(), id, lob);
-    removeDirRecursive(dir);
-    send(res, 200, { ok: true, lob, id, deleted: true });
     return true;
   }
 
@@ -958,6 +1141,7 @@ async function handleApi(req, res, pathname) {
         baseData = { ...(src.data || {}) };
       }
 
+      const meta = buildCardMeta(body, { ...baseMeta, id, lob });
       const data =
         body.data && typeof body.data === "object" && !Array.isArray(body.data)
           ? body.data
@@ -970,9 +1154,7 @@ async function handleApi(req, res, pathname) {
         return true;
       }
 
-      const meta = buildCardMeta(body, { ...baseMeta, id, lob });
-
-      writeCardFiles(dir, {
+      await writeCardFiles(dir, {
         data,
         meta,
         readme:
@@ -1016,7 +1198,7 @@ async function handler(req, res) {
 
   if (req.method === "GET" && (pathname === "/data.json" || pathname === "/data.js")) {
     if (!lastDashboardPayload) {
-      lastDashboardPayload = await generateDashboardData({ quiet: true, writeFiles: false });
+      lastDashboardPayload = await generateDashboardData({ quiet: true, writeFiles: true });
     }
     if (pathname === "/data.js") {
       res.writeHead(200, {
@@ -1091,7 +1273,7 @@ async function main() {
   const args = parseArgs(process.argv);
   lastDashboardPayload = await generateDashboardData({
     quiet: false,
-    writeFiles: false,
+    writeFiles: true,
     dateFrom: args.dateFrom,
     dateTo: args.dateTo,
     dateFilter: args.dateFilter,
@@ -1108,6 +1290,8 @@ async function main() {
   server.listen(PORT, "127.0.0.1", () => {
     console.log(`LiveTrack dashboard: http://127.0.0.1:${PORT}/`);
     console.log(`  Executions     http://127.0.0.1:${PORT}/#/executions`);
+    console.log(`  Approvals      http://127.0.0.1:${PORT}/#/approvals`);
+    console.log(`  Queue studio   http://127.0.0.1:${PORT}/#/studio`);
     console.log(`  Analytics      http://127.0.0.1:${PORT}/#/analytics`);
     console.log(`  Weekly digest  http://127.0.0.1:${PORT}/#/digest`);
     console.log(`  Assignments    http://127.0.0.1:${PORT}/#/assignments`);

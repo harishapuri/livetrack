@@ -2,7 +2,11 @@ const { loadSettings, saveSettings } = require("./settings");
 const outlookDefaults = require("./outlook-defaults");
 
 const GRAPH_BASE = "https://graph.microsoft.com/v1.0";
-const SCOPES = ["User.Read", "Calendars.Read", "offline_access"].join(" ");
+const BASE_SCOPES = ["User.Read", "Calendars.Read", "offline_access"];
+const SCOPES_CALENDAR_ONLY = BASE_SCOPES.join(" ");
+/** One Connect Outlook grant: meetings (calendar) + inbox (mail). */
+const SCOPES_WITH_MAIL = [...BASE_SCOPES, "Mail.Read"].join(" ");
+const SCOPES = SCOPES_WITH_MAIL;
 const TOKEN_SKEW_MS = 5 * 60 * 1000;
 /** Shared Microsoft personal-accounts (MSA) tenant — same for every @outlook.com user */
 const CONSUMERS_TENANT_GUID = "f8cdef31-a31e-4b4a-93e4-5f571e91255a";
@@ -81,8 +85,14 @@ function friendlyAuthError(raw, { tenantId } = {}) {
   ) {
     return `${text} — For personal Outlook.com use Tenant ID "consumers" (not a work tenant). For work accounts use your company Tenant ID or "organizations".`;
   }
+  if (/AADSTS70000|scopes requested are unauthorized or expired/i.test(text)) {
+    return (
+      "Microsoft blocked this sign-in because Mail.Read is not allowed on the Azure app yet. " +
+      "Add delegated Mail.Read (and Calendars.Read) on LiveTrack outlook, then Connect Outlook once — that login covers meetings and mail."
+    );
+  }
   if (/AADSTS65001|consent_required|AADSTS50076|AADSTS50079/i.test(text)) {
-    return `${text} — Sign in again and accept permissions. App needs User.Read + Calendars.Read (delegated).`;
+    return `${text} — Sign in again and accept permissions. One Connect needs User.Read, Calendars.Read, and Mail.Read.`;
   }
   if (tenant === "organizations" && /invalid_grant|interaction_required|access_denied/i.test(text)) {
     return `${text} — If this is a personal @outlook.com account, set Tenant ID to "consumers" and try again.`;
@@ -389,14 +399,30 @@ async function startDeviceCode({ tenantId, clientId } = {}) {
       : id === DEFAULT_CLIENT && tenant === CONSUMERS_TENANT_GUID
         ? "consumers"
         : tenant;
-  const res = await fetch(`${authorizeBase(authorityTenant)}/devicecode`, {
+  let includeMail = true;
+  let res = await fetch(`${authorizeBase(authorityTenant)}/devicecode`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       client_id: id,
-      scope: SCOPES,
+      scope: SCOPES_WITH_MAIL,
     }),
   });
+  if (!res.ok) {
+    const failBody = await res.clone().json().catch(() => ({}));
+    const failText = String(failBody.error_description || failBody.error || "");
+    if (/Mail\.Read|invalid_scope|AADSTS650053|AADSTS70011|AADSTS70000/i.test(failText)) {
+      includeMail = false;
+      res = await fetch(`${authorizeBase(authorityTenant)}/devicecode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: id,
+          scope: SCOPES_CALENDAR_ONLY,
+        }),
+      });
+    }
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     return {
@@ -418,6 +444,7 @@ async function startDeviceCode({ tenantId, clientId } = {}) {
     expiresIn: Number(data.expires_in) || 900,
     tenantId: authorityTenant,
     clientId: id,
+    includeMail: Boolean(includeMail),
   };
 }
 
@@ -497,12 +524,29 @@ async function refreshAccessToken() {
     return { ok: false, error: "Outlook is not connected." };
   }
   try {
-    const data = await tokenRequest(c.tenantId, {
-      grant_type: "refresh_token",
-      client_id: c.clientId,
-      refresh_token: c.refreshToken,
-      scope: SCOPES,
-    });
+    let data;
+    try {
+      // Omit scope so Azure reuses the originally granted set (avoids AADSTS70000).
+      data = await tokenRequest(c.tenantId, {
+        grant_type: "refresh_token",
+        client_id: c.clientId,
+        refresh_token: c.refreshToken,
+      });
+    } catch (err) {
+      if (
+        !/AADSTS70000|Mail\.Read|extra permission|invalid_scope|AADSTS650053|AADSTS70011|unauthorized/i.test(
+          String(err?.message || err?.code || ""),
+        )
+      ) {
+        throw err;
+      }
+      data = await tokenRequest(c.tenantId, {
+        grant_type: "refresh_token",
+        client_id: c.clientId,
+        refresh_token: c.refreshToken,
+        scope: SCOPES_CALENDAR_ONLY,
+      });
+    }
     return applyTokenResponse(data, { tenantId: c.tenantId, clientId: c.clientId });
   } catch (err) {
     return {
@@ -528,7 +572,7 @@ async function getAccessToken() {
   return { ok: true, token: getOutlookConfig().accessToken };
 }
 
-async function graphGet(pathname, { search, retried = false } = {}) {
+async function graphGet(pathname, { search, retried = false, extraHeaders = {} } = {}) {
   const auth = await getAccessToken();
   if (!auth.ok) return auth;
   const url = new URL(pathname.startsWith("http") ? pathname : `${GRAPH_BASE}${pathname}`);
@@ -542,13 +586,14 @@ async function graphGet(pathname, { search, retried = false } = {}) {
       Authorization: `Bearer ${auth.token}`,
       Accept: "application/json",
       Prefer: 'outlook.timezone="UTC"',
+      ...extraHeaders,
     },
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && !retried) {
     const again = await refreshAccessToken();
     if (!again.ok) return { ok: false, error: again.error || "Outlook login expired." };
-    return graphGet(pathname, { search, retried: true });
+    return graphGet(pathname, { search, retried: true, extraHeaders });
   }
   if (!res.ok) {
     const graphMsg =
@@ -562,19 +607,24 @@ async function graphGet(pathname, { search, retried = false } = {}) {
     let error = friendlyAuthError(detail, {
       tenantId: getOutlookConfig().tenantId,
     });
+    const pathText = String(pathname || "");
+    const isMailPath = /mailFolders|\/messages/i.test(pathText);
     if (
       res.status === 401 ||
       res.status === 403 ||
       /ErrorAccessDenied|MailboxNotEnabled|ErrorItemNotFound/i.test(detail)
     ) {
-      if (/calendar|mailbox|event/i.test(pathname) || pathname.includes("calendar")) {
+      if (isMailPath) {
+        error =
+          "This Outlook sign-in can read the calendar but not mail. Disconnect and Connect Outlook once so Microsoft grants meetings and inbox together. The Azure app needs delegated Mail.Read.";
+      } else if (/calendar|mailbox|event/i.test(pathText) || pathText.includes("calendar")) {
         error =
           "Outlook connected, but this sign-in has no calendar mailbox (common for Azure AD guest accounts). " +
           "In Azure → LIVETRACK app → Authentication: set Supported account types to include personal Microsoft accounts, " +
           "Allow public client flows = Yes. In LiveTrack Settings use Tenant common, Disconnect, then Connect again with the Outlook.com / Microsoft account that has your meetings.";
       }
     }
-    return { ok: false, error, status: res.status };
+    return { ok: false, error, status: res.status, mailDenied: Boolean(isMailPath && (res.status === 401 || res.status === 403)) };
   }
   return { ok: true, data };
 }
@@ -638,6 +688,118 @@ async function fetchCalendarView({ now = new Date(), days = 14 } = {}) {
   return { ok: true, events, start: start.toISOString(), end: end.toISOString() };
 }
 
+function htmlToText(value) {
+  return String(value || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|tr|h[1-6]|li)>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+function recipientsOf(list) {
+  return (Array.isArray(list) ? list : [])
+    .map((entry) => {
+      const email = entry?.emailAddress || {};
+      return {
+        name: String(email.name || "").trim(),
+        address: String(email.address || "").trim().toLowerCase(),
+      };
+    })
+    .filter((row) => row.name || row.address);
+}
+
+function mapGraphMessage(raw) {
+  const from = raw?.from?.emailAddress || {};
+  const unique = raw?.uniqueBody?.content || "";
+  const body = raw?.body?.content || "";
+  const preview = String(raw?.bodyPreview || "").trim();
+  const text = htmlToText(unique || body || preview);
+  const flag = String(raw?.flag?.flagStatus || "").toLowerCase();
+  return {
+    id: String(raw?.id || "").trim(),
+    subject: String(raw?.subject || "").trim(),
+    fromName: String(from.name || "").trim(),
+    fromAddress: String(from.address || "").trim(),
+    to: recipientsOf(raw?.toRecipients),
+    cc: recipientsOf(raw?.ccRecipients),
+    receivedDateTime: String(raw?.receivedDateTime || "").trim(),
+    isRead: Boolean(raw?.isRead),
+    importance: String(raw?.importance || "").trim().toLowerCase(),
+    flagged: flag === "flagged",
+    webLink: String(raw?.webLink || "").trim(),
+    conversationId: String(raw?.conversationId || "").trim(),
+    body: text.slice(0, 4000),
+    odataType: String(raw?.["@odata.type"] || "").trim(),
+  };
+}
+
+function isEventMessage(raw) {
+  const t = String(raw?.["@odata.type"] || "").toLowerCase();
+  return t.includes("eventmessage");
+}
+
+async function fetchInboxMessages({ now = new Date(), days = 14, top = 40 } = {}) {
+  const limit = Math.min(50, Math.max(5, Number(top) || 40));
+  const extraHeaders = {
+    Prefer: 'outlook.timezone="UTC", outlook.body-content-type="text"',
+  };
+  const selectFull =
+    "id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,isRead,importance,flag,webLink,conversationId,uniqueBody,body";
+  const selectLite =
+    "id,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead,importance,webLink,conversationId";
+  const attempts = [
+    {
+      path: "/me/mailFolders/inbox/messages",
+      search: { $select: selectFull, $orderby: "receivedDateTime desc", $top: String(limit) },
+    },
+    {
+      path: "/me/mailFolders/inbox/messages",
+      search: { $select: selectLite, $top: String(limit) },
+    },
+    {
+      path: "/me/messages",
+      search: { $select: selectFull, $orderby: "receivedDateTime desc", $top: String(limit) },
+    },
+    {
+      path: "/me/messages",
+      search: { $select: selectLite, $top: String(limit) },
+    },
+  ];
+  let last = { ok: false, error: "Could not read Outlook mail." };
+  for (const attempt of attempts) {
+    last = await graphGet(attempt.path, { search: attempt.search, extraHeaders });
+    if (last.ok) break;
+  }
+  if (!last.ok) return last;
+  const rows = Array.isArray(last.data?.value) ? last.data.value : [];
+  const cutoff = new Date(now);
+  cutoff.setDate(cutoff.getDate() - Math.max(1, Number(days) || 14));
+  const messages = [];
+  for (const raw of rows) {
+    if (isEventMessage(raw)) continue;
+    const mapped = mapGraphMessage(raw);
+    if (!mapped.id) continue;
+    if (!mapped.subject && !mapped.body) continue;
+    if (mapped.receivedDateTime) {
+      const received = new Date(mapped.receivedDateTime);
+      if (!Number.isNaN(received.getTime()) && received < cutoff) continue;
+    }
+    messages.push(mapped);
+  }
+  return { ok: true, messages, scannedAt: new Date().toISOString() };
+}
+
 function disconnect() {
   cancelDeviceLogin();
   persistTokens({
@@ -664,6 +826,8 @@ function publicStatus() {
 
 module.exports = {
   SCOPES,
+  SCOPES_CALENDAR_ONLY,
+  SCOPES_WITH_MAIL,
   CONSUMERS_TENANT_GUID,
   normalizeTenant,
   friendlyAuthError,
@@ -678,6 +842,9 @@ module.exports = {
   getAccessToken,
   fetchMe,
   fetchCalendarView,
+  fetchInboxMessages,
+  mapGraphMessage,
+  htmlToText,
   mapGraphEvent,
   extractTeamsJoinUrl,
   parseGraphDateTime,

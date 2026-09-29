@@ -274,6 +274,7 @@ async function saveExecutionArtifacts({
   completedAt = new Date(),
   stepsTiming = [],
   runStartedAt = "",
+  runId: runIdHint = "",
   status = "complete",
 }) {
   void filledPdfSource;
@@ -290,7 +291,9 @@ async function saveExecutionArtifacts({
     isComplete ? stampAt : startedIso ? new Date(startedIso) : stampAt,
   );
   const base = executionBaseName(lob, queueCard, userId);
-  const runId = `${base}_${stampAt.toISOString().replace(/[:.]/g, "-")}`;
+  const runId =
+    String(runIdHint || "").trim() ||
+    `${base}_${stampAt.toISOString().replace(/[:.]/g, "-")}`;
   const cardName = cardTitle || queueCard;
   const fillMode = deriveFillMode(actions, fillModeHint);
   const mistakeList = Array.isArray(mistakes) ? mistakes : [];

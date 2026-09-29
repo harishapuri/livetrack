@@ -73,10 +73,25 @@
     lastStatus: new Map(),
     pollTimer: null,
     muteReports: false,
+    /** Last step_update signature so identical fills are not re-sent. */
+    lastReport: new Map(),
+    pendingReport: new Map(),
     /** Intentional Agent-approved values for this run (stepId -> value). Not mistakes. */
     agentApproved: false,
     agentApprovedValues: {},
+    /** User dismissed the coach — keep their click/fill and advance. */
+    acceptOwnValue: new Set(),
+    /** After skip/Next: empty mandatory fields stay red until filled. */
+    mandatoryAlert: false,
+    /** Href when watching started — URL waitAfter must change from this. */
+    startHref: "",
   };
+
+  const StepMatch = globalThis.__ltStepMatch || {};
+  const QUESTION_BLOCK_SEL =
+    'div[role="listitem"], .Qr7Oae, .freebirdFormviewerComponentsQuestionBaseRoot, div[data-params], [data-automation-id*="formField"], [data-automation-id*="primaryQuestionnaire"], [data-automation-id*="questionnaire"], fieldset, [role="radiogroup"]';
+  const QUESTION_FIELD_SEL =
+    'input:not([type="hidden"]):not([type="file"]), textarea, select, [role="checkbox"], [role="radio"], [role="option"], [role="combobox"], [role="listbox"], [role="spinbutton"], [data-automation-id*="promptOption"]';
 
   // Persist progress per card so switching tabs doesn't lose greens
   const progressByCard = new Map();
@@ -90,6 +105,14 @@
   const lockMetaByEl = new WeakMap();
   let valueCheckTimer = null;
   let valueCheckSeq = 0;
+  let valueFlushTimer = null;
+  let manualScanTimer = null;
+  let lastStepCommitTimer = null;
+  let selectorMatchCache = null;
+  let scanUniqueHits = null;
+  let scanFieldIndex = null;
+  let shadowRootsCache = null;
+  let shadowRootsAt = 0;
 
   function ensureHighlightStyle() {
     let style = document.getElementById(HIGHLIGHT_STYLE_ID);
@@ -104,8 +127,9 @@
         outline-offset: 2px !important;
         box-shadow: 0 0 0 4px rgba(215, 30, 40, 0.25) !important;
       }
-      /* Red outline only for wrong value / wrong click — not the normal current step */
-      .coact-wrong-field {
+      /* Red outline for wrong value, skipped required, or blocked Next/Submit */
+      .coact-wrong-field,
+      .coact-required-empty {
         outline: 3px solid #d71e28 !important;
         outline-offset: 2px !important;
         box-shadow: 0 0 0 4px rgba(215, 30, 40, 0.32) !important;
@@ -317,18 +341,24 @@
     const key = step.valueFrom || step.id || "";
     let value = valueOverride;
     if (value == null || value === "") {
-      if (action === "fill") {
+      if (action === "fill" || action === "navigate" || action === "select") {
         try {
           value = readStepActualValue(step) || "";
         } catch {
           value = "";
         }
-      } else if (action === "click" || action === "check") {
+      } else if (action === "click") {
         value =
           step.findByText ||
           (Array.isArray(step.findByLabel) ? step.findByLabel[0] : step.findByLabel) ||
           step.label ||
           "clicked";
+      } else if (action === "check") {
+        try {
+          value = readStepActualValue(step) || "";
+        } catch {
+          value = "";
+        }
       } else {
         value = step.label || action;
       }
@@ -356,26 +386,39 @@
   }
 
   function questionBlocks() {
-    const nodes = Array.from(
-      document.querySelectorAll(
-        'div[role="listitem"], .Qr7Oae, .freebirdFormviewerComponentsQuestionBaseRoot, div[data-params]'
-      )
-    );
-    // Prefer leaf-ish items with an input inside
-    return nodes.filter((n) =>
-      n.querySelector(
-        'input:not([type="hidden"]):not([type="file"]), textarea, [role="checkbox"], [role="radio"]'
-      )
+    const nodes = Array.from(document.querySelectorAll(QUESTION_BLOCK_SEL));
+    const withFields = nodes.filter((n) => n.querySelector(QUESTION_FIELD_SEL));
+    // Leaf blocks only — a page wrapper that contains later questions must not
+    // make those later labels look "filled" via the first input in the wrapper.
+    return withFields.filter(
+      (n) => !withFields.some((other) => other !== n && n.contains(other))
     );
   }
 
   function questionTitle(block) {
+    if (!block) return "";
+    const labelledBy = block.getAttribute?.("aria-labelledby");
+    if (labelledBy) {
+      const parts = String(labelledBy)
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent)
+        .filter(Boolean);
+      const joined = normalize(parts.join(" "));
+      if (joined) return joined;
+    }
     const titleEl =
       block.querySelector('[role="heading"]') ||
+      block.querySelector('[data-automation-id*="label"]') ||
+      block.querySelector('[data-automation-id*="Label"]') ||
+      block.querySelector('[data-automation-id*="formLabel"]') ||
+      block.querySelector("legend") ||
       block.querySelector(".M7eMe") ||
       block.querySelector(".HoXoMd") ||
-      block.querySelector("span");
+      block.querySelector("label") ||
+      block.querySelector("abbr");
     if (titleEl) return normalize(titleEl.textContent);
+    const aria = normalize(block.getAttribute?.("aria-label") || "");
+    if (aria && !(StepMatch.isShortOptionLabel && StepMatch.isShortOptionLabel(aria))) return aria;
     const lines = String(block.innerText || "")
       .split("\n")
       .map((l) => l.trim())
@@ -387,9 +430,13 @@
     return (
       block.querySelector("textarea") ||
       block.querySelector("select") ||
+      block.querySelector('[role="combobox"]') ||
+      block.querySelector('[role="spinbutton"]') ||
+      block.querySelector('[role="listbox"]') ||
       block.querySelector('input[type="text"]') ||
       block.querySelector('input[type="email"]') ||
       block.querySelector('input[type="date"]') ||
+      block.querySelector('input[type="number"]') ||
       block.querySelector('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"])') ||
       block.querySelector('[contenteditable="true"]') ||
       block.querySelector('input[type="radio"]:checked') ||
@@ -398,6 +445,7 @@
   }
 
   function titleMatches(title, hint, mode) {
+    if (StepMatch.titleMatches) return StepMatch.titleMatches(title, hint, mode);
     const h = normalize(hint);
     const t = normalize(title);
     if (!h || !t) return false;
@@ -406,26 +454,49 @@
     return t.includes(h);
   }
 
+  function stepQuestionHints(step) {
+    if (StepMatch.distinctiveQuestionHints) return StepMatch.distinctiveQuestionHints(step);
+    return (Array.isArray(step?.findByLabel) ? step.findByLabel : [step?.findByLabel || step?.label || ""])
+      .map(normalize)
+      .filter(Boolean);
+  }
+
   function findByLabel(labelHints, mode = "includes") {
     const hints = (Array.isArray(labelHints) ? labelHints : [labelHints]).filter(Boolean);
     if (!hints.length) return null;
 
     const blocks = questionBlocks();
-    for (const hint of hints) {
-      for (const block of blocks) {
-        const title = questionTitle(block);
-        if (!titleMatches(title, hint, mode)) continue;
-        const field = fieldInBlock(block);
-        if (field) return field;
-      }
+    let best = null;
+    let bestScore = 0;
+    for (const block of blocks) {
+      const field = fieldInBlock(block);
+      if (!field) continue;
+      const snap = {
+        title: questionTitle(block),
+        aria: String(field.getAttribute?.("aria-label") || "").trim(),
+        placeholder: String(field.getAttribute?.("placeholder") || field.placeholder || "").trim(),
+        value: fieldValue(field),
+      };
+      const score = StepMatch.controlMatchScore
+        ? StepMatch.controlMatchScore(snap, hints.map(normalize))
+        : StepMatch.titleMatchScore
+          ? StepMatch.titleMatchScore(snap.title, hints)
+          : hints.some((h) => titleMatches(snap.title, h, mode))
+            ? normalize(hints[0]).length
+            : 0;
+      if (score <= bestScore) continue;
+      bestScore = score;
+      best = field;
     }
+    if (best) return best;
 
-    // Fallback: whole block text contains hint (longer hints only)
+    // Fallback: block text contains a long hint, but only on small leaf blocks.
     for (const hint of hints) {
-      if (normalize(hint).length < 10 && mode !== "includes") continue;
+      const h = normalize(hint);
+      if (h.length < 16) continue;
       for (const block of blocks) {
         const text = normalize(block.innerText || "");
-        if (!text.includes(normalize(hint))) continue;
+        if (text.length > 360 || !text.includes(h)) continue;
         const field = fieldInBlock(block);
         if (field) return field;
       }
@@ -458,15 +529,16 @@
     return null;
   }
 
-  function findClickableByText(labelHints) {
+  function findClickableByText(labelHints, root = document) {
     const hints = (Array.isArray(labelHints) ? labelHints : [labelHints])
       .map(normalize)
       .filter(Boolean);
     if (!hints.length) return null;
 
+    const scope = root && root.querySelectorAll ? root : document;
     const candidates = Array.from(
-      document.querySelectorAll(
-        'button, a[href], [role="button"], input[type="submit"], input[type="button"], input[type="reset"]'
+      scope.querySelectorAll(
+        'button, a[href], [role="button"], [role="radio"], [role="checkbox"], [role="option"], input[type="submit"], input[type="button"], input[type="reset"], input[type="radio"], input[type="checkbox"]'
       )
     );
     for (const hint of hints) {
@@ -476,7 +548,6 @@
           el.innerText || el.textContent || el.value || el.getAttribute("aria-label") || el.getAttribute("title") || ""
         );
         if (!text) continue;
-        // Exact / contains hint. Avoid hint.includes(shortText) — "accept".includes("a") is true.
         if (text === hint || text.includes(hint)) return el;
         if (text.length >= 4 && hint.startsWith(text)) return el;
       }
@@ -484,42 +555,245 @@
     return null;
   }
 
-  function querySelectorSafe(selector) {
-    if (!selector) return null;
+  function querySelectorSafe(selector, root = document) {
+    if (!selector || !root?.querySelector) return null;
     try {
-      return document.querySelector(selector);
+      return root.querySelector(selector);
     } catch {
       return null;
     }
   }
 
+  function shadowRoots() {
+    const now = Date.now();
+    if (shadowRootsCache && now - shadowRootsAt < 1500) return shadowRootsCache;
+    const roots = [];
+    const stack = [document];
+    const seen = new Set();
+    while (stack.length) {
+      const root = stack.pop();
+      let nodes = [];
+      try {
+        nodes = root.querySelectorAll ? root.querySelectorAll("*") : [];
+      } catch {
+        nodes = [];
+      }
+      for (const node of nodes) {
+        if (node.shadowRoot && !seen.has(node.shadowRoot)) {
+          seen.add(node.shadowRoot);
+          roots.push(node.shadowRoot);
+          stack.push(node.shadowRoot);
+        }
+      }
+    }
+    shadowRootsCache = roots;
+    shadowRootsAt = now;
+    return roots;
+  }
+
+  function queryDeep(selector) {
+    const found = querySelectorSafe(selector, document);
+    if (found) return found;
+    for (const root of shadowRoots()) {
+      const hit = querySelectorSafe(selector, root);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function selectorList(step) {
+    const list = [];
+    if (Array.isArray(step?.selectors)) list.push(...step.selectors);
+    if (step?.selector) list.push(step.selector);
+    return [...new Set(list.map((s) => String(s || "").trim()).filter(Boolean))];
+  }
+
+  function resolveBySelectors(step) {
+    for (const sel of selectorList(step)) {
+      const el = queryDeep(sel);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  function visibleMatches(selector) {
+    if (selectorMatchCache?.has(selector)) return selectorMatchCache.get(selector);
+    let els = [];
+    try {
+      els = Array.from(document.querySelectorAll(selector)).filter((el) => isElementVisible(el));
+    } catch {
+      els = [];
+    }
+    if (selectorMatchCache) selectorMatchCache.set(selector, els);
+    return els;
+  }
+
+  function uniqueSelectorHit(step) {
+    for (const sel of selectorList(step)) {
+      const els = visibleMatches(sel);
+      if (els.length === 1) return els[0];
+    }
+    return null;
+  }
+
+  function associatedControlLabel(el) {
+    if (!el) return "";
+    const labelledBy = el.getAttribute?.("aria-labelledby");
+    if (labelledBy) {
+      const text = String(labelledBy)
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent || "")
+        .join(" ");
+      const named = normalize(text);
+      if (named) return named;
+    }
+    if (el.id) {
+      try {
+        const lab = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+        const named = normalize(lab?.textContent || "");
+        if (named) return named;
+      } catch {
+        /* ignore bad ids */
+      }
+    }
+    const wrap = el.closest?.("label");
+    if (wrap) {
+      const named = normalize(String(wrap.textContent || "").replace(String(el.value || ""), ""));
+      if (named && named.length < 180) return named;
+    }
+    return "";
+  }
+
+  function controlSnapshot(el) {
+    const block = questionBlockFor(el);
+    const fromBlock = block ? questionTitle(block) : "";
+    return {
+      title: fromBlock || associatedControlLabel(el),
+      aria: String(el?.getAttribute?.("aria-label") || "").trim(),
+      placeholder: String(el?.getAttribute?.("placeholder") || el?.placeholder || "").trim(),
+      value: fieldValue(el),
+    };
+  }
+
+  function elementMatchesStep(el, step) {
+    if (!el || !step) return false;
+    const hints = StepMatch.stepValueHints ? StepMatch.stepValueHints(step) : stepQuestionHints(step);
+    if (!hints.length) {
+      const unique = uniqueSelectorHit(step);
+      return Boolean(unique && (unique === el || unique.contains(el) || el.contains?.(unique)));
+    }
+    if (StepMatch.controlMatchScore) {
+      return StepMatch.controlMatchScore(controlSnapshot(el), hints) > 0;
+    }
+    const block = questionBlockFor(el);
+    const title = block ? questionTitle(block) : "";
+    if (StepMatch.titleMatchScore) return StepMatch.titleMatchScore(title, hints) > 0;
+    return hints.some((h) => titleMatches(title, h, StepMatch.matchModeForHint ? StepMatch.matchModeForHint(h) : "includes"));
+  }
+
+  function looksLikeServiceNow() {
+    const u = String(location.href || "").toLowerCase();
+    const t = String(document.title || "").toLowerCase();
+    if (u.includes("service-now") || u.includes("servicenow") || t.includes("servicenow")) {
+      return true;
+    }
+    return /\/(nav_to\.do|change_request|incident\.do|now\/nav|textsearch\.do)/i.test(u);
+  }
+
+  function changeRequestSearchUrl(query) {
+    const origin = location.origin;
+    const q = String(query || "").replace(/\s+/g, " ").trim();
+    if (!origin || !q) return "";
+    const compact = q.replace(/\s/g, "");
+    let encodedQuery;
+    if (/^(chg)?\d{5,}$/i.test(compact)) {
+      let number = compact.toUpperCase();
+      if (/^\d+$/.test(number)) number = `CHG${number}`;
+      encodedQuery = `number=${encodeURIComponent(number)}^ORnumberLIKE${encodeURIComponent(number)}`;
+    } else {
+      const like = encodeURIComponent(q);
+      encodedQuery = `numberLIKE${like}^ORshort_descriptionLIKE${like}^ORdescriptionLIKE${like}`;
+    }
+    return `${origin}/change_request_list.do?sysparm_query=${encodedQuery}&sysparm_first_row=1&sysparm_view=`;
+  }
+
+  function guiSelectorHit(step) {
+    const list = [];
+    if (step?.guiId) list.push(String(step.guiId));
+    for (const sel of selectorList(step)) {
+      if (StepMatch.isStableGuiSelector && StepMatch.isStableGuiSelector(sel)) list.push(sel);
+    }
+    const wanted = normalize(
+      (Array.isArray(step?.allowedValues) && step.allowedValues.find(Boolean)) ||
+        step?.value ||
+        (Array.isArray(step?.findByText) ? step.findByText[0] : step?.findByText) ||
+        "",
+    );
+    for (const sel of [...new Set(list.map((item) => String(item || "").trim()).filter(Boolean))]) {
+      const els = visibleMatches(sel);
+      if (els.length === 1) return els[0];
+      if (!wanted || els.length < 2) continue;
+      const hit = els.find((el) => {
+        const bits = [el.getAttribute?.("aria-label"), el.getAttribute?.("value"), el.value, el.innerText]
+          .map(normalize)
+          .filter(Boolean);
+        return bits.some((text) => text === wanted || text.includes(wanted));
+      });
+      if (hit) return hit;
+    }
+    return null;
+  }
+
   function resolveElement(step) {
-    // Prefer explicit selectors for clicks — fuzzy text can hit the wrong control
-    if ((step.action === "click" || step.action === "check") && step.selector) {
-      const bySel = querySelectorSafe(step.selector);
-      if (bySel) return bySel;
+    if (!step) return null;
+    const byGui = guiSelectorHit(step);
+    if (byGui) return byGui;
+    const hints = stepQuestionHints(step);
+    const optionHints = []
+      .concat(step.findByText || [], step.findButtonByText || [])
+      .filter(Boolean);
+
+    // Unique CSS only when the control actually belongs to this question
+    const unique = uniqueSelectorHit(step);
+    if (unique && (!hints.length || elementMatchesStep(unique, step))) return unique;
+
+    if (hints.length) {
+      const mode =
+        step.matchMode ||
+        (StepMatch.matchModeForHint ? StepMatch.matchModeForHint(hints[0]) : "includes");
+      const byLabel = findByLabel(hints, mode);
+      if (byLabel) {
+        if (optionHints.length && (step.action === "click" || step.action === "check")) {
+          const block = questionBlockFor(byLabel) || byLabel.parentElement;
+          const inBlock = findClickableByText(optionHints, block || document);
+          if (inBlock) return inBlock;
+        }
+        return byLabel;
+      }
     }
-    if (step.findByText || step.findButtonByText) {
-      const el = findClickableByText(step.findByText || step.findButtonByText);
+
+    // Never search the whole page for "Yes" / "No" — that greens later questions.
+    const optionOnly = optionHints.filter(
+      (h) => !(StepMatch.isShortOptionLabel && StepMatch.isShortOptionLabel(h))
+    );
+    if (optionOnly.length && (step.action === "click" || step.action === "check")) {
+      const el = findClickableByText(optionOnly);
+      if (el && elementMatchesStep(el, step)) return el;
+    }
+    if ((step.action === "click" || step.action === "check") && optionOnly.length === 0 && hints.length) {
+      /* option Yes scoped above via findByLabel */
+    } else if (step.action === "click" && hints.length) {
+      const el = findClickableByText(hints);
       if (el) return el;
     }
-    if (step.action === "click" && step.findByLabel) {
-      const el = findClickableByText(step.findByLabel);
-      if (el) return el;
-    }
-    if (step.findByLabel) {
-      const mode = step.matchMode || (normalize(String(step.findByLabel[0] || "")).length <= 8 ? "exact" : "includes");
-      const el = findByLabel(step.findByLabel, mode);
-      if (el) return el;
-    }
-    if (step.findCheckboxByLabel) {
+
+    if (step.findCheckboxByLabel && hints.length) {
       const el = findCheckboxByLabel(step.findCheckboxByLabel);
-      if (el) return el;
+      if (el && elementMatchesStep(el, step)) return el;
     }
-    if (step.selector) {
-      const el = querySelectorSafe(step.selector);
-      if (el) return el;
-    }
+
+    const bySel = resolveBySelectors(step);
+    if (bySel && elementMatchesStep(bySel, step)) return bySel;
     return null;
   }
 
@@ -555,6 +829,8 @@
   function stepMayNavigate(step) {
     return Boolean(
       step?.navigates ||
+        step?.fallbackNavigate ||
+        String(step?.action || "").toLowerCase() === "navigate" ||
         step?.waitAfter?.urlIncludes ||
         step?.waitAfter?.urlPath ||
         step?.waitAfter?.urlEquals
@@ -578,6 +854,13 @@
   async function waitUntilStepReady(step, cardId) {
     const timeoutMs = step.timeoutMs || step.waitAfter?.timeoutMs || 20000;
     if (step.action === "wait") return true;
+    const snowNav =
+      String(step.action || "").toLowerCase() === "navigate" ||
+      step.fallbackNavigate === "servicenow-change-request";
+    if (snowNav) {
+      await waitForPredicate(() => Boolean(resolveElement(step)), Math.min(timeoutMs, 1200));
+      return true;
+    }
 
     const ready = await waitForPredicate(() => Boolean(resolveElement(step)), timeoutMs);
     if (!ready) {
@@ -720,15 +1003,20 @@
     }
 
     await waitUntilStepReady(step, cardId);
+    const snowNav =
+      String(step.action || "").toLowerCase() === "navigate" ||
+      step.fallbackNavigate === "servicenow-change-request";
     const el = resolveElement(step);
-    if (!el) {
+    if (!el && !snowNav) {
       throw new Error(`Could not find: ${step.label || step.id}`);
     }
 
-    clearHighlights();
-    el.classList.add("coact-active-field");
-    el.scrollIntoView({ block: "center", behavior: "smooth" });
-    await sleep(250);
+    if (el) {
+      clearHighlights();
+      el.classList.add("coact-active-field");
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      await sleep(250);
+    }
 
     // Re-check right before typing — user may have switched away
     if (!pageIsVisibleToUser()) {
@@ -736,6 +1024,23 @@
       if (!again || runner.cancelled) {
         throw new Error("Form tab not visible on screen");
       }
+    }
+
+    if (snowNav) {
+      const value = fillValueForStep(step, data);
+      if (!looksLikeServiceNow()) {
+        throw new Error("Open a logged-in ServiceNow tab, then Start.");
+      }
+      const href = changeRequestSearchUrl(value);
+      if (!href) {
+        throw new Error("Enter a change request number or keywords.");
+      }
+      if (el && (step.action === "fill" || step.action === "select")) {
+        await fillGoogleStyle(el, value);
+        await sleep(200);
+      }
+      location.assign(href);
+      return;
     }
 
     if (step.action === "fill" || step.action === "select") {
@@ -947,12 +1252,28 @@
     return r.width > 0 && r.height > 0;
   }
 
+  function urlWaitAlreadyTrueAtStart(step) {
+    const w = step?.waitAfter || {};
+    const start = String(watch.startHref || "");
+    if (!start) return false;
+    try {
+      if (w.urlEquals && start === w.urlEquals) return true;
+      if (w.urlIncludes && start.includes(w.urlIncludes)) return true;
+      if (w.urlPath && (start.includes(w.urlPath) || new URL(start).pathname.includes(w.urlPath))) return true;
+    } catch {
+      if (w.urlPath && start.includes(w.urlPath)) return true;
+    }
+    return false;
+  }
+
   function clickStepLooksDone(step) {
     const w = step.waitAfter || {};
     const href = location.href;
-    if (w.urlEquals && href === w.urlEquals) return true;
-    if (w.urlIncludes && href.includes(w.urlIncludes)) return true;
-    if (w.urlPath && (location.pathname.includes(w.urlPath) || href.includes(w.urlPath))) return true;
+    if (!urlWaitAlreadyTrueAtStart(step)) {
+      if (w.urlEquals && href === w.urlEquals) return true;
+      if (w.urlIncludes && href.includes(w.urlIncludes)) return true;
+      if (w.urlPath && (location.pathname.includes(w.urlPath) || href.includes(w.urlPath))) return true;
+    }
     if (w.selector || w.hideSelector) {
       if (w.selector) {
         try {
@@ -975,14 +1296,47 @@
     return false;
   }
 
+  function choiceLooksSelected(el) {
+    if (!el) return false;
+    const role = String(el.getAttribute?.("role") || "").toLowerCase();
+    if (el.getAttribute?.("aria-checked") === "true" || el.getAttribute?.("aria-pressed") === "true") {
+      return true;
+    }
+    if (el.checked) return true;
+    if (role === "radio" || role === "option") {
+      return el.getAttribute("aria-selected") === "true";
+    }
+    return Boolean(fieldValue(el));
+  }
+
+  function stepControlCompleted(step) {
+    if (!step) return false;
+    if (step.action === "fill" || step.action === "select") return stepFieldFilled(step);
+    if (step.action === "click") return clickStepLooksDone(step);
+    if (step.action === "check") {
+      const el = resolveElement(step);
+      if (!el || !choiceLooksSelected(el)) return false;
+      return Boolean(fieldValue(el) || readStepActualValue(step));
+    }
+    return false;
+  }
+
   function stepAlreadyComplete(step) {
     if (!step) return false;
-    if (watch.lastStatus.get(step.id) === "done") return true;
     if (step.action === "highlight" || step.action === "wait") return false;
     try {
-      // Fill/select: any non-empty value; click/check: correct control completed
-      if (step.action === "fill" || step.action === "select") return stepFieldFilled(step);
-      if (step.action === "click" || step.action === "check") return clickStepLooksDone(step);
+      if (step.action === "fill" || step.action === "select") {
+        if (stepFieldFilled(step)) return true;
+        return watch.lastStatus.get(step.id) === "done" && !stepFindableOnPage(step);
+      }
+      if (step.action === "check") {
+        if (stepControlCompleted(step)) return true;
+        return watch.lastStatus.get(step.id) === "done" && !stepFindableOnPage(step);
+      }
+      if (step.action === "click") {
+        if (clickStepLooksDone(step)) return true;
+        return watch.lastStatus.get(step.id) === "done" && !stepFindableOnPage(step);
+      }
     } catch {
       return false;
     }
@@ -1032,7 +1386,7 @@
       const laterOk = steps.slice(i + 1).some(
         (s) => stepAlreadyComplete(s) || stepFindableOnPage(s)
       );
-      if (laterOk && (step.action === "click" || step.action === "check" || stepMayNavigate(step))) {
+      if (laterOk && stepMayNavigate(step)) {
         markWatchStatus(step.id, "done");
         i += 1;
         continue;
@@ -1201,7 +1555,7 @@
             cardId,
             stepId: step.id,
             status: "done",
-            ...captureFieldsForStep(step),
+            ...captureFieldsForStep(step, fillValueForStep(step, data || {})),
           });
           markWatchStatus(step.id, "done");
           const settled = await settleAfterStep(step);
@@ -1258,10 +1612,36 @@
           }
         }
 
+        if (step.action === "check") {
+          const checked = readStepActualValue(step);
+          const checkResult = evaluateCheckValue(step, checked);
+          if (checkResult.empty) {
+            markWatchStatus(step.id, "pending");
+            report({
+              cardId,
+              stepId: step.id,
+              status: "pending",
+              action: "check",
+              key: step.valueFrom || step.id,
+              label: step.label || step.id,
+              reason: `“${step.label || step.id}” is not selected.`,
+            });
+            continue;
+          }
+          if (checkResult.wrong) {
+            reportMistakeIfWrong(
+              step,
+              checked,
+              checkResult.expected || expectedValueForStep(step, data || {}),
+            );
+          }
+        }
+
         report({
           cardId,
           stepId: step.id,
           status: "done",
+          valueMatched: step.action !== "check" || evaluateCheckValue(step, readStepActualValue(step)).ok,
           ...captureFieldsForStep(step),
         });
         markWatchStatus(step.id, "done");
@@ -1302,15 +1682,126 @@
     report({ cardId, status: "run_complete" });
   }
 
+  function choiceQuestionContext(el) {
+    const titles = [];
+    const block = questionBlockFor(el);
+    const title = block ? questionTitle(block) : "";
+    // The control's own aria-label is the option the user picked (Google Forms
+    // puts the whole choice sentence there). Treating it as the question makes
+    // a checked box look empty.
+    const own = String(el?.getAttribute?.("aria-label") || el?.innerText || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+    if (title && title.toLowerCase() !== own) titles.push(title);
+    return titles;
+  }
+
+  function choiceToggle(el) {
+    if (!el) return null;
+    const role = String(el.getAttribute?.("role") || "").toLowerCase();
+    const type = String(el.type || "").toLowerCase();
+    if (role === "checkbox" || role === "radio" || type === "checkbox" || type === "radio") return el;
+    const inner = el.querySelector?.(
+      '[role="checkbox"], [role="radio"], input[type="checkbox"], input[type="radio"]'
+    );
+    if (inner) return inner;
+    return (
+      el.closest?.(
+        '[role="checkbox"], [role="radio"], input[type="checkbox"], input[type="radio"]'
+      ) || null
+    );
+  }
+
+  function choiceIsOn(el) {
+    const node = choiceToggle(el);
+    if (!node) return false;
+    if (node.checked) return true;
+    if (node.getAttribute("aria-checked") === "true" || node.getAttribute("aria-pressed") === "true") {
+      return true;
+    }
+    if (node.querySelector?.('[aria-checked="true"], [aria-pressed="true"]')) return true;
+    const parent = node.parentElement?.closest?.('[aria-checked="true"], [aria-pressed="true"]');
+    return Boolean(parent);
+  }
+
+  function choiceLabelText(el) {
+    const node = choiceToggle(el) || el;
+    if (!node) return "";
+    const aria = String(node.getAttribute?.("aria-label") || "").replace(/\s+/g, " ").trim();
+    if (aria) return aria;
+    const labelledBy = node.getAttribute?.("aria-labelledby");
+    if (labelledBy) {
+      const text = String(labelledBy)
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent || "")
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (text) return text;
+    }
+    const row = node.closest?.("label") || node.parentElement;
+    const raw = String(row?.innerText || node.innerText || node.textContent || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    return raw;
+  }
+
+  function cleanedChoiceValue(raw, el) {
+    const text = String(raw || "").replace(/\s+/g, " ").trim();
+    if (!text) return "";
+    if (StepMatch.effectiveChoiceValue) {
+      return StepMatch.effectiveChoiceValue(text, choiceQuestionContext(el));
+    }
+    if (StepMatch.looksLikePlaceholder && StepMatch.looksLikePlaceholder(text)) return "";
+    return text;
+  }
+
+  function comboboxTriggerText(el) {
+    const valuetext = String(el.getAttribute("aria-valuetext") || "").replace(/\s+/g, " ").trim();
+    if (valuetext) return valuetext;
+    try {
+      const clone = el.cloneNode(true);
+      clone
+        .querySelectorAll(
+          '[role="listbox"], [role="list"], [role="option"], ul, ol, [data-automation-id*="popupList"], [data-automation-id*="promptOption"]'
+        )
+        .forEach((n) => n.remove());
+      const lines = String(clone.innerText || "")
+        .split("\n")
+        .map((l) => l.replace(/\s+/g, " ").trim())
+        .filter(Boolean);
+      if (lines[0]) return lines[0];
+    } catch {
+      /* ignore */
+    }
+    const lines = String(el.innerText || "")
+      .split("\n")
+      .map((l) => l.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+    return lines[0] || String(el.value || "").trim();
+  }
+
   function fieldValue(el) {
     if (!el) return "";
+    const toggle = choiceToggle(el);
+    if (toggle && choiceIsOn(toggle)) {
+      const raw = choiceLabelText(toggle);
+      return cleanedChoiceValue(raw, toggle) || raw || "checked";
+    }
     const role = el.getAttribute?.("role") || "";
-    if (role === "checkbox" || role === "radio") {
-      return el.getAttribute("aria-checked") === "true"
-        ? String(el.innerText || el.textContent || el.getAttribute("aria-label") || "checked")
-            .replace(/\s+/g, " ")
-            .trim()
-        : "";
+    if (role === "checkbox" || role === "radio" || role === "option" || role === "button" || role === "switch") {
+      const on =
+        el.getAttribute("aria-checked") === "true" ||
+        el.getAttribute("aria-pressed") === "true" ||
+        el.getAttribute("aria-selected") === "true";
+      if (on) {
+        const raw = String(el.innerText || el.textContent || el.getAttribute("aria-label") || "checked")
+          .replace(/\s+/g, " ")
+          .trim();
+        return cleanedChoiceValue(raw, el) || raw || "checked";
+      }
+      if (role === "option" || role === "button" || role === "switch") return "";
     }
     const tag = (el.tagName || "").toLowerCase();
     const type = String(el.type || "").toLowerCase();
@@ -1318,7 +1809,31 @@
       const opt = el.selectedOptions && el.selectedOptions[0];
       if (!opt) return "";
       const text = String(opt.textContent || "").replace(/\s+/g, " ").trim();
-      return text || String(opt.value || el.value || "").trim();
+      const value = String(opt.value || el.value || "").trim();
+      if (opt.disabled) return "";
+      const visible = cleanedChoiceValue(text, el);
+      if (visible) return visible;
+      if (!text && value && !(StepMatch.looksLikePlaceholder && StepMatch.looksLikePlaceholder(value))) {
+        return value;
+      }
+      return "";
+    }
+    if (role === "combobox" || role === "listbox" || role === "spinbutton") {
+      const nested = el.querySelector?.(
+        'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]), textarea'
+      );
+      const nestedVal = nested ? String(nested.value || "").trim() : "";
+      if (nestedVal) return cleanedChoiceValue(nestedVal, el) || nestedVal;
+      if (role === "listbox") {
+        const selected = el.querySelector?.('[aria-selected="true"], [aria-checked="true"]');
+        if (!selected) return "";
+        return cleanedChoiceValue(
+          String(selected.innerText || selected.textContent || "").replace(/\s+/g, " ").trim(),
+          el
+        );
+      }
+      const raw = comboboxTriggerText(el);
+      return cleanedChoiceValue(raw, el);
     }
     if (type === "radio" || type === "checkbox") {
       if (!el.checked) return "";
@@ -1329,58 +1844,241 @@
       return labText || String(el.value || "checked").trim();
     }
     if (el.isContentEditable) return String(el.textContent || "").trim();
-    return String(el.value || "").trim();
+    const direct = String(el.value || "").trim();
+    if (direct) return direct;
+    const inner = el.shadowRoot?.querySelector?.(
+      'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), textarea'
+    );
+    if (inner) {
+      const nested = String(inner.value || inner.textContent || "").trim();
+      if (nested) return nested;
+    }
+    return "";
+  }
+
+  function questionBlockFor(el) {
+    if (!el?.closest) return null;
+    return el.closest(QUESTION_BLOCK_SEL) || null;
+  }
+
+  function labelHints(step) {
+    return stepQuestionHints(step);
+  }
+
+  function stepMatchesQuestion(step, el) {
+    const hints = stepQuestionHints(step);
+    if (!hints.length || !el) return false;
+    const block = questionBlockFor(el);
+    const title = block ? questionTitle(block) : "";
+    if (StepMatch.titleMatchScore) return StepMatch.titleMatchScore(title, hints) > 0;
+    const mode = step.matchMode || (hints[0].length <= 8 ? "exact" : "includes");
+    return hints.some((h) => titleMatches(title, h, mode));
+  }
+
+  function isChoiceControl(el) {
+    if (!el) return false;
+    const type = String(el.type || "").toLowerCase();
+    if (type === "radio" || type === "checkbox" || type === "button") return true;
+    const role = String(el.getAttribute?.("role") || "").toLowerCase();
+    if (role === "radio" || role === "checkbox" || role === "option" || role === "switch") {
+      return true;
+    }
+    return Boolean(
+      el.closest?.(
+        'button, [role="button"], [role="radio"], [role="checkbox"], [role="option"], label, input[type="radio"], input[type="checkbox"]'
+      )
+    );
+  }
+
+  function completeStepFromUser(step, { value } = {}) {
+    if (!step) return;
+    if (lastStepCommitTimer) {
+      clearTimeout(lastStepCommitTimer);
+      lastStepCommitTimer = null;
+    }
+    if (step.action === "check") {
+      finishCheckFromUser(step, value);
+      return;
+    }
+    const actual = String(value || "").trim();
+    // A click is done when the user hits the button. The button caption is not a field value.
+    if (step.action === "click") {
+      markStepAcceptedByUser(step.id);
+      hideSeqTip();
+      clearWrongHighlight(step);
+      lastMismatchKey = "";
+      reportManual(step, "done", {
+        force: true,
+        value: actual || undefined,
+        valueMatched: true,
+      });
+      noteSkippedMandatory(step);
+      applySequentialLocks();
+      return;
+    }
+    const judged = fillMatchResult(step, actual);
+    if (actual && !judged.matched) {
+      if (!reportMistakeIfWrong(step, actual, judged.expected)) {
+        try {
+          showWrongTip(step, judged.expected, actual);
+        } catch {
+          /* soft */
+        }
+      }
+    }
+    markStepAcceptedByUser(step.id);
+    hideSeqTip();
+    clearWrongHighlight(step);
+    lastMismatchKey = "";
+    reportManual(step, "done", {
+      force: true,
+      value: actual || undefined,
+      valueMatched: judged.matched,
+    });
+    noteSkippedMandatory(step);
+    applySequentialLocks();
+  }
+
+  function evaluateCheckValue(step, actual) {
+    if (userAcceptedStep(step) || watch.agentApproved) {
+      return actual ? { ok: true } : { ok: false, empty: true };
+    }
+    const list = expectedListForStep(step);
+    if (StepMatch.evaluateCheckSelection) {
+      return StepMatch.evaluateCheckSelection(actual, list);
+    }
+    if (!actual) return { ok: false, empty: true };
+    if (list.length && !valuesMatchAny(actual, list)) {
+      return { ok: false, wrong: true, expected: list[0] };
+    }
+    return { ok: true };
+  }
+
+  function finishCheckFromUser(step, value) {
+    const actual = String(value || readStepActualValue(step) || "").trim();
+    const result = evaluateCheckValue(step, actual);
+    if (result.empty) {
+      reportManual(step, "pending", { force: true, fieldPresent: true });
+      applySequentialLocks();
+      return;
+    }
+    if (result.wrong) {
+      reportMistakeIfWrong(step, actual, result.expected);
+      try {
+        showWrongTip(step, result.expected, actual);
+      } catch {
+        /* soft */
+      }
+    } else {
+      hideSeqTip();
+      clearWrongHighlight(step);
+      lastMismatchKey = "";
+    }
+    reportManual(step, "done", {
+      force: true,
+      value: actual,
+      valueMatched: !result.wrong,
+    });
+    applySequentialLocks();
+  }
+
+  function pickStepByTitleFallback(title) {
+    let best = null;
+    let bestScore = 0;
+    for (const step of watch.steps || []) {
+      if (step.action === "highlight" || step.action === "wait") continue;
+      const hints = stepQuestionHints(step);
+      const score = StepMatch.titleMatchScore
+        ? StepMatch.titleMatchScore(title, hints)
+        : hints.reduce(
+            (n, h) => (titleMatches(title, h, StepMatch.matchModeForHint?.(h) || "includes") ? Math.max(n, String(h).length) : n),
+            0
+          );
+      if (score > bestScore) {
+        bestScore = score;
+        best = step;
+      }
+    }
+    return bestScore > 0 ? best : null;
   }
 
   function matchStepForElement(el) {
     if (!watch.steps.length || !el) return null;
-    const block =
-      el.closest('div[role="listitem"], .Qr7Oae, .freebirdFormviewerComponentsQuestionBaseRoot, div[data-params]') ||
-      el.parentElement;
-    const title = block ? questionTitle(block) : "";
-    const text = normalize((block && block.innerText) || "");
+    const snap = controlSnapshot(el);
+    const byControl = StepMatch.pickBestStepForControl
+      ? StepMatch.pickBestStepForControl(watch.steps, snap)
+      : StepMatch.pickBestStepForTitle
+        ? StepMatch.pickBestStepForTitle(watch.steps, snap.title)
+        : pickStepByTitleFallback(snap.title);
+    if (byControl) return byControl;
 
+    let uniqueHit = null;
     for (const step of watch.steps) {
       if (step.action === "highlight" || step.action === "wait") continue;
-      if (step.selector) {
-        try {
-          const resolved = querySelectorSafe(step.selector);
-          if (resolved && (resolved === el || resolved.contains(el))) return step;
-          if (el.matches?.(step.selector)) return step;
-        } catch {
-          /* ignore */
-        }
-      }
-      const isChoice =
-        el.getAttribute("role") === "checkbox" ||
-        el.getAttribute("role") === "radio" ||
-        el.closest?.('[role="checkbox"], [role="radio"], [role="option"]') ||
-        String(el.type || "").toLowerCase() === "radio" ||
-        String(el.type || "").toLowerCase() === "checkbox" ||
-        (el.tagName || "").toLowerCase() === "select";
-      if (step.findCheckboxByLabel && isChoice) {
-        const hints = (Array.isArray(step.findCheckboxByLabel) ? step.findCheckboxByLabel : [step.findCheckboxByLabel]).map(normalize);
-        const optText = normalize(
-          el.innerText || el.textContent || el.value || fieldValue(el) || text
-        );
-        if (hints.some((h) => optText.includes(h))) return step;
-      }
-      if (step.findByLabel) {
-        const hints = Array.isArray(step.findByLabel) ? step.findByLabel : [step.findByLabel];
-        const mode = step.matchMode || (normalize(String(hints[0] || "")).length <= 8 ? "exact" : "includes");
-        if (hints.some((h) => titleMatches(title, h, mode) || (normalize(h).length >= 10 && text.includes(normalize(h))))) {
-          return step;
-        }
+      const unique = scanUniqueHits ? scanUniqueHits.get(step.id) || null : uniqueSelectorHit(step);
+      if (unique && (unique === el || unique.contains(el) || el.contains?.(unique))) {
+        uniqueHit = step;
+        break;
       }
     }
-    return null;
+    return uniqueHit;
   }
 
-  function reportManual(step, status, { force = false, value, valueMatched = null } = {}) {
-    if (!watch.cardId || !step) return;
-    if (watch.muteReports && !force) return;
+  function userAcceptedStep(step) {
+    return Boolean(step?.id && watch.acceptOwnValue instanceof Set && watch.acceptOwnValue.has(step.id));
+  }
+
+  function markStepAcceptedByUser(stepId) {
+    if (!stepId) return;
+    if (!(watch.acceptOwnValue instanceof Set)) watch.acceptOwnValue = new Set();
+    watch.acceptOwnValue.add(stepId);
+  }
+
+  /** User chose to continue — accept the step they are on, and leave the rest for later. */
+  function acceptFilledStepsOnProceed() {
+    const gate = watch.steps[actionGateIndex()];
+    if (gate && (stepFieldFilled(gate) || watch.lastStatus.get(gate.id) === "running")) {
+      markStepAcceptedByUser(gate.id);
+      clearWrongHighlight(gate);
+      reportManual(gate, "done", { force: true, valueMatched: true });
+    }
+    lastMismatchKey = "";
+    hideSeqTip();
+  }
+
+  function acceptOwnValueForStep(stepId) {
+    if (!stepId) return;
+    markStepAcceptedByUser(stepId);
+    const step = watch.steps.find((s) => s.id === stepId);
+    if (!step) return;
+    hideSeqTip();
+    clearWrongHighlight(step);
+    lastMismatchKey = "";
     const prev = watch.lastStatus.get(step.id);
-    if (!force && prev === status && valueMatched == null) return;
+    const filled =
+      step.action === "fill" || step.action === "select"
+        ? stepFieldFilled(step)
+        : Boolean(stepFieldFilled(step) || clickStepLooksDone(step));
+    if (filled || prev === "done" || prev === "running") {
+      reportManual(step, "done", { force: true, valueMatched: true });
+    }
+    applySequentialLocks();
+  }
+
+  function reportSignature(status, value, valueMatched, fieldPresent) {
+    return [
+      status,
+      value == null ? "" : String(value),
+      valueMatched == null ? "" : valueMatched ? "1" : "0",
+      fieldPresent == null ? "" : fieldPresent ? "1" : "0",
+    ].join("\u0001");
+  }
+
+  function emitManualReport(step, status, { value, valueMatched = null, reason, fieldPresent = null } = {}) {
+    const sig = reportSignature(status, value, valueMatched, fieldPresent);
+    if (!(watch.lastReport instanceof Map)) watch.lastReport = new Map();
+    if (watch.lastReport.get(step.id) === sig) return;
+    watch.lastReport.set(step.id, sig);
     watch.lastStatus.set(step.id, status);
     let saved = progressByCard.get(watch.cardId);
     if (!saved) {
@@ -1401,9 +2099,39 @@
       stepId: step.id,
       status,
       source: "manual",
+      ...(reason ? { reason } : {}),
       ...(valueMatched != null ? { valueMatched: Boolean(valueMatched) } : {}),
+      ...(fieldPresent != null ? { fieldPresent: Boolean(fieldPresent) } : {}),
       ...capture,
     });
+  }
+
+  function flushPendingReports() {
+    valueFlushTimer = null;
+    const pending = watch.pendingReport;
+    watch.pendingReport = new Map();
+    if (!pending?.size || !watch.cardId) return;
+    for (const item of pending.values()) {
+      emitManualReport(item.step, item.status, item);
+    }
+  }
+
+  function     reportManual(step, status, { force = false, value, valueMatched = null, reason, fieldPresent = null, repaint = false } = {}) {
+    if (!watch.cardId || !step) return;
+    if (watch.muteReports && !force) return;
+    const prev = watch.lastStatus.get(step.id);
+    const sig = reportSignature(status, value, valueMatched, fieldPresent);
+    if (!(watch.lastReport instanceof Map)) watch.lastReport = new Map();
+    if (watch.lastReport.get(step.id) === sig) return;
+    // First paint of a status is immediate. Later keystrokes only refresh the captured value.
+    if (prev === status && !repaint) {
+      if (!(watch.pendingReport instanceof Map)) watch.pendingReport = new Map();
+      watch.pendingReport.set(step.id, { step, status, value, valueMatched, reason, fieldPresent });
+      if (!valueFlushTimer) valueFlushTimer = setTimeout(flushPendingReports, 180);
+      return;
+    }
+    if (watch.pendingReport instanceof Map) watch.pendingReport.delete(step.id);
+    emitManualReport(step, status, { value, valueMatched, reason, fieldPresent });
   }
 
   /** Keep lastStatus aligned with agent reports so clears can flip greens off */
@@ -1425,7 +2153,8 @@
       step?.action === "fill" ||
       step?.action === "select" ||
       step?.action === "click" ||
-      step?.action === "check"
+      step?.action === "check" ||
+      step?.action === "navigate"
     );
   }
 
@@ -1433,12 +2162,12 @@
     if (!step) return false;
     try {
       // Fill/select: live value, or trust an Approve/manual "done" mark so the next field unlocks
-      if (step.action === "fill" || step.action === "select") {
+      if (step.action === "fill" || step.action === "select" || step.action === "check") {
         if (stepFieldFilled(step)) return true;
         return watch.lastStatus.get(step.id) === "done";
       }
       if (watch.lastStatus.get(step.id) === "done") return true;
-      if (step.action === "click" || step.action === "check") return clickStepLooksDone(step);
+      if (step.action === "click") return clickStepLooksDone(step);
     } catch {
       return false;
     }
@@ -1446,8 +2175,8 @@
   }
 
   /**
-   * First incomplete required fill/click/check. Optional / wait / highlight never gate.
-   * Steps after this index stay locked until it completes.
+   * First incomplete fill/click/check (optional / wait / highlight ignored).
+   * Used only for last-step mismatch preview — later fields are never locked.
    */
   function getGateIndex() {
     const steps = watch.steps || [];
@@ -1456,9 +2185,8 @@
       if (!isGatingAction(step)) continue;
       if (step.optional) continue;
       if (stepCompleteForGate(step)) continue;
-      // Left-behind click/nav (page already advanced) — don't block later fields
       if (
-        (step.action === "click" || step.action === "check" || stepMayNavigate(step)) &&
+        stepMayNavigate(step) &&
         !stepFindableOnPage(step)
       ) {
         const laterOk = steps.slice(i + 1).some(
@@ -1471,16 +2199,238 @@
     return steps.length;
   }
 
+  /** First step the user has not finished. Ignores values sitting in later fields. */
+  function actionGateIndex() {
+    const steps = watch.steps || [];
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      if (!isGatingAction(step) || step.optional) continue;
+      if (watch.lastStatus.get(step.id) === "done") continue;
+      return i;
+    }
+    return steps.length;
+  }
+
   function stepIndexOf(step) {
     if (!step?.id) return -1;
     return watch.steps.findIndex((s) => s.id === step.id);
   }
 
-  function isStepLocked(step) {
-    if (agentRunning || !watch.cardId || !step) return false;
-    const idx = stepIndexOf(step);
-    if (idx < 0) return false;
-    return idx > getGateIndex();
+  /** Later fields stay editable so tracking can follow wherever the user fills. */
+  function isStepLocked() {
+    return false;
+  }
+
+  function isMandatoryFieldStep(step) {
+    if (!step?.mandatory || step.optional) return false;
+    return step.action === "fill" || step.action === "select" || step.action === "check";
+  }
+
+  function incompleteMandatoryOnPage() {
+    const missing = [];
+    for (const step of watch.steps || []) {
+      if (!isMandatoryFieldStep(step)) continue;
+      if (!stepFindableOnPage(step)) continue;
+      if (step.action === "check") {
+        if (clickStepLooksDone(step) || watch.lastStatus.get(step.id) === "done") continue;
+      } else if (stepFieldFilled(step)) {
+        continue;
+      }
+      missing.push(step);
+    }
+    return missing;
+  }
+
+  function controlLabelText(el) {
+    if (!el) return "";
+    const node =
+      (el.closest &&
+        el.closest(
+          'button, a[href], [role="button"], input[type="submit"], input[type="button"], input[type="reset"]'
+        )) ||
+      el;
+    return String(
+      node.innerText ||
+        node.textContent ||
+        node.value ||
+        node.getAttribute?.("aria-label") ||
+        node.getAttribute?.("title") ||
+        ""
+    ).replace(/\s+/g, " ").trim();
+  }
+
+  function isProceedLabel(text) {
+    const t = String(text || "").replace(/\s+/g, " ").trim();
+    if (!t || t.length > 48) return false;
+    if (/^(back|previous|cancel|close|delete|remove|edit|search|upload|add another|add)$/i.test(t)) {
+      return false;
+    }
+    return /^(save and continue|save & continue|submit|next|continue|apply|finish|send|save and submit|review and submit)$/i.test(
+      t
+    ) || /^(next|continue)\b/i.test(t);
+  }
+
+  function isProceedAttempt(el, clickStep) {
+    if (clickStep?.navigates) return true;
+    if (clickStep && isNavigationSelector(clickStep.selector)) {
+      const lab = String(clickStep.label || "");
+      if (!/back|previous|cancel/i.test(lab)) return true;
+    }
+    const type = String(el?.type || "").toLowerCase();
+    if (type === "submit") return true;
+    if (isProceedLabel(controlLabelText(el))) return true;
+    const stepLabel = []
+      .concat(
+        clickStep?.label || [],
+        clickStep?.findByText || [],
+        clickStep?.findButtonByText || []
+      )
+      .map(String)
+      .find(Boolean);
+    return isProceedLabel(stepLabel);
+  }
+
+  function clearRequiredEmptyHighlights() {
+    document.querySelectorAll(".coact-required-empty").forEach((n) => {
+      try {
+        n.classList.remove("coact-required-empty");
+      } catch {
+        /* ignore */
+      }
+    });
+  }
+
+  function refreshMandatoryEmptyHighlights() {
+    if (!watch.cardId || !watch.mandatoryAlert) {
+      clearRequiredEmptyHighlights();
+      return;
+    }
+    ensureHighlightStyle();
+    const gateIdx = getGateIndex();
+    const step = watch.steps[gateIdx];
+    const keep = new Set();
+    if (step && isMandatoryFieldStep(step) && !stepFieldFilled(step)) {
+      let el = null;
+      try {
+        el = resolveElement(step);
+      } catch {
+        el = null;
+      }
+      if (el) {
+        keep.add(el);
+        el.classList.add("coact-required-empty");
+      }
+    } else {
+      watch.mandatoryAlert = false;
+    }
+    document.querySelectorAll(".coact-required-empty").forEach((n) => {
+      if (!keep.has(n)) n.classList.remove("coact-required-empty");
+    });
+  }
+
+  function showMandatoryTip(step, missingCount) {
+    ensureHighlightStyle();
+    const label = String(step?.label || step?.id || "required field").trim();
+    const tip = ensureSeqTipEl();
+    tip.classList.add("coact-wrong-tip");
+    tip.textContent =
+      missingCount > 1
+        ? `Fill required “${label}” and ${missingCount - 1} more before continuing.`
+        : `Fill required “${label}” before continuing.`;
+    tip.classList.add("coact-seq-tip-visible");
+    let el = null;
+    try {
+      el = resolveElement(step);
+    } catch {
+      el = null;
+    }
+    attachTipAnchor(tip, el);
+    if (seqTipTimer) clearTimeout(seqTipTimer);
+    seqTipTimer = setTimeout(() => {
+      tip.classList.remove("coact-seq-tip-visible");
+      clearTipAnchorListeners();
+      resetTipPositionStyles(tip);
+      seqTipTimer = null;
+    }, 4200);
+  }
+
+  function blockForMissingMandatory() {
+    const gateIdx = getGateIndex();
+    const step = watch.steps[gateIdx];
+    if (!step || !isMandatoryFieldStep(step) || stepFieldFilled(step)) return;
+    watch.mandatoryAlert = true;
+    reportManual(step, "missing", {
+      force: true,
+      reason: `Required “${step.label || step.id}” is empty.`,
+    });
+    refreshMandatoryEmptyHighlights();
+    showMandatoryTip(step, 1);
+  }
+
+  function noteSkippedMandatory(currentStep) {
+    const gateIdx = getGateIndex();
+    const curIdx = stepIndexOf(currentStep);
+    const gate = watch.steps[gateIdx];
+    if (
+      !gate ||
+      gateIdx < 0 ||
+      curIdx < 0 ||
+      gateIdx >= curIdx ||
+      !isMandatoryFieldStep(gate) ||
+      stepFieldFilled(gate)
+    ) {
+      refreshMandatoryEmptyHighlights();
+      return;
+    }
+    watch.mandatoryAlert = true;
+    reportManual(gate, "missing", {
+      force: false,
+      reason: `Required “${gate.label || gate.id}” is empty.`,
+    });
+    refreshMandatoryEmptyHighlights();
+  }
+
+  function stopEvent(event) {
+    try {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function onFormSubmit(event) {
+    if (!extensionAlive() || !watch.cardId || agentRunning) return;
+    const missing = incompleteMandatoryOnPage();
+    if (!missing.length) return;
+    const form = event.target;
+    const submitter = event.submitter || null;
+    const inForm = missing.some((step) => {
+      try {
+        const node = resolveElement(step);
+        return Boolean(form && node && form.contains(node));
+      } catch {
+        return false;
+      }
+    });
+    const proceed = submitter
+      ? isProceedAttempt(submitter, matchClickStepForTarget(submitter))
+      : false;
+    if (!inForm && !proceed) return;
+    stopEvent(event);
+    blockForMissingMandatory(missing);
+  }
+
+  function onProceedKey(event) {
+    if (!extensionAlive() || !watch.cardId || agentRunning) return;
+    if (event.key !== "Enter") return;
+    const type = String(event.target?.type || "").toLowerCase();
+    if (type !== "submit") return;
+    const missing = incompleteMandatoryOnPage();
+    if (!missing.length) return;
+    stopEvent(event);
+    blockForMissingMandatory(missing);
   }
 
   function unlockElement(el) {
@@ -1548,6 +2498,7 @@
     document.querySelectorAll(".coact-gate-field").forEach((el) => {
       el.classList.remove("coact-gate-field");
     });
+    if (!watch.mandatoryAlert) clearRequiredEmptyHighlights();
   }
 
   function clearTipAnchorListeners() {
@@ -1661,7 +2612,7 @@
     const label = String(gateStep?.label || gateStep?.id || "the earlier step").trim();
     const tip = ensureSeqTipEl();
     tip.classList.remove("coact-wrong-tip");
-    tip.textContent = `Complete “${label}” first — later steps stay locked until then.`;
+    tip.textContent = `Fill required “${label}” before continuing.`;
     tip.classList.add("coact-seq-tip-visible");
 
     let el = null;
@@ -1683,6 +2634,7 @@
 
   function showWrongTip(step, expected, actual) {
     if (watch.agentApproved) return;
+    if (userAcceptedStep(step)) return;
     const key = `${step?.id || ""}|${actual}|${expected}`;
     const isRepeat = key === lastMismatchKey;
     lastMismatchKey = key;
@@ -1698,24 +2650,26 @@
     const expectedStr = String(expected ?? "");
     const actualStr = String(actual ?? "");
 
-    // Soft mismatch only — always notify desktop with suggestedValue so Approve works
-    try {
-      if (watch.cardId && expectedStr) {
-        report({
-          cardId: watch.cardId,
-          stepId: step.id,
-          status: "mismatch",
-          reason: `Wrong “${label}” (${step.valueFrom || step.id}): you typed “${actualStr}” — expected “${expectedStr}”. Approve to fill the correct value.`,
-          expected: expectedStr,
-          actual: actualStr,
-          suggestedValue: expectedStr,
-          key: step.valueFrom || step.id,
-          label,
-          action: step.action || "fill",
-        });
+    // Record mismatch once for analytics. Do not re-emit — that would undo a green "done".
+    if (!isRepeat) {
+      try {
+        if (watch.cardId && expectedStr) {
+          report({
+            cardId: watch.cardId,
+            stepId: step.id,
+            status: "mismatch",
+            reason: `Wrong “${label}” (${step.valueFrom || step.id}): you typed “${actualStr}” — expected “${expectedStr}”. Continue with your value, or Approve to fill the suggested one.`,
+            expected: expectedStr,
+            actual: actualStr,
+            suggestedValue: expectedStr,
+            key: step.valueFrom || step.id,
+            label,
+            action: step.action || "fill",
+          });
+        }
+      } catch {
+        /* never crash the page on a wrong value */
       }
-    } catch {
-      /* never crash the page on a wrong value */
     }
 
     if (isRepeat) {
@@ -1777,30 +2731,9 @@
     void el;
   }
 
-  function focusGateField(gateStep) {
-    if (!gateStep) return;
-    let el = null;
-    try {
-      el = resolveElement(gateStep);
-    } catch {
-      el = null;
-    }
-    if (!el || !isElementVisible(el)) return;
-    // No red outline on the normal current step — red is wrong-only
-    try {
-      el.scrollIntoView({ block: "center", behavior: "smooth" });
-    } catch {
-      /* ignore */
-    }
-    try {
-      el.focus?.({ preventScroll: true });
-    } catch {
-      try {
-        el.focus?.();
-      } catch {
-        /* ignore */
-      }
-    }
+  function focusGateField() {
+    // Focusing or scrolling an untouched question makes sites such as Google
+    // Forms mark every later required field red. The user moves themselves.
   }
 
   function blockWithGateTip(wrongEl) {
@@ -1828,36 +2761,13 @@
   }
 
   function applySequentialLocks() {
-    if (agentRunning || !watch.cardId || !watch.steps.length) {
-      clearSequentialLocks();
-      return;
-    }
-    ensureHighlightStyle();
-    const gate = getGateIndex();
-    const shouldLock = new Set();
-
-    for (let i = 0; i < watch.steps.length; i++) {
-      const step = watch.steps[i];
-      if (!isGatingAction(step)) continue;
-      let el = null;
-      try {
-        el = resolveElement(step);
-      } catch {
-        el = null;
-      }
-      if (!el) continue;
-      if (i > gate) shouldLock.add(el);
-    }
-
     document.querySelectorAll(".coact-locked-field").forEach((el) => {
-      if (!shouldLock.has(el)) unlockElement(el);
+      unlockElement(el);
     });
-    for (const el of shouldLock) lockElement(el);
-
-    // Never paint a red "current step" outline — that caused flicker and blocked typing
     document.querySelectorAll(".coact-gate-field").forEach((el) => {
       el.classList.remove("coact-gate-field");
     });
+    refreshMandatoryEmptyHighlights();
   }
 
   function matchClickStepForTarget(el) {
@@ -1865,33 +2775,61 @@
     const clickable =
       (el.closest &&
         el.closest(
-          'button, a[href], [role="button"], [role="tab"], [role="option"], [role="radio"], [role="checkbox"], label, input[type="submit"], input[type="button"], input[type="radio"], input[type="checkbox"], select'
+          'button, a, [role="button"], [role="link"], [role="tab"], [role="option"], [role="radio"], [role="checkbox"], label, input[type="submit"], input[type="button"], input[type="radio"], input[type="checkbox"], select, [jsaction*="click"]'
         )) ||
       null;
-    if (!clickable) return null;
 
-    const text = normalize(
-      clickable.innerText ||
-        clickable.textContent ||
-        clickable.value ||
-        clickable.getAttribute("aria-label") ||
-        ""
-    );
+    const gate = watch.steps[actionGateIndex()];
+    const lastIdx = lastGatingStepIndex();
+    const lastStep = lastIdx >= 0 ? watch.steps[lastIdx] : null;
+    const preferId =
+      gate?.action === "click"
+        ? gate.id
+        : lastStep?.action === "click"
+          ? lastStep.id
+          : "";
 
-    for (const step of watch.steps) {
-      if (step.action !== "click" && step.action !== "check") continue;
-      if (step.selector) {
-        try {
-          if (clickable.matches(step.selector)) return step;
-        } catch {
-          /* ignore */
-        }
+    const textOf = (node) =>
+      normalize(
+        node?.innerText ||
+          node?.textContent ||
+          node?.value ||
+          node?.getAttribute?.("aria-label") ||
+          ""
+      );
+
+    const byButtonText = (text) => {
+      if (!text || (StepMatch.isShortOptionLabel && StepMatch.isShortOptionLabel(text))) return null;
+      if (StepMatch.pickClickStepByButtonText) {
+        return StepMatch.pickClickStepByButtonText(watch.steps, text, { preferId });
       }
-      const hints = []
-        .concat(step.findByText || [], step.findButtonByText || [], step.findByLabel || [], step.findCheckboxByLabel || [])
-        .map(normalize)
-        .filter(Boolean);
-      if (hints.some((h) => text === h || text.includes(h))) return step;
+      return null;
+    };
+
+    if (clickable) {
+      // Button label wins over a nearby question. "Clear form" must not be
+      // scored as the previous field just because findByText still says Submit.
+      const byText = byButtonText(textOf(clickable));
+      if (byText) return byText;
+
+      const byQuestion = matchStepForElement(clickable) || matchStepByNearbyTitle(clickable);
+      if (byQuestion) return byQuestion;
+
+      for (const step of watch.steps) {
+        if (step.action !== "click") continue;
+        const unique = uniqueSelectorHit(step);
+        if (unique && (unique === clickable || unique.contains(clickable))) return step;
+      }
+      return null;
+    }
+
+    // Google Forms "Clear form" is often a plain div/span, not a <button>.
+    let node = el;
+    for (let depth = 0; node && depth < 5; depth++, node = node.parentElement) {
+      const text = textOf(node);
+      if (!text || text.length > 48) continue;
+      const byText = byButtonText(text);
+      if (byText) return byText;
     }
     return null;
   }
@@ -1906,125 +2844,116 @@
 
     if (event.type === "click") {
       const clickStep = matchClickStepForTarget(el);
-      if (clickStep && isStepLocked(clickStep)) {
-        event.preventDefault();
-        event.stopPropagation();
-        try {
-          event.stopImmediatePropagation();
-        } catch {
-          /* ignore */
+      if (isProceedAttempt(el, clickStep)) {
+        const missing = incompleteMandatoryOnPage();
+        if (missing.length) {
+          stopEvent(event);
+          blockForMissingMandatory(missing);
+          return;
         }
-        blockWithGateTip(el);
+        acceptFilledStepsOnProceed();
+      }
+      if (clickStep && userAcceptedStep(clickStep)) {
+        completeStepFromUser(clickStep);
+        scheduleManualScan(120);
         return;
       }
       if (clickStep) {
-        reportManual(clickStep, "done");
-        applySequentialLocks();
-        // Re-scan shortly in case waitAfter DOM/url updates
-        setTimeout(() => scanManualProgress(), 300);
-        setTimeout(() => scanManualProgress(), 1000);
+        const value =
+          fieldValue(el) ||
+          String(el.innerText || el.textContent || el.value || "").trim();
+        const gateIdx = actionGateIndex();
+        const idx = stepIndexOf(clickStep);
+        if (idx === gateIdx || isLastGatingStep(clickStep)) {
+          if (lastStepCommitTimer) {
+            clearTimeout(lastStepCommitTimer);
+            lastStepCommitTimer = null;
+          }
+          completeStepFromUser(clickStep, { value });
+        } else if (idx > gateIdx && stepFieldFilled(watch.steps[gateIdx])) {
+          completeStepFromUser(watch.steps[gateIdx], {
+            value: readStepActualValue(watch.steps[gateIdx]),
+          });
+        }
         return;
       }
     }
 
     // Google Forms / custom selects often target inner divs — climb to a real field
     const FIELD_SEL =
-      "input, textarea, select, [contenteditable='true'], [role='checkbox'], [role='radio'], [role='option'], [role='combobox'], [role='listbox'], [role='switch']";
+      "input, textarea, select, [contenteditable='true'], [role='checkbox'], [role='radio'], [role='option'], [role='combobox'], [role='listbox'], [role='spinbutton'], [role='switch']";
     const target =
       (el.closest && el.closest(FIELD_SEL)) ||
       (el.matches && el.matches(FIELD_SEL) ? el : null);
     if (!target) {
-      // Still poll — custom widgets may not match selectors above
+      // Custom widgets may not match the field selector — scan once, not per key.
       if (event.type === "change" || event.type === "input" || event.type === "keyup") {
-        scanManualProgress();
+        scheduleManualScan(80);
       }
       return;
     }
 
     const step = matchStepForElement(target) || matchStepByNearbyTitle(target);
-    if (step && isStepLocked(step)) {
-      event.preventDefault();
-      event.stopPropagation();
-      try {
-        event.stopImmediatePropagation();
-      } catch {
-        /* ignore */
-      }
-      if (event.type === "focusin" || event.type === "click") {
-        try {
-          target.blur?.();
-        } catch {
-          /* ignore */
-        }
-      }
-      blockWithGateTip(target);
-      return;
-    }
     if (!step) {
-      // Fallback: poll all steps after any keystroke / clear
-      scanManualProgress();
+      scheduleManualScan(80);
       return;
     }
 
     const value = fieldValue(target);
+    // Text fields commit when the user leaves them. change/click finish selects and checks.
+    const committing =
+      event.type === "focusout" ||
+      ((event.type === "change" || event.type === "click") && step.action !== "fill");
+
+    if (userAcceptedStep(step)) {
+      if (!committing && event.type !== "focusin") return;
+      if (!committing) {
+        if (watch.lastStatus.get(step.id) !== "done") reportManual(step, "running");
+        return;
+      }
+      completeStepFromUser(step, { value: fieldValue(target) });
+      return;
+    }
+
     if (event.type === "focusin") {
-      reportManual(step, "running");
+      if (watch.lastStatus.get(step.id) !== "done") reportManual(step, "running");
+      return;
+    }
+    if ((step.action === "fill" || step.action === "select") && !committing) {
+      if (value && watch.lastStatus.get(step.id) !== "done") {
+        reportManual(step, "running");
+        if (isLastGatingStep(step)) scheduleLastStepCommit(step, value);
+      }
       return;
     }
     if (!value) {
-      reportManual(step, "pending");
+      const prev = watch.lastStatus.get(step.id);
+      if (prev === "done") {
+        const active = document.activeElement;
+        const clearedHere = active === target || Boolean(target.contains?.(active));
+        if (!clearedHere || readStepActualValue(step)) return;
+      }
+      if (step.mandatory && watch.mandatoryAlert) {
+        reportManual(step, "missing", {
+          fieldPresent: true,
+          reason: `Required “${step.label || step.id}” is empty.`,
+        });
+      } else if (prev !== "done") {
+        reportManual(step, "pending", { fieldPresent: true });
+      }
       clearWrongHighlight(step);
       lastMismatchKey = "";
       applySequentialLocks();
       return;
     }
-    if (step.action === "fill" || step.action === "select") {
-      // Mandatory wrong values: notify mismatch+Approve BEFORE done so the coach is not cleared
-      // Skip when this run was already approved in the Agent modal
-      const expectedList = expectedListForStep(step);
-      if (
-        !watch.agentApproved &&
-        step.mandatory &&
-        expectedList.length &&
-        value &&
-        !valuesMatchAny(value, expectedList)
-      ) {
-        reportMistakeIfWrong(step, value, expectedList[0]);
-      }
-      // Unlock the next field as soon as this one has any value (don't wait on debounce)
-      reportManual(step, "done", { value });
-      applySequentialLocks();
-      const immediate =
-        event.type === "change" ||
-        event.type === "blur" ||
-        event.type === "click";
-      scheduleFillEvaluation(step, target, { immediate });
-      return;
-    }
-    if (step.action === "check") {
-      reportManual(step, "done", { value });
-      applySequentialLocks();
-      setTimeout(() => scanManualProgress(), 200);
-      return;
-    }
-    lastMismatchKey = "";
-    hideSeqTip();
-    clearWrongHighlight(step);
-    reportManual(step, "done");
-    applySequentialLocks();
+    completeStepFromUser(step, { value });
   }
 
   function matchStepByNearbyTitle(el) {
-    const block = el.closest('div[role="listitem"], .Qr7Oae, div[data-params]') || el.parentElement;
-    if (!block) return null;
-    const title = questionTitle(block);
-    const text = normalize(block.innerText || "");
-    for (const step of watch.steps) {
-      if (!step.findByLabel) continue;
-      const hints = (Array.isArray(step.findByLabel) ? step.findByLabel : [step.findByLabel]).map(normalize);
-      if (hints.some((h) => title.includes(h) || text.includes(h))) return step;
-    }
-    return null;
+    const snap = controlSnapshot(el);
+    if (StepMatch.pickBestStepForControl) return StepMatch.pickBestStepForControl(watch.steps, snap);
+    if (StepMatch.pickBestStepForTitle) return StepMatch.pickBestStepForTitle(watch.steps, snap.title);
+    return pickStepByTitleFallback(snap.title);
   }
 
   /**
@@ -2217,8 +3146,27 @@
   }
 
   /**
+   * Compare a typed value with the live-tracking expected value.
+   * No expected list means any non-empty value matches.
+   * @returns {{ empty?: boolean, matched: boolean, expected?: string }}
+   */
+  function fillMatchResult(step, actual) {
+    const actualStr = String(actual ?? "").trim();
+    if (!actualStr) return { empty: true, matched: true };
+    if (watch.agentApproved || userAcceptedStep(step)) return { matched: true };
+    if (step?.id != null && watch.agentApprovedValues?.[step.id] != null) {
+      const approved = String(watch.agentApprovedValues[step.id] ?? "").trim();
+      if (approved && valuesMatch(actualStr, approved)) return { matched: true };
+    }
+    const list = expectedListForStep(step);
+    if (!list.length) return { matched: true };
+    if (valuesMatchAny(actualStr, list)) return { matched: true };
+    return { matched: false, expected: list[0] };
+  }
+
+  /**
    * Fill correctness: any non-empty value completes the step.
-   * Wrong SOP values are tracked only on mandatory steps.
+   * A value that is not the live-tracking value is still complete, but wrong.
    * @returns {{ ok: boolean, empty?: boolean, wrong?: boolean, expected?: string }}
    */
   function evaluateFillValue(step, actual) {
@@ -2241,6 +3189,7 @@
    */
   function reportMistakeIfWrong(step, actual, expectedHint) {
     if (!watch.cardId || !step || !step.mandatory) return false;
+    if (userAcceptedStep(step)) return false;
     // Agent modal already approved this run — never emit mismatch / Approve prompts
     if (watch.agentApproved) return false;
     const actualStr = String(actual ?? "").trim();
@@ -2280,6 +3229,28 @@
     return last;
   }
 
+  function isLastGatingStep(step) {
+    if (!step?.id) return false;
+    const last = lastGatingStepIndex();
+    return last >= 0 && watch.steps[last]?.id === step.id;
+  }
+
+  /** Last step has nothing after it, so finish it once the user is done with it. */
+  function scheduleLastStepCommit(step, value) {
+    if (!isLastGatingStep(step)) return;
+    if (lastStepCommitTimer) clearTimeout(lastStepCommitTimer);
+    const stepId = step.id;
+    lastStepCommitTimer = setTimeout(() => {
+      lastStepCommitTimer = null;
+      if (!watch.cardId || watch.lastStatus.get(stepId) === "done") return;
+      const current = watch.steps.find((s) => s.id === stepId);
+      if (!current || !isLastGatingStep(current)) return;
+      const latest = readStepActualValue(current) || value || "";
+      if (!String(latest).trim() && current.action !== "click") return;
+      completeStepFromUser(current, { value: latest });
+    }, 1000);
+  }
+
   function isAtLastGatingStep() {
     const last = lastGatingStepIndex();
     if (last < 0) return false;
@@ -2289,6 +3260,18 @@
   /** Red outline only while the user is on the last gating step — check that step only. */
   function highlightWrongValuesIfLastStep() {
     if (!watch.cardId || !watch.steps.length) return;
+    const lastPreview = lastGatingStepIndex();
+    const lastPreviewStep = lastPreview >= 0 ? watch.steps[lastPreview] : null;
+    if (userAcceptedStep(lastPreviewStep)) {
+      document.querySelectorAll(".coact-wrong-field").forEach((n) => {
+        try {
+          n.classList.remove("coact-wrong-field");
+        } catch {
+          /* ignore */
+        }
+      });
+      return;
+    }
     if (!isAtLastGatingStep()) {
       document.querySelectorAll(".coact-wrong-field").forEach((n) => {
         try {
@@ -2350,27 +3333,18 @@
 
   function applyFillEvaluationResult(step, result) {
     if (result.ok) {
-      if (result.wrong) {
-        // Report mismatch for tracking + Approve UI; do NOT re-send "done"
-        // (already unlocked) — a second "done" was clearing the Approve coach.
-        const actual = readStepActualValue(step);
-        reportMistakeIfWrong(step, actual, result.expected);
-        applySequentialLocks();
-        highlightWrongValuesIfLastStep();
-        return;
+      if (!result.wrong) {
+        lastMismatchKey = "";
+        hideSeqTip();
+        clearWrongHighlight(step);
       }
-      lastMismatchKey = "";
-      if (!isAtLastGatingStep()) hideSeqTip();
-      clearWrongHighlight(step);
-      reportManual(step, "done", { force: true, valueMatched: true });
+      reportManual(step, "done", { force: true, valueMatched: !result.wrong });
       applySequentialLocks();
-      highlightWrongValuesIfLastStep();
       return;
     }
     clearWrongHighlight(step);
     reportManual(step, "pending", { force: true });
     applySequentialLocks();
-    highlightWrongValuesIfLastStep();
   }
 
   function scheduleFillEvaluation(step, target, { immediate = false } = {}) {
@@ -2412,20 +3386,21 @@
   }
 
   function readStepActualValue(step) {
+    if (scanFieldIndex && step?.id) return scanFieldIndex.get(step.id)?.value || "";
     let el = null;
     try {
       el = resolveElement(step);
     } catch {
       el = null;
     }
-    if (!el && step.findCheckboxByLabel) {
-      el = findCheckboxByLabel(step.findCheckboxByLabel);
+    if (el && !elementMatchesStep(el, step) && stepQuestionHints(step).length) {
+      el = null;
     }
     if (el && fieldValue(el)) return fieldValue(el);
 
     const fields = Array.from(
       document.querySelectorAll(
-        'input:not([type="hidden"]):not([type="file"]), textarea, select, [contenteditable="true"], [role="checkbox"], [role="radio"], [role="option"], [role="combobox"]'
+        'input:not([type="hidden"]):not([type="file"]), textarea, select, [contenteditable="true"], [role="checkbox"], [role="radio"], [role="option"], [role="combobox"], [role="listbox"], [role="spinbutton"]'
       )
     );
     for (const field of fields) {
@@ -2442,6 +3417,42 @@
     return Boolean(readStepActualValue(step));
   }
 
+  function stepBeingEdited(step) {
+    const active = document.activeElement;
+    if (!active || active === document.body || active === document.documentElement) return false;
+    try {
+      const el = resolveElement(step);
+      if (el && (el === active || el.contains(active) || active.contains?.(el))) return true;
+    } catch {
+      /* field not on this page */
+    }
+    const indexed = scanFieldIndex?.get(step.id)?.field;
+    return Boolean(indexed && (indexed === active || indexed.contains?.(active)));
+  }
+
+  /** Mark filled, unfocused steps done so the queue card follows the form. */
+  function advanceFilledSteps() {
+    const steps = watch.steps || [];
+    for (const step of steps) {
+      if (!step || step.optional || !isGatingAction(step)) continue;
+      if (watch.lastStatus.get(step.id) === "done") continue;
+      if (step.action === "click" || step.action === "navigate") {
+        if (clickStepLooksDone(step)) completeStepFromUser(step);
+        continue;
+      }
+      // Fills and selects wait until the user leaves the field (focusout/change).
+      if (step.action === "fill" || step.action === "select") continue;
+      if (step.action !== "check") continue;
+      if (!stepFindableOnPage(step) && !scanFieldIndex?.has(step.id)) continue;
+      if (stepBeingEdited(step)) return;
+      const value = readStepActualValue(step);
+      if (!value) return;
+      const before = watch.lastStatus.get(step.id);
+      completeStepFromUser(step, { value });
+      if (watch.lastStatus.get(step.id) === before) return;
+    }
+  }
+
   /** @deprecated alias — fills no longer require exact SOP match */
   function stepFieldCorrect(step) {
     return stepFieldFilled(step);
@@ -2451,58 +3462,82 @@
     return false;
   }
 
-  function scanManualProgress({ force = false } = {}) {
+  function beginScanCache() {
+    selectorMatchCache = new Map();
+    scanUniqueHits = new Map();
+    for (const step of watch.steps || []) {
+      if (!step?.id || step.action === "highlight" || step.action === "wait") continue;
+      const hit = uniqueSelectorHit(step);
+      if (hit) scanUniqueHits.set(step.id, hit);
+    }
+  }
+
+  function endScanCache() {
+    selectorMatchCache = null;
+    scanUniqueHits = null;
+    scanFieldIndex = null;
+  }
+
+  function indexFilledSteps() {
+    const byId = new Map();
+    const fields = document.querySelectorAll(
+      'input:not([type="hidden"]):not([type="file"]), textarea, select, [contenteditable="true"], [role="checkbox"], [role="radio"], [role="option"], [role="combobox"], [role="listbox"], [role="spinbutton"], [role="switch"]'
+    );
+    for (const field of fields) {
+      if (!isElementVisible(field)) continue;
+      let step = null;
+      try {
+        step = matchStepForElement(field) || matchStepByNearbyTitle(field);
+      } catch {
+        step = null;
+      }
+      if (!step?.id) continue;
+      const value = fieldValue(field);
+      const prev = byId.get(step.id);
+      if (!prev || (value && !prev.value)) byId.set(step.id, { value, field });
+    }
+    return byId;
+  }
+
+  function scheduleManualScan(delay = 80) {
+    if (manualScanTimer) return;
+    manualScanTimer = setTimeout(() => {
+      manualScanTimer = null;
+      scanManualProgress();
+    }, delay);
+  }
+
+  function scanManualProgress({ force = false, repaint = false } = {}) {
     if (!extensionAlive()) return;
     if (!watch.cardId || !watch.steps.length) return;
     if (watch.muteReports && !force) return;
     if (agentRunning && !force) return;
 
-    const gate = getGateIndex();
-
-    for (let i = 0; i < watch.steps.length; i++) {
-      const step = watch.steps[i];
-      if (step.action === "highlight" || step.action === "wait") continue;
-
-      // Strict sequential: never accept greens for steps past the current gate
-      if (!agentRunning && i > gate) {
-        if (watch.lastStatus.get(step.id) === "done") {
-          reportManual(step, "pending", { force: true });
-        }
-        continue;
+    beginScanCache();
+    try {
+      scanFieldIndex = indexFilledSteps();
+      advanceFilledSteps();
+      const gateIdx = actionGateIndex();
+      const step = watch.steps[gateIdx];
+      if (
+        step &&
+        watch.mandatoryAlert &&
+        isMandatoryFieldStep(step) &&
+        !stepFieldFilled(step) &&
+        step.action !== "click"
+      ) {
+        reportManual(step, "missing", {
+          force,
+          repaint,
+          fieldPresent: true,
+          reason: `Required “${step.label || step.id}” is empty.`,
+        });
       }
-
-      if (step.action === "click" || step.action === "check") {
-        if (clickStepLooksDone(step)) {
-          reportManual(step, "done", { force });
-        } else if (
-          !stepFindableOnPage(step) &&
-          watch.steps.slice(i + 1).some((s) => stepCompleteForGate(s) || stepFindableOnPage(s))
-        ) {
-          reportManual(step, "done", { force });
-        }
-        continue;
-      }
-
-      if (step.action === "fill" || step.action === "select") {
-        if (stepFieldFilled(step)) {
-          reportManual(step, "done", { force });
-        } else if (watch.lastStatus.get(step.id) === "done") {
-          reportManual(step, "pending", { force: true });
-        } else {
-          reportManual(step, "pending", { force });
-        }
-        continue;
-      }
-
-      if (stepFieldFilled(step)) {
-        reportManual(step, "done", { force });
-      } else {
-        reportManual(step, "pending", { force });
-      }
+      applySequentialLocks();
+      highlightWrongValuesIfLastStep();
+    } finally {
+      endScanCache();
     }
-
-    applySequentialLocks();
-    highlightWrongValuesIfLastStep();
   }
 
   function stopWatching() {
@@ -2517,6 +3552,19 @@
       clearTimeout(valueCheckTimer);
       valueCheckTimer = null;
     }
+    if (valueFlushTimer) {
+      clearTimeout(valueFlushTimer);
+      valueFlushTimer = null;
+      flushPendingReports();
+    }
+    if (manualScanTimer) {
+      clearTimeout(manualScanTimer);
+      manualScanTimer = null;
+    }
+    if (lastStepCommitTimer) {
+      clearTimeout(lastStepCommitTimer);
+      lastStepCommitTimer = null;
+    }
     valueCheckSeq += 1;
     lastMismatchKey = "";
     if (watch.attached) {
@@ -2525,15 +3573,20 @@
       document.removeEventListener("focusin", onManualFieldEvent, true);
       document.removeEventListener("click", onManualFieldEvent, true);
       document.removeEventListener("keyup", onManualFieldEvent, true);
+      document.removeEventListener("submit", onFormSubmit, true);
+      document.removeEventListener("keydown", onProceedKey, true);
       watch.attached = false;
     }
     document.querySelectorAll(".coact-wrong-field").forEach((n) => n.classList.remove("coact-wrong-field"));
+    watch.mandatoryAlert = false;
+    clearRequiredEmptyHighlights();
     clearSequentialLocks();
     hideSeqTip();
     watch.cardId = null;
     watch.steps = [];
     watch.data = {};
     watch.lastStatus = new Map();
+    watch.startHref = "";
   }
 
   function setNativeValue(el, value) {
@@ -2621,7 +3674,20 @@
     });
   }
 
-  function startWatching({ cardId, sop, data = null, resetProgress = false, clearFields = false }) {
+  function startWatching({
+    cardId,
+    sop,
+    data = null,
+    resetProgress = false,
+    clearFields = false,
+    resetAllProgress = false,
+    acceptStepId = "",
+    completedStepIds = [],
+  }) {
+    if (resetAllProgress) {
+      progressByCard.clear();
+      resetProgress = true;
+    }
     if (!cardId || !sop?.steps?.length) {
       stopWatching();
       return;
@@ -2633,12 +3699,18 @@
     const sameCard = watch.cardId === cardId;
     watch.cardId = cardId;
     watch.steps = sop.steps;
+    watch.startHref = location.href;
+    if (!(watch.acceptOwnValue instanceof Set) || !sameCard || resetProgress || clearFields) {
+      watch.acceptOwnValue = new Set();
+    }
+    if (acceptStepId) watch.acceptOwnValue.add(acceptStepId);
     watch.data = data && typeof data === "object" ? { ...data } : {};
     // Keep agentApprovedValues when re-watching same card mid-run; clear on fresh watch without them
     if (!watch.agentApproved) {
       watch.agentApprovedValues = {};
     }
     lastMismatchKey = "";
+    if (!sameCard || resetProgress || clearFields) watch.mandatoryAlert = false;
 
     if (resetProgress || clearFields) {
       progressByCard.delete(cardId);
@@ -2649,6 +3721,11 @@
       watch.lastStatus = new Map(progressByCard.get(cardId));
     } else {
       watch.lastStatus = new Map();
+    }
+    if (!(resetProgress || clearFields)) {
+      for (const id of completedStepIds || []) {
+        if (id) markWatchStatus(id, "done");
+      }
     }
 
     if (clearFields) {
@@ -2664,16 +3741,21 @@
       document.addEventListener("input", onManualFieldEvent, true);
       document.addEventListener("change", onManualFieldEvent, true);
       document.addEventListener("focusin", onManualFieldEvent, true);
+      document.addEventListener("focusout", onManualFieldEvent, true);
       document.addEventListener("click", onManualFieldEvent, true);
       document.addEventListener("keyup", onManualFieldEvent, true);
+      document.addEventListener("submit", onFormSubmit, true);
+      document.addEventListener("keydown", onProceedKey, true);
       watch.attached = true;
     }
     if (watch.pollTimer) clearInterval(watch.pollTimer);
-    watch.pollTimer = setInterval(() => scanManualProgress(), 800);
+    watch.lastReport = new Map();
+    watch.pendingReport = new Map();
+    watch.pollTimer = setInterval(() => scanManualProgress(), 400);
 
     if (clearFields) {
       // Fields are empty — force pending in Coact
-      scanManualProgress({ force: true });
+      scanManualProgress({ force: true, repaint: true });
       setTimeout(() => scanManualProgress({ force: true }), 200);
       return;
     }
@@ -2682,10 +3764,10 @@
       applySequentialLocks();
       return;
     }
+    if (acceptStepId) acceptOwnValueForStep(acceptStepId);
     // Force re-emit so Refresh / re-watch repaints greens even when status unchanged
-    scanManualProgress({ force: true });
+    scanManualProgress({ force: true, repaint: true });
     setTimeout(() => scanManualProgress({ force: true }), 200);
-    setTimeout(() => scanManualProgress({ force: true }), 1000);
   }
 
   function compactSnippetText(value) {
@@ -2848,18 +3930,23 @@
   }
 
   async function refreshCaptureRecording() {
+    const wasRecording = captureRecording;
     try {
       const res = await chrome.runtime.sendMessage({ type: "capture_get_recording" });
       captureRecording = Boolean(res?.recording);
     } catch {
       captureRecording = false;
     }
+    if (captureRecording && !wasRecording) snapshotFilledControls();
   }
 
+  let lastCapturePost = null;
   function postCaptureEvent(event) {
-    // Always forward while the page is recordable — background gates on recording
-    // so we do not drop clicks in the race before the content script learns Record started.
-    if (captureSkipPage() || tornDown || !event) return;
+    if (captureSkipPage() || tornDown || !event || !captureRecording) return;
+    const sig = `${event.action}|${event.fieldName}|${event.label}|${event.value}|${event.selector}`;
+    const now = Date.now();
+    if (lastCapturePost && lastCapturePost.sig === sig && now - lastCapturePost.at < 100) return;
+    lastCapturePost = { sig, at: now };
     safeRuntimeSend({ type: "capture_event", event });
   }
 
@@ -2902,20 +3989,42 @@
     if (captureLooksLikeOpaqueToken(t)) return false;
     if (captureLooksLikePlaceholderValue(t)) return false;
     if (/[?]/.test(t)) return false;
-    if (
-      /^(save and continue|submit|next|continue|back|cancel|apply|sign in|search|upload|remove|add|edit|delete)$/i.test(
-        t,
-      )
-    ) {
-      return false;
-    }
+    if (isNavigationClickLabel(t)) return false;
     if (t.length <= 40 && !/\.\s/.test(t) && /^[\w .,'\-+/&()]+$/i.test(t)) return true;
+    return false;
+  }
+
+  function isNavigationClickLabel(text) {
+    const t = captureNormalizeText(text);
+    if (!t || t.length > 48) return false;
+    return /^(save and continue|save & continue|submit|next|continue|back|previous|cancel|apply|add another|add|sign in|search|upload|remove|edit|delete)$/i.test(
+      t,
+    );
+  }
+
+  function isNavigationSelector(selector) {
+    return /pageFooterNextButton|add-button|signInSubmitButton|bottom-navigation|wizardNext|continueButton/i.test(
+      String(selector || ""),
+    );
+  }
+
+  function captureLooksLikeWidgetChrome(text) {
+    const t = captureNormalizeText(text);
+    if (!t) return false;
+    if (/^react-select-\d+/i.test(t)) return true;
+    if (/react-select-\d+-(listbox|input|option|live-region|placeholder)/i.test(t)) return true;
+    if (/use up and down to choose/i.test(t)) return true;
+    if (/press enter to select/i.test(t) && /press (escape|tab)/i.test(t)) return true;
+    if (/press tab to select the option/i.test(t)) return true;
+    if (/check all that apply|select all that apply|choose all that apply/i.test(t)) return true;
+    if (/^\([^)]*\)$/.test(t)) return true;
     return false;
   }
 
   function captureLooksLikeJunkFieldKey(text) {
     const t = captureNormalizeText(text);
     if (!t) return true;
+    if (captureLooksLikeWidgetChrome(t)) return true;
     if (captureLooksLikeOpaqueToken(t)) return true;
     if (/^(input|select|textarea|field|button|div|span)$/i.test(t)) return true;
     if (/^#?(primaryQuestionnaire--|wd-|ember\d)/i.test(t)) return true;
@@ -2935,6 +4044,8 @@
     // like concatenated codes (e.g. a checkbox group's id built by joining
     // each option's short code, "s6s7s63s65s66s24no"), not a real word.
     if (!/[\s_-]/.test(t) && t.length > 12 && (t.match(/\d+/g) || []).length >= 2) return true;
+    if (/__/.test(t) && (t.match(/[_-]/g) || []).length >= 2) return true;
+    if (/^[A-Z0-9]+(?:_[A-Z0-9]+)+$/.test(t)) return true;
     return false;
   }
 
@@ -2953,7 +4064,8 @@
       return true;
     }
     if (t.length >= 12) return true;
-    if (t.length >= 4 && /^[A-Za-z][A-Za-z0-9 /,'&\-().]+$/.test(t) && !/questionnaire/i.test(t)) {
+    const bare = t.replace(/[*:\s]+$/g, "");
+    if (bare.length >= 4 && /^[A-Za-z][A-Za-z0-9 /,'&\-().]+$/.test(bare) && !/questionnaire/i.test(bare)) {
       return true;
     }
     return false;
@@ -3033,6 +4145,35 @@
     }
     if (blob.length >= 12 && blob.length <= 240 && captureIsUsefulQuestionLabel(blob, optionText)) {
       return blob.split("\n")[0].trim();
+    }
+    return "";
+  }
+
+  /** Visible caption above a control. Skips sibling options and widget chrome. */
+  function captureCaptionAbove(el, optionText) {
+    if (!el) return "";
+    const own = captureNormalizeText(el.getAttribute?.("name") || el.name || el.id || "").toLowerCase();
+    let node = el;
+    for (let depth = 0; depth < 9 && node; depth += 1) {
+      let sib = node.previousElementSibling;
+      for (let i = 0; i < 6 && sib; i += 1) {
+        const hasControl = sib.querySelector?.(
+          "input, textarea, select, [role='listbox'], [role='option'], [role='radio'], [role='checkbox']",
+        );
+        const text = captureNormalizeText(sib.innerText || sib.textContent || "").split("\n")[0].trim();
+        if (
+          !hasControl &&
+          text &&
+          text.length <= 240 &&
+          text.toLowerCase() !== own &&
+          !captureLooksLikeWidgetChrome(text) &&
+          captureIsUsefulQuestionLabel(text, optionText)
+        ) {
+          return text.replace(/[*:\s]+$/g, "").trim();
+        }
+        sib = sib.previousElementSibling;
+      }
+      node = node.parentElement;
     }
     return "";
   }
@@ -3145,11 +4286,42 @@
     return "";
   }
 
+  function captureHostLabel(node) {
+    if (!node || node.nodeType !== 1) return "";
+    const raw = node.getAttribute?.("label") || (typeof node.label === "string" ? node.label : "");
+    const t = captureNormalizeText(String(raw || ""));
+    if (!t || captureLooksLikeJunkFieldKey(t) || captureLooksLikeOptionOnly(t)) return "";
+    return t.split("\n")[0].trim().slice(0, 180);
+  }
+
+  function captureIdIsUnique(id) {
+    if (!id) return false;
+    try {
+      return document.querySelectorAll(`[id="${CSS.escape(id)}"]`).length === 1;
+    } catch {
+      return false;
+    }
+  }
+
+  function captureControlHost(el) {
+    try {
+      const host = el?.getRootNode?.()?.host;
+      if (host && host.nodeType === 1) return host;
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+
   function captureFieldLabel(el) {
     if (!el) return "";
-    if (el.id) {
+    const host = captureControlHost(el);
+    const hostLabel = captureHostLabel(host) || captureHostLabel(el);
+    if (hostLabel) return hostLabel;
+    const labelTarget = host?.id && captureIdIsUnique(host.id) ? host : el.id && captureIdIsUnique(el.id) ? el : null;
+    if (labelTarget?.id) {
       try {
-        const byFor = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+        const byFor = document.querySelector(`label[for="${CSS.escape(labelTarget.id)}"]`);
         const t = captureNormalizeText(byFor?.textContent || "");
         if (t && !captureLooksLikeOptionOnly(t) && !captureLooksLikeJunkFieldKey(t)) {
           return t.split("\n")[0].trim();
@@ -3185,7 +4357,7 @@
       const t = captureNormalizeText(heading.textContent || "");
       if (t && !captureLooksLikeJunkFieldKey(t)) return t;
     }
-    let node = el.previousElementSibling;
+    let node = (captureControlHost(el) || el).previousElementSibling;
     let hops = 0;
     while (node && hops < 3) {
       const t = captureNormalizeText(node.textContent || "");
@@ -3201,8 +4373,10 @@
 
   function captureSelectorFor(el) {
     if (!el) return "";
-    if (el.id) return `#${el.id}`;
-    const auto = el.getAttribute?.("data-automation-id");
+    const host = captureControlHost(el);
+    if (el.id && captureIdIsUnique(el.id)) return `#${el.id}`;
+    if (host?.id && captureIdIsUnique(host.id)) return `#${host.id}`;
+    const auto = el.getAttribute?.("data-automation-id") || host?.getAttribute?.("data-automation-id");
     if (auto) return `[data-automation-id="${auto}"]`;
     if (el.name) return `[name="${el.name}"]`;
     const tag = (el.tagName || "").toLowerCase();
@@ -3214,7 +4388,7 @@
   function inventoryKeysFor(el) {
     const keys = [];
     if (!el) return keys;
-    if (el.id) keys.push(`id:${el.id}`);
+    if (el.id && captureIdIsUnique(el.id)) keys.push(`id:${el.id}`);
     const auto = el.getAttribute?.("data-automation-id");
     if (auto) keys.push(`auto:${auto}`);
     if (el.name) keys.push(`name:${el.name}`);
@@ -3254,33 +4428,43 @@
   function lookupInventory(el) {
     const map = window.__ltFieldInventory;
     if (!map || !el) return "";
-    for (const k of inventoryKeysFor(el)) {
+    const keys = inventoryKeysFor(el);
+    const ordered = [
+      ...keys.filter((k) => k.startsWith("name:")),
+      ...keys.filter((k) => !k.startsWith("name:") && !k.startsWith("group:")),
+    ];
+    for (const k of ordered) {
       const hit = map.get(k);
       if (hit?.label && captureIsUsefulQuestionLabel(hit.label, "")) return hit.label;
-    }
-    const group =
-      el.closest?.(
-        '[role="radiogroup"], [role="group"], fieldset, [data-automation-id*="formField"], [data-automation-id*="question"], [data-automation-id*="questionnaire"]',
-      ) || null;
-    if (group) {
-      const ctrls = group.querySelectorAll?.(
-        "input, textarea, select, button, [role='radio'], [role='checkbox'], [role='button'], [data-automation-id]",
-      );
-      for (const ctrl of ctrls || []) {
-        for (const k of inventoryKeysFor(ctrl)) {
-          const hit = map.get(k);
-          if (hit?.label && captureIsUsefulQuestionLabel(hit.label, "")) return hit.label;
-        }
-      }
     }
     return "";
   }
 
   function resolveFieldQuestion(el, optionHint) {
+    const caption = captureCaptionAbove(el, optionHint);
+    const own = captureNormalizeText(el?.getAttribute?.("name") || el?.name || el?.id || "");
+    if (caption && (/[?*]/.test(caption) || caption.length >= 8) && !captureLooksLikeWidgetChrome(caption)) {
+      return caption;
+    }
     const inventoried = lookupInventory(el);
-    if (inventoried) return inventoried;
+    if (
+      inventoried &&
+      inventoried.toLowerCase() !== own.toLowerCase() &&
+      !captureLooksLikeWidgetChrome(inventoried)
+    ) {
+      return inventoried;
+    }
+    if (caption && !captureLooksLikeWidgetChrome(caption)) return caption;
     const live = captureQuestionLabel(el, optionHint) || captureFieldLabel(el);
-    if (live && captureIsUsefulQuestionLabel(live, optionHint)) return live;
+    if (
+      live &&
+      live.toLowerCase() !== own.toLowerCase() &&
+      !captureLooksLikeWidgetChrome(live) &&
+      captureIsUsefulQuestionLabel(live, optionHint)
+    ) {
+      return live;
+    }
+    if (inventoried && !captureLooksLikeWidgetChrome(inventoried)) return inventoried;
     return "";
   }
 
@@ -3390,13 +4574,91 @@
   window.__ltScanFieldInventory = scanPageFieldInventory;
   window.__ltLookupFieldInventory = lookupInventory;
 
-  function captureDescribe(el, action) {
+  function captureLooksLikeGeneratedId(id) {
+    const s = String(id || "").trim();
+    if (!s || s.length < 2) return true;
+    if (/^(ember\d+|react-select-|mui-|:r[0-9a-z]+:|headlessui-)/i.test(s)) return true;
+    if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(s)) return true;
+    if (/^[a-f0-9]{16,}$/i.test(s)) return true;
+    if (/^\d+$/.test(s)) return true;
+    return false;
+  }
+
+  function captureCssAttr(name, value) {
+    const v = String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    return `[${name}="${v}"]`;
+  }
+
+  function captureGuiId(el) {
+    if (!el || el.nodeType !== 1) return "";
+    const host = captureControlHost(el);
+    const inner = el.matches?.("input, select, textarea, [role='radio'], [role='checkbox'], [role='combobox']")
+      ? null
+      : el.querySelector?.("input, select, textarea, [role='radio'], [role='checkbox']");
+    const nodes = [inner, el, host].filter((node) => node && node.nodeType === 1);
+    for (const node of nodes) {
+      const id = String(node.id || "").trim();
+      if (
+        id &&
+        !captureLooksLikeGeneratedId(id) &&
+        !captureLooksLikeJunkFieldKey(id) &&
+        captureIdIsUnique(id)
+      ) {
+        const ident = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(id) : id;
+        return `#${ident}`;
+      }
+    }
+    for (const node of nodes) {
+      const testid = node.getAttribute?.("data-testid") || node.getAttribute?.("data-test") || "";
+      if (testid && !captureLooksLikeGeneratedId(testid)) {
+        return captureCssAttr(node.getAttribute?.("data-testid") ? "data-testid" : "data-test", testid);
+      }
+    }
+    for (const node of nodes) {
+      const auto = node.getAttribute?.("data-automation-id") || "";
+      if (auto && !captureLooksLikeJunkFieldKey(auto) && !captureLooksLikeGeneratedId(auto)) {
+        return captureCssAttr("data-automation-id", auto);
+      }
+    }
+    for (const node of nodes) {
+      const name = String(node.getAttribute?.("name") || node.name || "").trim();
+      if (name && !captureLooksLikeJunkFieldKey(name) && !captureLooksLikeGeneratedId(name)) {
+        return captureCssAttr("name", name);
+      }
+    }
+    return "";
+  }
+
+  function captureFinderTag(liveName, websiteLabel) {
+    const site = captureNormalizeText(websiteLabel).replace(/[*:\s]+$/g, "").trim();
+    const live = captureNormalizeText(liveName);
+    if (!site || !live) return "";
+    if (captureLooksLikeOptionOnly(site) || captureLooksLikeJunkFieldKey(site)) return "";
+    const compact = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    if (!compact(site) || compact(site) === compact(live)) return "";
+    return site;
+  }
+
+  function captureOwnFieldName(el) {
+    const name = captureNormalizeText(el?.name || "");
+    if (name && !captureLooksLikeJunkFieldKey(name)) {
+      const bare = name.replace(/[*:\s]+$/g, "");
+      if (bare.length >= 2 && !captureLooksLikeOpaqueToken(bare)) return name;
+    }
+    const type = String(el?.getAttribute?.("type") || "").toLowerCase();
+    if (type === "tel") return "Phone";
+    if (type === "email") return "Email";
+    return "";
+  }
+
+  function captureDescribe(el, action, labelHint) {
     if (!el || el.nodeType !== 1) return null;
     const tag = (el.tagName || "").toLowerCase();
     const type = (el.getAttribute("type") || tag).toLowerCase();
     const role = String(el.getAttribute("role") || "").toLowerCase();
+    const customEl = tag.includes("-");
     if (type === "password" || type === "hidden") return null;
-    if (el.readOnly && type !== "radio" && type !== "checkbox" && tag !== "select") return null;
+    if (el.readOnly && !customEl && type !== "radio" && type !== "checkbox" && tag !== "select" && type !== "tel") return null;
     if (el.disabled && type !== "radio" && type !== "checkbox") return null;
 
     let value = el.value != null ? String(el.value) : "";
@@ -3404,6 +4666,7 @@
     if (value.length > 200) value = value.slice(0, 200);
     let selectedText = "";
 
+    if (role === "listbox" && captureLooksLikeWidgetChrome(el.id || el.getAttribute?.("aria-label") || "")) return null;
     if (tag === "select" || role === "listbox" || role === "combobox") {
       action = "select";
       const opt = el.selectedOptions && el.selectedOptions[0];
@@ -3417,7 +4680,7 @@
       if (!selectedText) return null;
       value = selectedText;
       // Still on the unselected placeholder option — nothing was actually chosen.
-      if (captureLooksLikePlaceholderValue(selectedText)) return null;
+      if (captureLooksLikePlaceholderValue(selectedText) || captureLooksLikeWidgetChrome(selectedText)) return null;
     } else if (type === "checkbox" || type === "radio" || role === "checkbox" || role === "radio") {
       action = "check";
       const on =
@@ -3458,6 +4721,12 @@
         }
       }
       if (captureLooksLikeOpaqueToken(selectedText)) selectedText = "";
+      if (/^(true|false|on|off)$/i.test(selectedText)) {
+        const visible = captureNormalizeText(String(el.innerText || el.textContent || "").split("\n")[0]);
+        if (visible && visible.length <= 48 && !/[?]/.test(visible) && !/^(true|false|on|off)$/i.test(visible)) {
+          selectedText = visible;
+        }
+      }
       if (!selectedText) selectedText = "true";
       value = selectedText;
     }
@@ -3472,8 +4741,33 @@
     }
 
     const optionHint = selectedText || value;
-    const question = resolveFieldQuestion(el, optionHint);
-    const label = question || captureFieldLabel(el);
+    const ownName = captureOwnFieldName(el);
+    const hint = captureHostLabel(el) || captureNormalizeText(labelHint || "");
+    const visibleQuestion = (function captureVisibleQuestion() {
+      const caption = captureCaptionAbove(el, optionHint);
+      if (caption && captureIsUsefulQuestionLabel(caption, optionHint) && !captureLooksLikeWidgetChrome(caption)) {
+        return caption;
+      }
+      const live = captureQuestionLabel(el, optionHint) || captureFieldLabel(el);
+      if (
+        live &&
+        live.toLowerCase() !== captureNormalizeText(el.name || el.id || "").toLowerCase() &&
+        captureIsUsefulQuestionLabel(live, optionHint) &&
+        !captureLooksLikeOptionOnly(live) &&
+        !captureLooksLikeWidgetChrome(live)
+      ) {
+        return live;
+      }
+      if (hint && captureIsUsefulQuestionLabel(hint, optionHint) && !captureLooksLikeOptionOnly(hint)) {
+        return hint;
+      }
+      return "";
+    })();
+    const question =
+      (visibleQuestion && captureIsUsefulQuestionLabel(visibleQuestion, optionHint) ? visibleQuestion : "") ||
+      ownName ||
+      (hint && captureIsUsefulQuestionLabel(hint, optionHint) ? hint : "");
+    const label = question || captureFieldLabel(el) || hint;
     let fieldName = String(
       (question && !captureLooksLikeOptionOnly(question) ? question : "") ||
         (label && !captureLooksLikeJunkFieldKey(label) ? label : "") ||
@@ -3487,6 +4781,10 @@
     if (question && captureIsUsefulQuestionLabel(question, optionHint)) {
       rememberField(el, question, action === "check" || action === "select" ? "choice" : "field");
     }
+    const shown =
+      (question && !captureLooksLikeOptionOnly(question) ? question : "") || label || fieldName;
+    const finder = captureFinderTag(shown, visibleQuestion);
+    const guiId = captureGuiId(el);
     return {
       kind: "extension",
       source: "human",
@@ -3495,42 +4793,217 @@
       pageUrl: location.href,
       pageTitle: document.title || "",
       tag: tag || role || "field",
-      selector: captureSelectorFor(el),
+      selector: guiId || captureSelectorFor(el),
+      ...(guiId ? { guiId } : {}),
       fieldName: fieldName || label,
       fieldId: el.id || "",
-      label: (question && !captureLooksLikeOptionOnly(question) ? question : "") || label || fieldName,
+      label: shown,
+      ...(finder ? { finder } : {}),
       value,
       selectedText,
+      elementRect: captureElementRect(el),
     };
   }
 
-  function onCaptureInput(event) {
-    const el = event.target;
-    if (!el?.matches) return;
-    if (
-      !el.matches(
-        "input:not([type=password]):not([type=hidden]):not([type=submit]):not([type=button]), textarea, select, [contenteditable='true']",
-      )
-    ) {
+  function captureElementRect(el) {
+    if (!el || typeof el.getBoundingClientRect !== "function") return null;
+    const r = el.getBoundingClientRect();
+    if (!r || (r.width < 2 && r.height < 2)) return null;
+    return {
+      x: r.x,
+      y: r.y,
+      width: r.width,
+      height: r.height,
+      dpr: window.devicePixelRatio || 1,
+    };
+  }
+
+  const CAPTURE_TEXT_SEL =
+    'input:not([type="password"]):not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select, [contenteditable="true"]';
+  const CAPTURE_WIDGET_SEL =
+    "[role='checkbox'], [role='radio'], [role='combobox'], [role='listbox'], [role='option']";
+
+  function captureCustomHost(event, el) {
+    const path = typeof event?.composedPath === "function" ? event.composedPath() : [];
+    for (const node of path) {
+      if (String(node?.tagName || "").includes("-")) return node;
+    }
+    try {
+      const parent = el?.getRootNode?.()?.host;
+      if (parent && String(parent.tagName || "").includes("-")) return parent;
+    } catch {
+      /* ignore */
+    }
+    if (String(el?.tagName || "").includes("-")) return el;
+    return null;
+  }
+
+  function captureControlFromEvent(event, includeWidgets) {
+    const path = typeof event?.composedPath === "function" ? event.composedPath() : [];
+    const hostTarget = event?.target && event.target.nodeType === 1 ? event.target : null;
+    let inner = null;
+    for (const node of path) {
+      if (node?.matches?.(CAPTURE_TEXT_SEL) || (includeWidgets && node?.matches?.(CAPTURE_WIDGET_SEL))) {
+        inner = node;
+        break;
+      }
+    }
+    if (!inner && hostTarget?.matches?.(CAPTURE_TEXT_SEL)) inner = hostTarget;
+    if (!inner && includeWidgets && hostTarget?.matches?.(CAPTURE_WIDGET_SEL)) inner = hostTarget;
+    if (!inner && hostTarget?.shadowRoot) {
+      try {
+        inner = hostTarget.shadowRoot.querySelector(includeWidgets ? `${CAPTURE_TEXT_SEL}, ${CAPTURE_WIDGET_SEL}` : CAPTURE_TEXT_SEL);
+      } catch {
+        /* ignore */
+      }
+    }
+    const custom = captureCustomHost(event, inner || hostTarget);
+    const innerValue = inner && inner.value != null && typeof inner.value !== "object" ? String(inner.value).trim() : "";
+    const hostValue =
+      custom && custom.value != null && typeof custom.value !== "object" ? String(custom.value).trim() : "";
+    if (custom && hostValue && !innerValue) return { el: custom, host: custom };
+    if (inner) return { el: inner, host: custom || hostTarget };
+    for (const node of path) {
+      if (!node || node.nodeType !== 1) continue;
+      const tag = String(node.tagName || "").toLowerCase();
+      if (!tag || tag === "html" || tag === "body" || tag === "button" || tag === "a") continue;
+      if (node.matches?.("[role='button'], [role='link']")) continue;
+      const nodeValue = node.value != null && typeof node.value !== "object" ? String(node.value).trim() : "";
+      if (nodeValue || node.isContentEditable || captureHostLabel(node)) return { el: node, host: custom || node };
+    }
+    return null;
+  }
+
+  function captureTelFromEvent(event) {
+    const path = typeof event?.composedPath === "function" ? event.composedPath() : [];
+    const nodes = path.length ? path : [event?.target];
+    for (const node of nodes) {
+      if (node?.matches?.("input[type='tel'], input[inputmode='tel']")) return node;
+    }
+    const target = event?.target;
+    const root =
+      target?.closest?.(".iti, [class*='intl'], [class*='phone'], [class*='Phone']") || target?.parentElement;
+    return root?.querySelector?.("input[type='tel'], input[inputmode='tel']") || null;
+  }
+
+  const textCaptureTimers = new WeakMap();
+  function scheduleTextCapture(el) {
+    if (!el) return;
+    const prev = textCaptureTimers.get(el);
+    if (prev) clearTimeout(prev);
+    textCaptureTimers.set(
+      el,
+      setTimeout(() => {
+        textCaptureTimers.delete(el);
+        const payload = captureDescribe(el, "input");
+        if (payload) postCaptureEvent(payload);
+      }, 350),
+    );
+  }
+
+  function onCaptureTextInput(event) {
+    const tel = captureTelFromEvent(event);
+    if (tel && captureControlVisible(tel)) {
+      scheduleTextCapture(tel);
       return;
     }
-    const payload = captureDescribe(el, "input");
+    const found = captureControlFromEvent(event, false);
+    if (found?.el && captureControlVisible(found.el)) scheduleTextCapture(found.el);
+  }
+
+  function captureControlVisible(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.disabled) return false;
+    const type = String(el.getAttribute?.("type") || "").toLowerCase();
+    if (type === "hidden" || type === "password") return false;
+    try {
+      const style = window.getComputedStyle?.(el);
+      if (style && (style.visibility === "hidden" || style.display === "none" || Number(style.opacity) === 0)) {
+        return false;
+      }
+      const box = el.getBoundingClientRect?.();
+      if (!box || box.width < 8 || box.height < 8) return false;
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
+  function snapshotFilledControls() {
+    if (document.hidden) return;
+    const nodes = document.querySelectorAll(
+      'input:not([type="hidden"]):not([type="password"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]), textarea, select, [role="combobox"]',
+    );
+    nodes.forEach((el) => {
+      try {
+        if (!captureControlVisible(el)) return;
+        if (String(el.getAttribute?.("role") || "").toLowerCase() === "combobox") {
+          const shown = comboboxShownValue(el);
+          if (!shown) return;
+          const question = captureCaptionAbove(el, shown) || resolveFieldQuestion(el, shown) || "";
+          const q = question && !captureLooksLikeWidgetChrome(question) ? question : shown;
+          const guiId = captureGuiId(el);
+          postCaptureEvent({
+            kind: "extension",
+            source: "human",
+            actor: "user",
+            action: "select",
+            pageUrl: location.href,
+            pageTitle: document.title || "",
+            tag: (el.tagName || "input").toLowerCase(),
+            selector: guiId || captureSelectorFor(el),
+            ...(guiId ? { guiId } : {}),
+            fieldName: q,
+            label: q,
+            value: shown,
+            selectedText: shown,
+          });
+          return;
+        }
+        const payload = captureDescribe(el, "change");
+        if (payload) postCaptureEvent(payload);
+      } catch {
+        /* one bad control should not stop the rest */
+      }
+    });
+  }
+
+  function onCaptureInput(event) {
+    const found = captureControlFromEvent(event, false);
+    if (!found) return;
+    const hint = captureHostLabel(found.host) || captureHostLabel(found.el);
+    const payload = captureDescribe(found.el, "input", hint);
     if (payload) postCaptureEvent(payload);
   }
 
   function onCaptureChange(event) {
-    let el = event.target;
-    if (!el || el.nodeType !== 1) return;
-    if (el.matches?.("option")) el = el.closest("select") || el;
-    if (
-      !el.matches?.(
-        "input, textarea, select, [contenteditable='true'], [role='checkbox'], [role='radio'], [role='combobox'], [role='listbox']",
-      )
-    ) {
-      return;
+    const found = captureControlFromEvent(event, true);
+    let el = found?.el || null;
+    if (!el) {
+      el = event.target;
+      if (!el || el.nodeType !== 1) return;
+      if (el.matches?.("option")) el = el.closest("select") || el;
+      if (
+        !el.matches?.(
+          "input, textarea, select, [contenteditable='true'], [role='checkbox'], [role='radio'], [role='combobox'], [role='listbox']",
+        )
+      ) {
+        const missed = captureTelFromEvent(event);
+        if (missed) {
+          const phone = captureDescribe(missed, "change");
+          if (phone) postCaptureEvent(phone);
+        }
+        return;
+      }
     }
-    const payload = captureDescribe(el, "change");
+    const hint = captureHostLabel(found?.host) || captureHostLabel(el);
+    const payload = captureDescribe(el, "change", hint);
     if (payload) postCaptureEvent(payload);
+    const tel = captureTelFromEvent(event);
+    if (tel && tel !== el) {
+      const phone = captureDescribe(tel, "change");
+      if (phone) postCaptureEvent(phone);
+    }
   }
 
   function isWorkdayChoiceControl(el) {
@@ -3573,19 +5046,71 @@
     return "";
   }
 
+  function emitNavigationClick(el, name) {
+    const label = captureNormalizeText(name).slice(0, 80);
+    if (!label) return;
+    postCaptureEvent({
+      kind: "extension",
+      source: "human",
+      actor: "user",
+      action: "click",
+      pageUrl: location.href,
+      pageTitle: document.title || "",
+      tag: (el?.tagName || "button").toLowerCase(),
+      selector: captureSelectorFor(el),
+      fieldName: label,
+      label,
+      value: label,
+    });
+  }
+
   function emitChoiceCapture(el, optionLabel) {
     const opt = captureNormalizeText(optionLabel).slice(0, 80);
     if (!opt) return;
     if (captureLooksLikeOpaqueToken(opt) || captureLooksLikePlaceholderValue(opt)) return;
+    const selector = captureSelectorFor(el);
+    const guiId = captureGuiId(el);
+    if (isNavigationClickLabel(opt) || isNavigationSelector(selector)) {
+      emitNavigationClick(el, isNavigationClickLabel(opt) ? opt : captureNormalizeText(el?.innerText || opt));
+      return;
+    }
     const question =
       resolveFieldQuestion(el, opt) ||
       captureWorkdayQuestion(el, opt) ||
       captureParseOptionAriaQuestion(el.getAttribute?.("aria-label") || "", opt) ||
       pendingComboboxQuestion();
-    const q =
+    let q =
       question && !captureLooksLikeOptionOnly(question) && !captureLooksLikeJunkFieldKey(question)
         ? question
         : "";
+    if (captureLooksLikeWidgetChrome(q)) q = "";
+    if (!q || q.toLowerCase() === opt.toLowerCase()) {
+      const fromLabel = captureCaptionAbove(el, opt) || captureFieldLabel(el);
+      if (
+        fromLabel &&
+        fromLabel.toLowerCase() !== opt.toLowerCase() &&
+        !captureLooksLikeJunkFieldKey(fromLabel) &&
+        !captureLooksLikeWidgetChrome(fromLabel)
+      ) {
+        q = fromLabel;
+      }
+    }
+    if (
+      q &&
+      opt &&
+      captureLooksLikeChoiceValue(q) &&
+      captureLooksLikeChoiceValue(opt) &&
+      q.toLowerCase() !== opt.toLowerCase()
+    ) {
+      const hostQ = captureHostLabel(captureControlHost(el)) || captureHostLabel(el) || pendingComboboxQuestion();
+      q =
+        hostQ &&
+        hostQ.toLowerCase() !== opt.toLowerCase() &&
+        hostQ.toLowerCase() !== q.toLowerCase() &&
+        !captureLooksLikeJunkFieldKey(hostQ)
+          ? hostQ
+          : "";
+    }
     postCaptureEvent({
       kind: "extension",
       source: "human",
@@ -3594,7 +5119,8 @@
       pageUrl: location.href,
       pageTitle: document.title || "",
       tag: (el.tagName || "").toLowerCase(),
-      selector: captureSelectorFor(el),
+      selector: guiId || selector,
+      ...(guiId ? { guiId } : {}),
       fieldName: q || "",
       label: q || opt,
       value: opt,
@@ -3629,28 +5155,260 @@
   let pendingCombobox = null;
 
   function rememberComboboxOpen(el) {
-    const question = resolveFieldQuestion(el, "") || captureWorkdayQuestion(el, "");
-    pendingCombobox = { el, question: question || "", ts: Date.now() };
+    const caption = captureCaptionAbove(el, "");
+    const question = caption || resolveFieldQuestion(el, "") || captureWorkdayQuestion(el, "");
+    pendingCombobox = {
+      el,
+      question: question && !captureLooksLikeWidgetChrome(question) ? question : "",
+      ts: Date.now(),
+    };
   }
 
   function pendingComboboxQuestion() {
     if (!pendingCombobox) return "";
     if (Date.now() - pendingCombobox.ts > 15000) return "";
-    return pendingCombobox.question;
+    const q = pendingCombobox.question;
+    return q && !captureLooksLikeWidgetChrome(q) ? q : "";
+  }
+
+  function owningCombobox(el) {
+    const list = el?.closest?.("[role='listbox']") || (el?.getAttribute?.("role") === "listbox" ? el : null);
+    const listId = String(list?.id || "");
+    if (listId) {
+      try {
+        const owner = document.querySelector(
+          `[aria-controls="${CSS.escape(listId)}"], [aria-owns="${CSS.escape(listId)}"]`,
+        );
+        if (owner) return owner;
+      } catch {
+        /* ignore */
+      }
+    }
+    if (pendingCombobox?.el && Date.now() - pendingCombobox.ts < 15000) return pendingCombobox.el;
+    return null;
+  }
+
+  function comboboxShownValue(combo) {
+    if (!combo) return "";
+    const root = combo.closest?.("[class*='container']") || combo.parentElement || combo;
+    const single = root.querySelector?.("[class*='singleValue'], [class*='single-value']");
+    const shown = captureNormalizeText(single?.textContent || "");
+    if (shown && !captureLooksLikeWidgetChrome(shown) && !captureLooksLikePlaceholderValue(shown)) {
+      return shown.slice(0, 80);
+    }
+    const val = captureNormalizeText(typeof combo.value === "string" ? combo.value : "");
+    if (val && !captureLooksLikeWidgetChrome(val) && !captureLooksLikePlaceholderValue(val)) return val.slice(0, 80);
+    return "";
+  }
+
+  let comboCommitTimer = null;
+  function scheduleComboboxCommit(optionEl, fallbackOpt) {
+    const combo = owningCombobox(optionEl) || pendingCombobox?.el || null;
+    if (comboCommitTimer) clearTimeout(comboCommitTimer);
+    comboCommitTimer = setTimeout(() => {
+      comboCommitTimer = null;
+      const clicked = captureNormalizeText(fallbackOpt).slice(0, 80);
+      let shown = comboboxShownValue(combo);
+      if (
+        clicked &&
+        (!shown ||
+          (shown.toLowerCase() !== clicked.toLowerCase() && shown.length <= 12 && clicked.length > shown.length))
+      ) {
+        shown = clicked;
+      }
+      if (!shown || captureLooksLikeWidgetChrome(shown) || captureLooksLikePlaceholderValue(shown)) return;
+      const question =
+        (combo && captureCaptionAbove(combo, shown)) ||
+        pendingComboboxQuestion() ||
+        (combo && resolveFieldQuestion(combo, shown)) ||
+        captureCaptionAbove(optionEl, shown) ||
+        "";
+      const q =
+        question && !captureLooksLikeWidgetChrome(question) && !captureLooksLikeJunkFieldKey(question)
+          ? question
+          : "";
+      const guiSource = combo || optionEl;
+      const guiId = captureGuiId(guiSource);
+      postCaptureEvent({
+        kind: "extension",
+        source: "human",
+        actor: "user",
+        action: "select",
+        pageUrl: location.href,
+        pageTitle: document.title || "",
+        tag: (guiSource?.tagName || "select").toLowerCase(),
+        selector: guiId || captureSelectorFor(guiSource),
+        ...(guiId ? { guiId } : {}),
+        fieldName: q || shown,
+        label: q || shown,
+        value: shown,
+        selectedText: shown,
+      });
+      if (q) rememberField(guiSource, q, "choice");
+      pendingCombobox = null;
+    }, 60);
+  }
+
+  function captureAccessibleName(node) {
+    if (!node || node.nodeType !== 1) return "";
+    const labelledBy = node.getAttribute?.("aria-labelledby");
+    if (labelledBy) {
+      const text = captureNormalizeText(
+        String(labelledBy)
+          .split(/\s+/)
+          .map((id) => document.getElementById(id)?.textContent || "")
+          .join(" "),
+      );
+      if (text && text.length <= 180 && !captureLooksLikeOpaqueToken(text) && !captureLooksLikeWidgetChrome(text)) return text;
+    }
+    const named = captureNormalizeText(
+      node.getAttribute?.("aria-label") ||
+        node.getAttribute?.("title") ||
+        node.getAttribute?.("alt") ||
+        (typeof node.value === "string" && /^(button|submit|reset|image)$/i.test(String(node.type || ""))
+          ? node.value
+          : "") ||
+        "",
+    );
+    if (named && named.length <= 180 && !captureLooksLikeOpaqueToken(named) && !captureLooksLikeWidgetChrome(named)) return named;
+    const text = captureNormalizeText(node.innerText || node.textContent || "");
+    if (text && text.length <= 180 && !captureLooksLikeOpaqueToken(text) && !captureLooksLikeWidgetChrome(text)) return text;
+    const first = captureNormalizeText(String(node.innerText || node.textContent || "").split("\n")[0] || "");
+    if (first && first.length <= 180 && !captureLooksLikeOpaqueToken(first) && !captureLooksLikeWidgetChrome(first)) return first;
+    return "";
+  }
+
+  function isChoiceControl(node) {
+    if (!node?.matches) return false;
+    return (
+      node.matches(
+        "input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox'], [role='option'], [role='switch'], [data-automation-id*='promptOption']",
+      ) ||
+      (node.matches("label") &&
+        node.querySelector?.("input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox']"))
+    );
+  }
+
+  function isActionControl(node) {
+    if (!node?.matches || isChoiceControl(node) || isTextEntryTarget(node)) return false;
+    if (
+      node.matches(
+        "button, a[href], summary, [role='button'], [role='link'], [role='tab'], [role='menuitem'], input[type='button'], input[type='submit'], input[type='reset'], input[type='image']",
+      )
+    ) {
+      return true;
+    }
+    const tag = String(node.tagName || "");
+    if (tag.includes("-") && !node.querySelector?.("input, textarea, select, [role='radio'], [role='checkbox']")) {
+      return true;
+    }
+    if (node.hasAttribute?.("onclick") || node.hasAttribute?.("jsaction")) return true;
+    try {
+      const cursor = window.getComputedStyle?.(node)?.cursor;
+      if (cursor === "pointer") {
+        const box = node.getBoundingClientRect?.();
+        const small = !box || (box.width > 0 && box.width <= 520 && box.height > 0 && box.height <= 120);
+        const hasField = node.querySelector?.("input, textarea, select, [role='radio'], [role='checkbox']");
+        if (small && !hasField) return true;
+      }
+    } catch {
+      /* ignore */
+    }
+    return false;
+  }
+
+  function captureVisibleClickLabel(node) {
+    return captureAccessibleName(node);
+  }
+
+  function isTextEntryTarget(node) {
+    if (!node?.matches) return false;
+    return node.matches(
+      'input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea, [contenteditable="true"]',
+    );
+  }
+
+  function captureIsLayoutClick(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const id = String(node.id || "");
+    if (captureLooksLikeJunkFieldKey(id)) return true;
+    if (/__(group|field|form)__/i.test(id)) return true;
+    try {
+      if (node.querySelector?.("input, textarea, select, [role='radio'], [role='checkbox']")) return true;
+    } catch {
+      /* ignore */
+    }
+    return false;
+  }
+
+  function genericClickFromEvent(event) {
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    const nodes = path.length ? path : [event.target];
+    for (const node of nodes) {
+      if (!node || node.nodeType !== 1) continue;
+      if (isTextEntryTarget(node)) return null;
+      if (captureIsLayoutClick(node)) continue;
+      const label = captureVisibleClickLabel(node);
+      if (label) return { el: node, label };
+    }
+    return null;
+  }
+
+  function emitPlainClick(el, label) {
+    const text = captureNormalizeText(label).slice(0, 180);
+    if (!text || captureLooksLikeWidgetChrome(text)) return;
+    if (el?.getAttribute?.("role") === "listbox" || el?.closest?.("[role='listbox']")) return;
+    if (isNavigationClickLabel(text)) {
+      emitNavigationClick(el, text);
+      return;
+    }
+    const guiId = captureGuiId(el);
+    postCaptureEvent({
+      kind: "extension",
+      source: "human",
+      actor: "user",
+      action: "click",
+      pageUrl: location.href,
+      pageTitle: document.title || "",
+      tag: (el?.tagName || "button").toLowerCase(),
+      selector: guiId || captureSelectorFor(el),
+      ...(guiId ? { guiId } : {}),
+      fieldName: captureLooksLikeJunkFieldKey(el?.id || el?.name || "") ? text : el?.name || el?.id || text,
+      label: text,
+      value: text,
+    });
   }
 
   function onCaptureClick(event) {
-    const el = event.target?.closest?.(
-      "button, a[href], [role='button'], [role='tab'], [role='option'], [role='radio'], [role='menuitem'], [role='checkbox'], input[type='submit'], input[type='button'], input[type='radio'], input[type='checkbox'], label, [data-automation-id*='primaryQuestionnaire'], [data-automation-id*='promptOption'], [data-automation-id*='optionRenderer']",
-    );
+    const clickSel =
+      "button, a[href], [role='button'], [role='tab'], [role='option'], [role='radio'], [role='menuitem'], [role='checkbox'], input[type='submit'], input[type='button'], input[type='radio'], input[type='checkbox'], label, [data-automation-id*='primaryQuestionnaire'], [data-automation-id*='promptOption'], [data-automation-id*='optionRenderer']";
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    let el = null;
+    for (const node of path) {
+      if (node?.matches?.(clickSel)) {
+        el = node;
+        break;
+      }
+    }
+    if (!el) el = event.target?.closest?.(clickSel) || null;
+    if (!el) {
+      for (const node of path) {
+        if (node?.nodeType === 1 && isActionControl(node)) {
+          el = node;
+          break;
+        }
+      }
+    }
     if (!el) {
       const raw = event.target;
       const climb =
         raw?.closest?.("[id*='primaryQuestionnaire'], [data-automation-id*='primaryQuestionnaire']") || null;
       if (climb) {
         const opt = optionTextFromControl(climb) || captureNormalizeText(raw?.textContent || "").slice(0, 40);
-        if (opt && captureLooksLikeChoiceValue(opt)) emitChoiceCapture(climb, opt);
-        return;
+        if (opt && captureLooksLikeChoiceValue(opt)) {
+          emitChoiceCapture(climb, opt);
+          return;
+        }
       }
       // No Workday-shaped markup matched at all. If a combobox popup was just
       // opened, this click almost certainly lands on that popup's chosen
@@ -3659,12 +5417,29 @@
       if (raw && pendingComboboxQuestion()) {
         const opt = captureNormalizeText((raw.innerText || raw.textContent || "").split("\n")[0]).slice(0, 64);
         if (opt && captureLooksLikeChoiceValue(opt)) emitChoiceCapture(raw, opt);
+        else {
+          const generic = genericClickFromEvent(event);
+          if (generic) emitPlainClick(generic.el, generic.label);
+        }
+        return;
       }
+      const generic = genericClickFromEvent(event);
+      if (generic) emitPlainClick(generic.el, generic.label);
       return;
     }
 
     if (isComboboxTrigger(el)) {
       rememberComboboxOpen(el);
+      return;
+    }
+
+    if (
+      el.getAttribute?.("role") === "option" ||
+      el.getAttribute?.("role") === "listbox" ||
+      el.closest?.("[role='listbox']")
+    ) {
+      const opt = optionTextFromControl(el);
+      if (opt && !captureLooksLikeWidgetChrome(opt)) scheduleComboboxCommit(el, opt);
       return;
     }
 
@@ -3684,16 +5459,29 @@
             "input[type='radio'], input[type='checkbox'], [role='radio'], [role='checkbox']",
           ) || el;
       const optionLabel = optionTextFromControl(input) || optionTextFromControl(el);
+      const selector = captureSelectorFor(input);
+      if (isNavigationSelector(selector) || isNavigationClickLabel(optionLabel)) {
+        emitNavigationClick(input, optionLabel || captureNormalizeText(input.innerText || ""));
+        return;
+      }
       if (optionLabel) {
         emitChoiceCapture(input, optionLabel);
         setTimeout(() => {
           const payload = captureDescribe(input, "check");
           if (payload) postCaptureEvent(payload);
         }, 0);
+        return;
       }
-      return;
     }
     if (el.matches?.("label") && el.querySelector?.("input, textarea, select")) return;
+    if (isActionControl(el)) {
+      const name = captureAccessibleName(el);
+      if (name && !captureLooksLikePlaceholderValue(name)) {
+        emitPlainClick(el, name);
+        return;
+      }
+    }
+    const selector = captureSelectorFor(el);
     const label = captureNormalizeText(
       el.innerText ||
         el.value ||
@@ -3703,21 +5491,30 @@
         el.name ||
         "",
     );
-    if (!label || label.length > 120) return;
-    // A combobox trigger not caught by isComboboxTrigger() still shows its OLD
-    // value ("Select One" etc.) at click time — never record that as an answer.
-    if (captureLooksLikePlaceholderValue(label) || captureLooksLikeOpaqueToken(label)) return;
-    if (captureLooksLikeChoiceValue(label) || captureParseOptionAriaQuestion(label, "")) {
-      const optionValue = captureLooksLikeChoiceValue(label)
-        ? label.split(/\s+/).slice(0, 4).join(" ").slice(0, 64)
-        : captureLooksLikeChoiceValue(captureNormalizeText(el.innerText || "").slice(0, 48))
-          ? captureNormalizeText(el.innerText || "").slice(0, 48)
-          : /^(yes|no)\b/i.test(label)
-            ? label.match(/^(yes|no)/i)[1]
-            : label.slice(0, 64);
-      emitChoiceCapture(el, optionValue);
+    if (!label || label.length > 120) {
+      const generic = genericClickFromEvent(event);
+      if (generic) emitPlainClick(generic.el, generic.label);
       return;
     }
+    if (isNavigationClickLabel(label) || isNavigationSelector(selector)) {
+      emitNavigationClick(el, isNavigationClickLabel(label) ? label : label.split("\n")[0]);
+      return;
+    }
+    if (captureLooksLikePlaceholderValue(label) || captureLooksLikeOpaqueToken(label)) {
+      const generic = genericClickFromEvent(event);
+      if (
+        generic &&
+        !captureLooksLikePlaceholderValue(generic.label) &&
+        !captureLooksLikeOpaqueToken(generic.label)
+      ) {
+        emitPlainClick(generic.el, generic.label);
+      }
+      return;
+    }
+    const name = captureAccessibleName(el) || label;
+    if (captureLooksLikeWidgetChrome(name) || captureLooksLikeWidgetChrome(label)) return;
+    const guiId = captureGuiId(el);
+    const idName = el.name || el.id || "";
     postCaptureEvent({
       kind: "extension",
       source: "human",
@@ -3726,17 +5523,46 @@
       pageUrl: location.href,
       pageTitle: document.title || "",
       tag: (el.tagName || "").toLowerCase(),
-      selector: captureSelectorFor(el),
-      fieldName: el.name || el.id || label,
-      label,
-      value: label,
+      selector: guiId || selector,
+      ...(guiId ? { guiId } : {}),
+      fieldName: !idName || captureLooksLikeJunkFieldKey(idName) ? name : idName,
+      label: name,
+      value: name,
+    });
+  }
+
+  function onPageValueMessage(event) {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.source !== "lt-capture" || data.action !== "change") return;
+    const value = captureNormalizeText(data.value || "");
+    const label = captureNormalizeText(data.label || "");
+    if (!value || data.type === "password" || data.type === "hidden") return;
+    if (captureLooksLikeOpaqueToken(value) && !label) return;
+    const fieldName = label && !captureLooksLikeJunkFieldKey(label) ? label : captureNormalizeText(data.name || data.id || "");
+    if (!fieldName || captureLooksLikeJunkFieldKey(fieldName)) return;
+    postCaptureEvent({
+      kind: "extension",
+      source: "human",
+      actor: "user",
+      action: "change",
+      pageUrl: location.href,
+      pageTitle: document.title || "",
+      tag: String(data.tag || "field").toLowerCase(),
+      selector: fieldName,
+      fieldName,
+      label: fieldName,
+      value,
     });
   }
 
   function startCapturePageRecorder() {
-    document.addEventListener("input", onCaptureInput, true);
     document.addEventListener("change", onCaptureChange, true);
+    document.addEventListener("focusout", onCaptureChange, true);
+    document.addEventListener("input", onCaptureTextInput, true);
     document.addEventListener("click", onCaptureClick, true);
+    window.addEventListener("message", onPageValueMessage);
+    safeRuntimeSend({ type: "capture_install_value_hook" });
     setupFieldInventoryObservers();
     scanPageFieldInventory();
     captureHealthTimer = setInterval(refreshCaptureRecording, 1000);
@@ -3745,9 +5571,11 @@
 
 
   function stopCapturePageRecorder() {
-    document.removeEventListener("input", onCaptureInput, true);
     document.removeEventListener("change", onCaptureChange, true);
+    document.removeEventListener("focusout", onCaptureChange, true);
+    document.removeEventListener("input", onCaptureTextInput, true);
     document.removeEventListener("click", onCaptureClick, true);
+    window.removeEventListener("message", onPageValueMessage);
     if (captureHealthTimer) clearInterval(captureHealthTimer);
     captureHealthTimer = null;
     try {
@@ -3879,9 +5707,13 @@
             }
           }
           if (approved) {
+            useStep.allowedValues = [approved];
+            useStep.value = approved;
+            if (!watch.agentApprovedValues || typeof watch.agentApprovedValues !== "object") {
+              watch.agentApprovedValues = {};
+            }
+            watch.agentApprovedValues[step.id] = approved;
             if (step.valueFrom) data[step.valueFrom] = approved;
-            else useStep.value = approved;
-            // Keep watch data in sync so last-step checks match the approved value
             if (step.valueFrom) {
               watch.data = { ...watch.data, [step.valueFrom]: approved };
             }
@@ -3931,6 +5763,7 @@
     }
 
     if (message?.type === "capture_recording") {
+      const wasRecording = captureRecording;
       captureRecording = Boolean(message.recording);
       if (captureRecording) {
         try {
@@ -3938,6 +5771,7 @@
         } catch {
           /* ignore */
         }
+        if (!wasRecording) snapshotFilledControls();
       }
       sendResponse({ ok: true, recording: captureRecording });
       return true;

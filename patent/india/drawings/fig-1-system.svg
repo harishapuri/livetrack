@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="560" viewBox="0 0 760 560">
+  <rect width="760" height="560" fill="#ffffff"/>
+  <text x="24" y="32" font-family="Arial, sans-serif" font-size="16" font-weight="700">FIG. 1</text>
+  <rect x="40" y="52" width="680" height="480" fill="none" stroke="#000000" stroke-width="1.5"/>
+  <text x="52" y="74" font-family="Arial, sans-serif" font-size="13">Computer 11</text>
+  <rect x="70" y="100" width="200" height="150" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+  <text x="82" y="124" font-family="Arial, sans-serif" font-size="13">Desktop controller 12</text>
+  <text x="82" y="146" font-family="Arial, sans-serif" font-size="12">Step cursor 20</text>
+  <text x="82" y="166" font-family="Arial, sans-serif" font-size="12">Run state 22</text>
+  <text x="82" y="186" font-family="Arial, sans-serif" font-size="12">Learned-choice store 46</text>
+  <text x="82" y="206" font-family="Arial, sans-serif" font-size="12">Repair unit 38</text>
+  <rect x="70" y="280" width="200" height="90" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+  <text x="82" y="312" font-family="Arial, sans-serif" font-size="13">Queue store 14</text>
+  <text x="82" y="334" font-family="Arial, sans-serif" font-size="12">Queue card 16</text>
+  <text x="82" y="354" font-family="Arial, sans-serif" font-size="12">Steps 18</text>
+  <rect x="430" y="100" width="250" height="200" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+  <text x="442" y="124" font-family="Arial, sans-serif" font-size="13">Browser 24</text>
+  <text x="442" y="148" font-family="Arial, sans-serif" font-size="12">Browser extension 26</text>
+  <text x="442" y="170" font-family="Arial, sans-serif" font-size="12">Matcher 34</text>
+  <text x="442" y="196" font-family="Arial, sans-serif" font-size="12">Electronic form 28</text>
+  <text x="442" y="218" font-family="Arial, sans-serif" font-size="12">Live control 30</text>
+  <text x="442" y="248" font-family="Arial, sans-serif" font-size="12">Visible to operator 15</text>
+  <rect x="300" y="160" width="100" height="56" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+  <text x="312" y="184" font-family="Arial, sans-serif" font-size="12">Loopback</text>
+  <text x="312" y="202" font-family="Arial, sans-serif" font-size="12">bridge 32</text>
+  <line x1="270" y1="175" x2="300" y2="188" stroke="#000000" stroke-width="1.5"/>
+  <line x1="400" y1="188" x2="430" y2="175" stroke="#000000" stroke-width="1.5"/>
+  <polygon points="430,175 418,170 418,180" fill="#000000"/>
+  <polygon points="270,175 282,170 282,180" fill="#000000"/>
+  <rect x="430" y="340" width="250" height="110" fill="#ffffff" stroke="#000000" stroke-width="1.5"/>
+  <text x="442" y="364" font-family="Arial, sans-serif" font-size="13">Recorder 40</text>
+  <text x="442" y="386" font-family="Arial, sans-serif" font-size="12">Draft procedure 42</text>
+  <text x="442" y="408" font-family="Arial, sans-serif" font-size="12">Approval gate 44</text>
+  <text x="442" y="430" font-family="Arial, sans-serif" font-size="12">Capture unit 36</text>
+  <line x1="170" y1="250" x2="170" y2="280" stroke="#000000" stroke-width="1.5"/>
+  <polygon points="170,280 164,268 176,268" fill="#000000"/>
+  <line x1="555" y1="300" x2="555" y2="340" stroke="#000000" stroke-width="1.5"/>
+  <line x1="430" y1="395" x2="270" y2="340" stroke="#000000" stroke-width="1.5"/>
+  <polygon points="270,340 284,336 280,348" fill="#000000"/>
+</svg>

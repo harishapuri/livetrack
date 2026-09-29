@@ -193,6 +193,13 @@ async function refresh() {
 async function publishLiveAct() {
   try {
     const res = await api("/api/publish-liveact", { method: "POST", body: "{}" });
+    if (res.offline) {
+      return {
+        ok: true,
+        offline: true,
+        message: res.note || "LiveTrack is not open; it will load this update when it starts.",
+      };
+    }
     if (!res.ok && res.liveAct === false) {
       return { ok: false, message: res.error || "LiveTrack not updated" };
     }
@@ -205,7 +212,15 @@ async function publishLiveAct() {
     }
     return { ok: true, message, cardIds: res.cardIds || [] };
   } catch (err) {
-    return { ok: false, message: err.message || "Publish failed" };
+    const message = err.message || "Publish failed";
+    if (/not running|not open/i.test(message)) {
+      return {
+        ok: true,
+        offline: true,
+        message: "LiveTrack is not open; it will load this update when it starts.",
+      };
+    }
+    return { ok: false, message };
   }
 }
 
